@@ -1,19 +1,36 @@
-use crate::client::{StreamingClient, PRODUCTION_STREAMING_CLIENT};
-use crate::consumer::{NominalCoreConsumer, WriteRequestConsumer};
-use conjure_object::{BearerToken, ResourceIdentifier};
-use nominal_api::tonic::io::nominal::scout::api::proto::points::PointsType;
-use nominal_api::tonic::io::nominal::scout::api::proto::{
-    Channel, DoublePoint, DoublePoints, IntegerPoint, IntegerPoints, Points, Series, StringPoint,
-    StringPoints, WriteRequestNominal,
-};
-use parking_lot::{Condvar, Mutex, MutexGuard};
 use std::collections::HashMap;
 use std::fmt::Debug;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::thread;
-use std::time::{Duration, Instant, UNIX_EPOCH};
-use tracing::{debug, error, info, warn};
+use std::time::Duration;
+use std::time::Instant;
+use std::time::UNIX_EPOCH;
+
+use conjure_object::BearerToken;
+use nominal_api::tonic::io::nominal::scout::api::proto::points::PointsType;
+use nominal_api::tonic::io::nominal::scout::api::proto::Channel;
+use nominal_api::tonic::io::nominal::scout::api::proto::DoublePoint;
+use nominal_api::tonic::io::nominal::scout::api::proto::DoublePoints;
+use nominal_api::tonic::io::nominal::scout::api::proto::IntegerPoint;
+use nominal_api::tonic::io::nominal::scout::api::proto::IntegerPoints;
+use nominal_api::tonic::io::nominal::scout::api::proto::Points;
+use nominal_api::tonic::io::nominal::scout::api::proto::Series;
+use nominal_api::tonic::io::nominal::scout::api::proto::StringPoint;
+use nominal_api::tonic::io::nominal::scout::api::proto::StringPoints;
+use nominal_api::tonic::io::nominal::scout::api::proto::WriteRequestNominal;
+use parking_lot::Condvar;
+use parking_lot::Mutex;
+use parking_lot::MutexGuard;
+use tracing::debug;
+use tracing::error;
+use tracing::info;
+use tracing::warn;
+
+use crate::consumer::WriteRequestConsumer;
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq, Ord, PartialOrd)]
 pub struct ChannelName(String);

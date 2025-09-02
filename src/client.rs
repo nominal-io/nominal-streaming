@@ -1,21 +1,28 @@
-use crate::stream::AuthProvider;
+use std::fmt::Debug;
+use std::fmt::Formatter;
+use std::io::Write;
+use std::sync::LazyLock;
+
 use conjure_error::Error;
 use conjure_http::client::AsyncClient;
 use conjure_http::client::AsyncRequestBody;
 use conjure_http::private::header::CONTENT_ENCODING;
 use conjure_http::private::header::CONTENT_TYPE;
-use conjure_http::private::{Request, Response};
+use conjure_http::private::Request;
+use conjure_http::private::Response;
 use conjure_object::BearerToken;
 use conjure_object::ResourceIdentifier;
-use conjure_runtime::{Agent, BodyWriter, Client};
-use conjure_runtime::{ResponseBody, UserAgent};
+use conjure_runtime::Agent;
+use conjure_runtime::BodyWriter;
+use conjure_runtime::Client;
+use conjure_runtime::ResponseBody;
+use conjure_runtime::UserAgent;
 use derive_more::From;
 use nominal_api::api::rids::NominalDataSourceOrDatasetRid;
 use snap::write::FrameEncoder;
-use std::fmt::{Debug, Formatter};
-use std::io::Write;
-use std::sync::LazyLock;
 use url::Url;
+
+use crate::stream::AuthProvider;
 
 pub mod conjure {
     pub use conjure_error as error;
@@ -66,10 +73,7 @@ impl Debug for StreamingClient {
 }
 
 impl StreamingClient {
-    pub async fn send(
-        &self,
-        req: WriteRequest<'_>,
-    ) -> Result<Response<ResponseBody>, Error> {
+    pub async fn send(&self, req: WriteRequest<'_>) -> Result<Response<ResponseBody>, Error> {
         self.0.send(req).await
     }
 }

@@ -1,5 +1,6 @@
 use std::error::Error;
 use std::fmt::Debug;
+
 use tracing::error;
 
 pub trait NominalStreamListener: Send + Sync + Debug {

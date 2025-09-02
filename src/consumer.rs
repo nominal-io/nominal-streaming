@@ -1,20 +1,28 @@
-use crate::client::{self, StreamingClient};
-use crate::notifier::NominalStreamListener;
-use crate::stream::AuthProvider;
-use apache_avro::types::{Record, Value};
+use std::error::Error;
+use std::fmt::Debug;
+use std::fmt::Formatter;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::LazyLock;
+
+use apache_avro::types::Record;
+use apache_avro::types::Value;
 use conjure_object::ResourceIdentifier;
 use nominal_api::tonic::google::protobuf::Timestamp;
 use nominal_api::tonic::io::nominal::scout::api::proto::points::PointsType;
-use nominal_api::tonic::io::nominal::scout::api::proto::{
-    DoublePoints, Points, Series, StringPoints, WriteRequestNominal,
-};
+use nominal_api::tonic::io::nominal::scout::api::proto::DoublePoints;
+use nominal_api::tonic::io::nominal::scout::api::proto::Points;
+use nominal_api::tonic::io::nominal::scout::api::proto::Series;
+use nominal_api::tonic::io::nominal::scout::api::proto::StringPoints;
+use nominal_api::tonic::io::nominal::scout::api::proto::WriteRequestNominal;
 use parking_lot::Mutex;
 use prost::Message;
-use std::error::Error;
-use std::fmt::{Debug, Formatter};
-use std::path::PathBuf;
-use std::sync::{Arc, LazyLock};
 use tracing::warn;
+
+use crate::client::StreamingClient;
+use crate::client::{self};
+use crate::notifier::NominalStreamListener;
+use crate::stream::AuthProvider;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConsumerError {
