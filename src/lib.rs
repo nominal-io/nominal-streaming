@@ -22,11 +22,13 @@ pub mod api {
 mod tests {
     use std::collections::HashMap;
     use std::sync::Mutex;
-    use std::time::{Instant, UNIX_EPOCH};
+    use std::time::UNIX_EPOCH;
+
     use crate::api::*;
-    use crate::consumer::{ConsumerResult, WriteRequestConsumer};
-    use crate::NominalDatasourceStream;
+    use crate::consumer::ConsumerResult;
+    use crate::consumer::WriteRequestConsumer;
     use crate::stream::NominalStreamOpts;
+    use crate::NominalDatasourceStream;
 
     #[derive(Debug)]
     struct TestDatasourceStream {
@@ -43,17 +45,19 @@ mod tests {
     #[test]
     fn test_stream() {
         let test_consumer = Box::new(TestDatasourceStream {
-            requests: Mutex::new(vec![])
+            requests: Mutex::new(vec![]),
         });
         let test_consumer = Box::leak(test_consumer);
-        let stream = NominalDatasourceStream::new_with_consumer(&*test_consumer, NominalStreamOpts {
-            max_points_per_record: 1000,
-            max_request_delay: Default::default(),
-            max_buffered_requests: 2,
-            request_dispatcher_tasks: 4,
-        });
+        let stream = NominalDatasourceStream::new_with_consumer(
+            &*test_consumer,
+            NominalStreamOpts {
+                max_points_per_record: 1000,
+                max_request_delay: Default::default(),
+                max_buffered_requests: 2,
+                request_dispatcher_tasks: 4,
+            },
+        );
 
-        let start = Instant::now();
         for batch in 0..5 {
             let mut points = Vec::new();
             for i in 0..1000 {
@@ -79,8 +83,10 @@ mod tests {
         let requests = test_consumer.requests.lock().unwrap();
 
         assert_eq!(requests.len(), 5);
-        let series = requests.get(0).unwrap().series.get(0).unwrap();
-        if let Some(PointsType::DoublePoints(points)) = series.points.as_ref().unwrap().points_type.as_ref() {
+        let series = requests.first().unwrap().series.first().unwrap();
+        if let Some(PointsType::DoublePoints(points)) =
+            series.points.as_ref().unwrap().points_type.as_ref()
+        {
             assert_eq!(points.points.len(), 1000);
         } else {
             panic!("unexpected data type");
