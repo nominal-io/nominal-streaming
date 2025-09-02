@@ -18,8 +18,10 @@ jobs:
         with:
           fetch-depth: 0
           token: ${{ secrets.NOMBOT_CLASSIC_PERSONAL_ACCESS_TOKEN }}
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      - name: Set rustup toolchain
+        run: rustup default stable
+      - name: Install protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
       - name: Run release-plz
         uses: release-plz/action@v0.5
         with:
@@ -44,8 +46,10 @@ jobs:
         with:
           fetch-depth: 0
           token: ${{ secrets.NOMBOT_CLASSIC_PERSONAL_ACCESS_TOKEN }}
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      - name: Set rustup toolchain
+        run: rustup default stable
+      - name: Install protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
       - name: Run release-plz
         uses: release-plz/action@v0.5
         with:
