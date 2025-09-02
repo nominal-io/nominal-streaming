@@ -7,7 +7,7 @@ The library aims to balance three concerns:
 1. Writes should fall back to disk if there are network failures.
 1. Backpressure should be applied to incoming requests when network throughput is saturated.
 
-As a library, the balance between these concerns can be configured (and even disabled entirely) to accommodate various use cases.
+The library provides configuration points to manage the tradeoff between these concerns.
 
 > [!WARNING]  
 > This library is still under active development and may make breaking changes.
