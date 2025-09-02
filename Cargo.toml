@@ -6,10 +6,10 @@ description = "Library for durable, low-latency streaming into Nominal Core"
 license = "MIT"
 
 [dependencies]
-conjure-error = "4.14.0"
-conjure-http = "4.14.0"
-conjure-object = "4.14.0"
-conjure-runtime = "6.1.0"
+conjure-error = "4"
+conjure-http = "4"
+conjure-object = "4"
+conjure-runtime = "6"
 nominal-api = "0.867.0"
 prost = "0.13"
 snap = "1"
@@ -21,7 +21,7 @@ apache-avro = { version = "0.17.0", features = ["snappy"] }
 derive_more = { version = "2", features = ["from"] }
 serde_json = "1.0.140"
 chrono = "0.4.41"
-thiserror = "1.0.69"
+thiserror = "2"
 crossbeam-channel = "0.5.15"
 
 [profile.release]

@@ -1307,7 +1307,7 @@ dependencies = [
  "prost",
  "serde_json",
  "snap",
- "thiserror 1.0.69",
+ "thiserror 2.0.16",
  "tokio",
  "tracing",
  "url",

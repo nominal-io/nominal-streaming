@@ -14,4 +14,6 @@ pub mod api {
     pub use nominal_api::tonic::io::nominal::scout::api::proto::DoublePoints;
     pub use nominal_api::tonic::io::nominal::scout::api::proto::StringPoint;
     pub use nominal_api::tonic::io::nominal::scout::api::proto::StringPoints;
+    pub use nominal_api::tonic::io::nominal::scout::api::proto::WriteRequest;
+    pub use nominal_api::tonic::io::nominal::scout::api::proto::WriteRequestNominal;
 }
