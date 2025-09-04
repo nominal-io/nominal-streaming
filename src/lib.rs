@@ -20,13 +20,13 @@ pub mod api {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
     use std::sync::Mutex;
     use std::time::UNIX_EPOCH;
 
     use crate::api::*;
     use crate::consumer::ConsumerResult;
     use crate::consumer::WriteRequestConsumer;
+    use crate::stream::ChannelDescriptor;
     use crate::stream::NominalStreamOpts;
     use crate::NominalDatasourceStream;
 
@@ -72,8 +72,7 @@ mod tests {
             }
 
             stream.enqueue(
-                "channel_1".into(),
-                HashMap::from_iter([("batch_id".to_string(), format!("{batch}"))].into_iter()),
+                &ChannelDescriptor::new("channel_1", [("batch_id", batch.to_string())]),
                 points,
             );
         }

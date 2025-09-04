@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::sync::atomic::AtomicBool;
@@ -32,15 +33,29 @@ use tracing::warn;
 
 use crate::consumer::WriteRequestConsumer;
 
+/// A descriptor for a channel.
+///
+/// Note that this is used internally to compare channels.
 #[derive(Clone, Debug, Eq, Hash, PartialEq, Ord, PartialOrd)]
-pub struct ChannelName(String);
+pub struct ChannelDescriptor {
+    /// The name of the channel.
+    pub name: String,
+    /// The tags associated with the channel.
+    pub tags: BTreeMap<String, String>,
+}
 
-#[derive(Clone, Debug, Eq, Hash, PartialEq, Ord, PartialOrd)]
-struct ChannelKey(ChannelName, Vec<(String, String)>);
-
-impl From<&str> for ChannelName {
-    fn from(name: &str) -> Self {
-        Self(name.to_string())
+impl ChannelDescriptor {
+    pub fn new(
+        name: impl Into<String>,
+        tags: impl IntoIterator<Item = (impl Into<String>, impl Into<String>)>,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            tags: tags
+                .into_iter()
+                .map(|(key, value)| (key.into(), value.into()))
+                .collect(),
+        }
     }
 }
 
@@ -174,12 +189,7 @@ impl NominalDatasourceStream {
         }
     }
 
-    pub fn enqueue(
-        &self,
-        channel: ChannelName,
-        tags: HashMap<String, String>,
-        new_points: impl IntoPoints,
-    ) {
+    pub fn enqueue(&self, channel_descriptor: &ChannelDescriptor, new_points: impl IntoPoints) {
         let new_points = new_points.into_points();
         let new_count = points_len(&new_points);
 
@@ -188,12 +198,14 @@ impl NominalDatasourceStream {
 
         if self.primary_buffer.has_capacity(new_count) {
             debug!("adding {} points to primary buffer", new_count);
-            self.primary_buffer.add_points(channel, tags, new_points);
+            self.primary_buffer
+                .add_points(channel_descriptor, new_points);
         } else if self.secondary_buffer.has_capacity(new_count) {
             // primary buffer is definitely full
             self.primary_handle.thread().unpark();
             debug!("adding {} points to secondary buffer", new_count);
-            self.secondary_buffer.add_points(channel, tags, new_points);
+            self.secondary_buffer
+                .add_points(channel_descriptor, new_points);
         } else {
             warn!("both buffers are full, picking least recently flushed buffer to add to");
             // both buffers are full - wait on the buffer that flushed least recently (i.e more
@@ -207,14 +219,14 @@ impl NominalDatasourceStream {
                 self.secondary_handle.thread().unpark();
                 &self.secondary_buffer
             };
-            buf.add_on_notify(channel, tags, new_points);
+            buf.add_on_notify(channel_descriptor, new_points);
             debug!("added points after wait to chosen buffer")
         }
     }
 }
 
 struct SeriesBuffer {
-    points: Mutex<HashMap<ChannelKey, PointsType>>,
+    points: Mutex<HashMap<ChannelDescriptor, PointsType>>,
     count: AtomicUsize,
     flush_time: AtomicU64,
     condvar: Condvar,
@@ -255,30 +267,21 @@ impl SeriesBuffer {
         count == 0 || count + new_points_count <= self.max_capacity
     }
 
-    fn add_points(
-        &self,
-        channel: ChannelName,
-        tags: HashMap<String, String>,
-        new_points: PointsType,
-    ) {
-        self.inner_add_points(channel, tags, new_points, self.points.lock());
+    fn add_points(&self, channel_descriptor: &ChannelDescriptor, new_points: PointsType) {
+        self.inner_add_points(channel_descriptor, new_points, self.points.lock());
     }
 
     fn inner_add_points(
         &self,
-        channel: ChannelName,
-        tags: HashMap<String, String>,
+        channel_descriptor: &ChannelDescriptor,
         new_points: PointsType,
-        mut points_guard: MutexGuard<HashMap<ChannelKey, PointsType>>,
+        mut points_guard: MutexGuard<HashMap<ChannelDescriptor, PointsType>>,
     ) {
-        let mut tags = tags.into_iter().collect::<Vec<_>>();
-        tags.sort();
         self.count
             .fetch_add(points_len(&new_points), Ordering::Release);
-        let key = ChannelKey(channel, tags);
-        match (points_guard.get_mut(&key), new_points) {
+        match (points_guard.get_mut(channel_descriptor), new_points) {
             (None, new_points) => {
-                points_guard.insert(key, new_points);
+                points_guard.insert(channel_descriptor.clone(), new_points);
             }
             (Some(PointsType::DoublePoints(points)), PointsType::DoublePoints(new_points)) => {
                 points
@@ -342,10 +345,8 @@ impl SeriesBuffer {
         );
         let result = points
             .drain()
-            .map(|(ChannelKey(channel_name, tags), points)| {
-                let channel = Channel {
-                    name: channel_name.0,
-                };
+            .map(|(ChannelDescriptor { name, tags }, points)| {
+                let channel = Channel { name };
                 let points_obj = Points {
                     points_type: Some(points),
                 };
@@ -371,12 +372,7 @@ impl SeriesBuffer {
         self.count.load(Ordering::Acquire)
     }
 
-    fn add_on_notify(
-        &self,
-        channel: ChannelName,
-        tags: HashMap<String, String>,
-        new_points: PointsType,
-    ) {
+    fn add_on_notify(&self, channel_descriptor: &ChannelDescriptor, new_points: PointsType) {
         let mut points_lock = self.points.lock();
         // concurrency bug without this - the buffer could have been emptied since we
         // checked the count, so this will wait forever & block any new points from entering
@@ -385,7 +381,7 @@ impl SeriesBuffer {
         } else {
             debug!("buffer emptied since last check, skipping condvar wait");
         }
-        self.inner_add_points(channel, tags, new_points, points_lock);
+        self.inner_add_points(channel_descriptor, new_points, points_lock);
     }
 
     fn notify(&self) -> bool {
