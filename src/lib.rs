@@ -118,7 +118,7 @@ mod tests {
 
         for point in 0..1_000 {
             let time = UNIX_EPOCH.elapsed().unwrap();
-            let value = (point % 50);
+            let value = point % 50;
             let point = DoublePoint {
                     timestamp: Some(Timestamp {
                         seconds: time.as_secs() as i64,
@@ -157,7 +157,6 @@ mod tests {
         assert_eq!(all_points.len(), flattened_points.len());
         assert_eq!(all_points, flattened_points);
 
-        // dbg!(&*requests);
         assert_eq!(requests.len(), 10);
         let series = requests.first().unwrap().series.first().unwrap();
         if let Some(PointsType::DoublePoints(points)) =
