@@ -91,6 +91,19 @@ impl IntoPoints for Vec<IntegerPoint> {
     }
 }
 
+// todo: can we avoid allocating a vec for single points?
+impl IntoPoints for DoublePoint {
+    fn into_points(self) -> PointsType {
+        vec![self].into_points()
+    }
+}
+
+impl IntoPoints for StringPoint {
+    fn into_points(self) -> PointsType {
+        vec![self].into_points()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct NominalStreamOpts {
     pub max_points_per_record: usize,
