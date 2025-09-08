@@ -45,7 +45,9 @@ pub struct ChannelDescriptor {
 }
 
 impl ChannelDescriptor {
-    pub fn new(
+
+    /// Creates a new channel descriptor from the given `name` and `tags`.
+    pub fn with_tags(
         name: impl Into<String>,
         tags: impl IntoIterator<Item = (impl Into<String>, impl Into<String>)>,
     ) -> Self {
