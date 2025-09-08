@@ -45,6 +45,15 @@ pub struct ChannelDescriptor {
 }
 
 impl ChannelDescriptor {
+    /// Creates a new channel descriptor from the given `name`.
+    ///
+    /// If you would like to include tags, see also [`Self::new_with_tags`].
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            tags: BTreeMap::new(),
+        }
+    }
 
     /// Creates a new channel descriptor from the given `name` and `tags`.
     pub fn with_tags(
