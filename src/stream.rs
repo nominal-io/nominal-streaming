@@ -1,3 +1,4 @@
+use std::any::Any;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::fmt::Debug;
@@ -205,9 +206,11 @@ impl NominalDatasourceStream {
         channel_descriptor: &'a ChannelDescriptor,
     ) -> NominalDoubleWriter<'a> {
         NominalDoubleWriter {
-            channel: channel_descriptor,
-            stream: self,
-            unflushed: vec![],
+            writer: NominalChannelWriter {
+                channel: channel_descriptor,
+                stream: self,
+                unflushed: vec![],
+            }
         }
     }
 
@@ -255,43 +258,89 @@ impl NominalDatasourceStream {
     }
 }
 
-pub struct NominalDoubleWriter<'ds> {
+pub struct NominalChannelWriter<'ds, T> where Vec<T>: IntoPoints {
     channel: &'ds ChannelDescriptor,
     stream: &'ds NominalDatasourceStream,
-    unflushed: Vec<DoublePoint>,
+    unflushed: Vec<T>
 }
 
-impl<'ds> NominalDoubleWriter<'ds> {
-    pub fn push(&mut self, ts: Duration, value: f64) {
+impl <'ds, T> NominalChannelWriter<'ds, T> where Vec<T>: IntoPoints {
+    fn push_point(&mut self, point: T) {
         // todo: time based check as well?
         if self.unflushed.len() >= self.stream.opts.max_points_per_record {
             self.flush();
         }
-        self.unflushed.push(DoublePoint {
-            timestamp: Some(Timestamp {
-                seconds: ts.as_secs() as i64,
-                nanos: ts.subsec_nanos() as i32,
-            }),
-            value,
-        });
+        self.unflushed.push(point);
     }
 
-    pub fn flush(&mut self) {
-        info!(
+    fn flush(&mut self) {
+        debug!(
             "flushing double writer with {} points",
             self.unflushed.len()
         );
         self.stream.when_capacity(self.unflushed.len(), |mut f| {
-            f.extend_doubles(self.channel, self.unflushed.drain(..));
+            let to_flush: Vec<T> = self.unflushed.drain(..).collect();
+            f.extend(self.channel, to_flush);
         })
     }
+
 }
 
-impl Drop for NominalDoubleWriter<'_> {
+impl <T> Drop for NominalChannelWriter<'_, T> where Vec<T>: IntoPoints {
     fn drop(&mut self) {
         self.flush();
     }
 }
+
+pub struct NominalDoubleWriter<'ds> {
+    writer: NominalChannelWriter<'ds, DoublePoint>
+}
+
+impl NominalDoubleWriter<'_> {
+    pub fn push(&mut self, timestamp: Duration, value: f64) {
+        self.writer.push_point(DoublePoint {
+            timestamp: Some(Timestamp {
+                seconds: timestamp.as_secs() as i64,
+                nanos: timestamp.subsec_nanos() as i32,
+            }),
+            value,
+        });
+    }
+}
+
+pub struct NominalIntegerWriter<'ds> {
+    writer: NominalChannelWriter<'ds, IntegerPoint>
+}
+
+impl NominalIntegerWriter<'_> {
+    pub fn push(&mut self, timestamp: Duration, value: i64) {
+        self.writer.push_point(IntegerPoint {
+            timestamp: Some(Timestamp {
+                seconds: timestamp.as_secs() as i64,
+                nanos: timestamp.subsec_nanos() as i32,
+            }),
+            value,
+        });
+    }
+}
+
+pub struct NominalStringWriter<'ds> {
+    writer: NominalChannelWriter<'ds, StringPoint>
+}
+
+
+impl NominalStringWriter<'_> {
+    pub fn push(&mut self, timestamp: Duration, value: impl Into<String>) {
+        self.writer.push_point(StringPoint {
+            timestamp: Some(Timestamp {
+                seconds: timestamp.as_secs() as i64,
+                nanos: timestamp.subsec_nanos() as i32,
+            }),
+            value: value.into(),
+        });
+    }
+}
+
 
 struct SeriesBuffer {
     points: Mutex<HashMap<ChannelDescriptor, PointsType>>,
@@ -307,6 +356,33 @@ struct SeriesBufferGuard<'sb> {
 }
 
 impl<'sb> SeriesBufferGuard<'sb> {
+    fn extend<I: IntoPoints>(&mut self, channel_descriptor: &ChannelDescriptor, points: I) {
+        let points = points.into_points();
+        let new_point_count = points_len(&points);
+
+        if !self.sb.contains_key(channel_descriptor) {
+            self.sb.insert(channel_descriptor.clone(), points);
+        } else {
+            match (self.sb.get_mut(channel_descriptor).unwrap(), points) {
+                (PointsType::DoublePoints(existing), PointsType::DoublePoints(new)) => {
+                    existing.points.extend(new.points)
+                }
+                (PointsType::StringPoints(existing), PointsType::StringPoints(new)) => {
+                    existing.points.extend(new.points)
+                }
+                (PointsType::IntegerPoints(existing), PointsType::IntegerPoints(new)) => {
+                    existing.points.extend(new.points)
+                }
+                (_, _) => {
+                    // todo: improve error
+                    panic!("mismatched types");
+                }
+            }
+        }
+
+        self.count.fetch_add(new_point_count, Ordering::Release);
+    }
+
     fn extend_doubles<I: IntoIterator<Item = DoublePoint>>(
         &mut self,
         channel_descriptor: &ChannelDescriptor,
