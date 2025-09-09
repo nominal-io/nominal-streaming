@@ -14,14 +14,52 @@ The library provides configuration points to manage the tradeoff between these c
 
 You can view the crate documentation at https://docs.rs/nominal-streaming/latest/nominal_streaming/
 
-## Concepts
+## Conceptual overview
 
-While streaming, there will be a provider (the origin of the data) and a consumer (which receives the data).
-E.g., when streaming to the Nominal platform, we will be streaming from memory into a `NominalCoreConsumer`.
+first an "overview" for general usage pattern, which is "create consumers for the points, then create the NominalDatasourceStream and enqueue points" - with minimal/one-line code snippets
+then, a "streaming to Nominal Core" section, which specifically uses the NominalCoreConsumer + mentions the need for a tokio runtime
+
+Data points will be sent to a Consumer.
+The Consumer is responsible for, e.g., sending the data to Nominal Core, or for saving it to disk.
+A [NominalDatasourceStream](https://docs.rs/nominal-streaming/latest/nominal_streaming/stream/struct.NominalDatasourceStream.html) is the mechanism by which data points are fed to the consumer.
+
+We construct a stream from a consumer as follows:
+
+```rust
+use nominal_streaming::consumer::AvroFileConsumer;
+
+let consumer = AvroFileConsumer::new_with_full_path("/tmp/my_stream.avro").expect("Could not open Avro file");
+let stream = NominalDatasourceStream::new_with_consumer(consumer, NominalStreamOpts::default());
+```
+
+Recall that the consumer takes the data points, and sends it somewhere—in this case, into an Avro file.
+We can now push data onto the stream:
+
+```rust
+let mut points = Vec::new();
+
+// ... add data onto points ...
+points.push(DoublePoint {
+    timestamp: Timestamp {
+      seconds: 0,
+      nanos: 0
+    },
+    value: 123.45
+});
+
+// Stream to Avro file
+stream.enqueue(
+    &ChannelDescriptor::new("channel_1", [("name", "my stream"), ("batch", "1")]),
+    points,
+);
+```
+
+Note that we are enquing our data onto Channel 1, with tags "name" and "batch".
 
 ## Stream options
 
-Below, you will see examples using `NominalStreamOpts::default`. The following stream options can be set:
+Above, you saw an example using `NominalStreamOpts::default`. The
+following stream options can be set:
 
 ```rust
 NominalStreamOpts {
@@ -32,9 +70,7 @@ NominalStreamOpts {
 }
 ```
 
-## Usage examples
-
-### Streaming from memory to Nominal
+## Full example: streaming from memory to Nominal Core
 
 In this simplest case, we want to stream some values from memory in a [Nominal Dataset](https://docs.nominal.io/core/sdk/python-client/streaming/overview#streaming-data-to-a-dataset).
 
