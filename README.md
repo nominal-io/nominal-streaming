@@ -173,3 +173,61 @@ let stream = NominalDatasourceStream::new_with_consumer(
 ```
 
 Similarly, you can use `DualWriteRequestConsumer` to send data to two consumers simultaneously.
+
+## Logging errors
+
+Most of the time, when things go wrong, we also want some form of reporting.
+That is the purpose of the `ListeningWriteRequestConsumer`:
+
+```rust
+use nominal_streaming::consumer::ListeningWriteRequestConsumer;
+use nominal_streaming::notifier::LoggingListener;
+use std::sync::Arc;
+
+let consumer_with_logging = ListeningWriteRequestConsumer::new(
+    core_consumer(),
+    vec![Arc::new(LoggingListener)]
+);
+```
+
+You'll also need to enable tracing in `main`:
+
+```rust
+use tracing::level_filters::LevelFilter;
+use tracing_subscriber::EnvFilter;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
+
+tracing_subscriber::registry()
+.with(
+    tracing_subscriber::fmt::layer()
+        .with_thread_ids(true)
+        .with_thread_names(true)
+        .with_line_number(true),
+)
+.with(
+    EnvFilter::builder()
+        .with_default_directive(LevelFilter::DEBUG.into())
+        .from_env_lossy()
+)
+.init();
+```
+
+If you want to avoid printing full tracebacks for errors, customize the error printing:
+
+```rust
+use nominal_streaming::notifier::NominalStreamListener;
+use std::error::Error;
+use tracing::error;
+
+#[derive(Debug, Default, Clone)]
+pub struct MyListener;
+
+impl NominalStreamListener for MyListener {
+    fn on_error(&self, message: &str, _error: &dyn Error) {
+        error!("{}", message);
+    }
+}
+
+let stream = ListeningWriteRequestConsumer::new(core_consumer(), vec![Arc::new(MyListener)]);
+```
