@@ -11,7 +11,7 @@ use nominal_api::tonic::io::nominal::scout::api::proto::IntegerPoints;
 use nominal_api::tonic::io::nominal::scout::api::proto::StringPoint;
 use nominal_api::tonic::io::nominal::scout::api::proto::StringPoints;
 
-const NANOS_PER_SECOND: u64 = 1_000_000_000;
+const NANOS_PER_SECOND: i64 = 1_000_000_000;
 
 /// A descriptor for a channel.
 ///
@@ -101,7 +101,7 @@ impl<T: chrono::TimeZone> IntoTimestamp for chrono::DateTime<T> {
     }
 }
 
-impl IntoTimestamp for u64 {
+impl IntoTimestamp for i64 {
     fn into_timestamp(self) -> Timestamp {
         Timestamp {
             seconds: (self / NANOS_PER_SECOND) as i64,
