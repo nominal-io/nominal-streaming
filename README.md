@@ -39,16 +39,8 @@ NominalStreamOpts {
 In this simplest case, we want to stream some values from memory in a [Nominal Dataset](https://docs.nominal.io/core/sdk/python-client/streaming/overview#streaming-data-to-a-dataset).
 
 ```rust
-use nominal_streaming::NominalDatasourceStream;
-use nominal_streaming::api::{
-    BearerToken, ResourceIdentifier, Timestamp, DoublePoint
-};
-use nominal_streaming::client::STAGING_STREAMING_CLIENT;
-use nominal_streaming::consumer::NominalCoreConsumer;
-use nominal_streaming::stream::NominalStreamOpts;
-
+use nominal_streaming::prelude::*;
 use std::time::UNIX_EPOCH;
-use std::collections::HashMap;
 
 
 static DATA_SOURCE_RID: &str =
@@ -110,8 +102,7 @@ async fn async_main() {
         // Push current batch onto the upload queue
         println!("Enqueue batch: {}", batch);
         stream.enqueue(
-            "channel_1".into(),
-            HashMap::from([("batch_id".to_string(), batch.to_string())]),
+            &ChannelDescriptor::new("channel_1", [("batch_id", batch.to_string())]),
             points,
         );
     }
@@ -123,6 +114,6 @@ The `Cargo.toml` will contain the following dependencies:
 ```toml
 [dependencies]
 nominal-api = "0.867.0"
-nominal-streaming = "0.1.1"
+nominal-streaming = "0.2.0"
 tokio = { version = "1", features = ["full", "tracing"] }
 ```
