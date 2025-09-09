@@ -174,13 +174,7 @@ impl NominalDatasourceStream {
         let new_points = new_points.into_points();
         let new_count = points_len(&new_points);
 
-        self.when_capacity(new_count, |mut sb| match new_points {
-            PointsType::DoublePoints(dp) => {
-                sb.extend_doubles(channel_descriptor, dp.points);
-            }
-            PointsType::StringPoints(_) => todo!("string points in new structure"),
-            PointsType::IntegerPoints(_) => todo!("int points in new structure"),
-        });
+        self.when_capacity(new_count, |mut sb| sb.extend(channel_descriptor, new_points));
     }
 
     fn when_capacity(&self, new_count: usize, f: impl FnOnce(SeriesBufferGuard)) {

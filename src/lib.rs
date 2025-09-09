@@ -138,8 +138,8 @@ mod tests {
         let (test_consumer, stream) = create_test_stream();
 
         let cd1 = ChannelDescriptor::channel("double");
-        let cd2 = ChannelDescriptor::channel("int");
-        let cd3 = ChannelDescriptor::channel("string");
+        let cd2 = ChannelDescriptor::channel("string");
+        let cd3 = ChannelDescriptor::channel("int");
         let mut double_writer = stream.double_writer(&cd1);
         let mut string_writer = stream.string_writer(&cd2);
         let mut integer_writer = stream.integer_writer(&cd3);
@@ -172,12 +172,12 @@ mod tests {
             panic!("invalid double points type");
         };
 
-        let PointsType::StringPoints(sp) = r.get("string").unwrap() else {
-            panic!("invalid string points type: {:?}", r.get("string").unwrap());
-        };
-
         let PointsType::IntegerPoints(ip) = r.get("int").unwrap() else {
             panic!("invalid int points type");
+        };
+
+        let PointsType::StringPoints(sp) = r.get("string").unwrap() else {
+            panic!("invalid string points type");
         };
 
         // collect() overwrites into a single request
