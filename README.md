@@ -52,10 +52,11 @@ stream.enqueue(
 ```
 
 Note that we are enquing our data onto Channel 1, with tags "name" and "batch".
+These are just examples, you can choose your own.
 
 ## Stream options
 
-Above, you saw an example using `NominalStreamOpts::default`. The
+Above, you saw an example using [`NominalStreamOpts::default`](https://docs.rs/nominal-streaming/latest/nominal_streaming/stream/struct.NominalStreamOpts.html). The
 following stream options can be set:
 
 ```rust
@@ -71,7 +72,7 @@ NominalStreamOpts {
 
 In this simplest case, we want to stream some values from memory into a [Nominal Dataset](https://docs.nominal.io/core/sdk/python-client/streaming/overview#streaming-data-to-a-dataset).
 
-Note that the `NominalCoreConsumer` requires the async [Tokio runtime](https://tokio.rs/).
+Note that the [`NominalCoreConsumer`](https://docs.rs/nominal-streaming/latest/nominal_streaming/consumer/struct.NominalCoreConsumer.html) requires the async [Tokio runtime](https://tokio.rs/).
 
 ```rust
 use nominal_streaming::prelude::*;
@@ -208,6 +209,13 @@ tracing_subscriber::registry()
         .from_env_lossy()
 )
 .init();
+```
+
+And add the necessary tracing dependencies to `Cargo.toml`:
+
+```toml
+tracing = "^0.1"
+tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 ```
 
 If you want to avoid printing full tracebacks for errors, customize the error printing:
