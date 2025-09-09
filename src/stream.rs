@@ -42,7 +42,7 @@ pub struct ChannelDescriptor {
     /// The name of the channel.
     pub name: String,
     /// The tags associated with the channel.
-    pub tags: BTreeMap<String, String>,
+    pub tags: Option<BTreeMap<String, String>>,
 }
 
 impl ChannelDescriptor {
@@ -52,17 +52,17 @@ impl ChannelDescriptor {
     ) -> Self {
         Self {
             name: name.into(),
-            tags: tags
+            tags: Some(tags
                 .into_iter()
                 .map(|(key, value)| (key.into(), value.into()))
-                .collect(),
+                .collect()),
         }
     }
 
     pub fn channel(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
-            tags: BTreeMap::new(),
+            tags: None,
         }
     }
 }
@@ -210,7 +210,7 @@ impl NominalDatasourceStream {
         }
     }
 
-    pub fn enqueue_batch(
+    pub fn enqueue(
         &self,
         channel_descriptor: &ChannelDescriptor,
         new_points: impl IntoPoints,
@@ -392,7 +392,7 @@ impl SeriesBuffer {
                 };
                 Series {
                     channel: Some(channel),
-                    tags: tags.into_iter().collect(),
+                    tags: tags.unwrap_or_default().into_iter().collect(),
                     points: Some(points_obj),
                 }
             })

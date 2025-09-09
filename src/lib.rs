@@ -74,7 +74,7 @@ mod tests {
                 });
             }
 
-            stream.enqueue_batch(
+            stream.enqueue(
                 &ChannelDescriptor::new("channel_1", [("batch_id", batch.to_string())]),
                 points,
             );
