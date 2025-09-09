@@ -28,8 +28,8 @@ We construct a stream from a consumer as follows:
 ```rust
 use nominal_streaming::consumer::AvroFileConsumer;
 
-let consumer = AvroFileConsumer::new_with_full_path("/tmp/my_stream.avro").expect("Could not open Avro file");
-let stream = NominalDatasourceStream::new_with_consumer(consumer, NominalStreamOpts::default());
+let avro_consumer = AvroFileConsumer::new_with_full_path("/tmp/my_stream.avro").expect("Could not open Avro file");
+let stream = NominalDatasourceStream::new_with_consumer(avro_consumer, NominalStreamOpts::default());
 ```
 
 Recall that the consumer takes the data points, and sends it somewhere—in this case, into an Avro file.
@@ -72,7 +72,9 @@ NominalStreamOpts {
 
 ## Full example: streaming from memory to Nominal Core
 
-In this simplest case, we want to stream some values from memory in a [Nominal Dataset](https://docs.nominal.io/core/sdk/python-client/streaming/overview#streaming-data-to-a-dataset).
+In this simplest case, we want to stream some values from memory into a [Nominal Dataset](https://docs.nominal.io/core/sdk/python-client/streaming/overview#streaming-data-to-a-dataset).
+
+Note that the `NominalCoreConsumer` requires the async [Tokio runtime](https://tokio.rs/).
 
 ```rust
 use nominal_streaming::prelude::*;
@@ -153,3 +155,21 @@ nominal-api = "0.867.0"
 nominal-streaming = "0.2.0"
 tokio = { version = "1", features = ["full", "tracing"] }
 ```
+
+## Streaming with fallback
+
+Often, it is imperative that we capture data values even when a
+network connection is interrupted. For that purpose, the library has
+support for a fallback, so that it attempts to write to a secondary
+consumer if the first one fails:
+
+```rust
+use nominal_streaming::consumer::RequestConsumerWithFallback;
+
+let stream = NominalDatasourceStream::new_with_consumer(
+    RequestConsumerWithFallback::new(core_consumer(), avro_consumer),
+    NominalStreamOpts::default(),
+);
+```
+
+Similarly, you can use `DualWriteRequestConsumer` to send data to two consumers simultaneously.
