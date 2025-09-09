@@ -16,9 +16,6 @@ You can view the crate documentation at https://docs.rs/nominal-streaming/latest
 
 ## Conceptual overview
 
-first an "overview" for general usage pattern, which is "create consumers for the points, then create the NominalDatasourceStream and enqueue points" - with minimal/one-line code snippets
-then, a "streaming to Nominal Core" section, which specifically uses the NominalCoreConsumer + mentions the need for a tokio runtime
-
 Data points will be sent to a Consumer.
 The Consumer is responsible for, e.g., sending the data to Nominal Core, or for saving it to disk.
 A [NominalDatasourceStream](https://docs.rs/nominal-streaming/latest/nominal_streaming/stream/struct.NominalDatasourceStream.html) is the mechanism by which data points are fed to the consumer.
