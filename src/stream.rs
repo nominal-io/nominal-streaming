@@ -12,6 +12,7 @@ use std::time::Instant;
 use std::time::UNIX_EPOCH;
 
 use conjure_object::BearerToken;
+use nominal_api::tonic::google::protobuf::Timestamp;
 use nominal_api::tonic::io::nominal::scout::api::proto::points::PointsType;
 use nominal_api::tonic::io::nominal::scout::api::proto::Channel;
 use nominal_api::tonic::io::nominal::scout::api::proto::DoublePoint;
@@ -23,9 +24,9 @@ use nominal_api::tonic::io::nominal::scout::api::proto::Series;
 use nominal_api::tonic::io::nominal::scout::api::proto::StringPoint;
 use nominal_api::tonic::io::nominal::scout::api::proto::StringPoints;
 use nominal_api::tonic::io::nominal::scout::api::proto::WriteRequestNominal;
-use parking_lot::Condvar;
+use parking_lot::{Condvar, MutexGuard, RawMutex};
+use parking_lot::lock_api::MappedMutexGuard;
 use parking_lot::Mutex;
-use parking_lot::MutexGuard;
 use tracing::debug;
 use tracing::error;
 use tracing::info;
@@ -55,6 +56,13 @@ impl ChannelDescriptor {
                 .into_iter()
                 .map(|(key, value)| (key.into(), value.into()))
                 .collect(),
+        }
+    }
+
+    pub fn channel(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            tags: BTreeMap::new(),
         }
     }
 }
@@ -111,6 +119,7 @@ impl Default for NominalStreamOpts {
 }
 
 pub struct NominalDatasourceStream {
+    opts: NominalStreamOpts,
     running: Arc<AtomicBool>,
     unflushed_points: Arc<AtomicUsize>,
     primary_buffer: Arc<SeriesBuffer>,
@@ -180,6 +189,7 @@ impl NominalDatasourceStream {
         }
 
         NominalDatasourceStream {
+            opts,
             running,
             unflushed_points,
             primary_buffer,
@@ -189,27 +199,44 @@ impl NominalDatasourceStream {
         }
     }
 
-    pub fn enqueue(&self, channel_descriptor: &ChannelDescriptor, new_points: impl IntoPoints) {
+    pub fn double_writer<'a>(&'a self, channel_descriptor: &'a ChannelDescriptor) -> NominalDoubleWriter<'a> {
+        NominalDoubleWriter {
+            channel: channel_descriptor,
+            stream: self,
+            unflushed: vec![]
+        }
+    }
+
+    pub fn enqueue_batch(&self, channel_descriptor: &ChannelDescriptor, new_points: impl IntoPoints) {
         let new_points = new_points.into_points();
         let new_count = points_len(&new_points);
 
-        self.unflushed_points
-            .fetch_add(new_count, Ordering::Release);
+        self.when_capacity(new_count, |sb| {
+            match new_points {
+                PointsType::DoublePoints(dp) => {
+                    sb.double_mut(channel_descriptor).extend(dp.points)
+                }
+                PointsType::StringPoints(_) => todo!("string points in new structure"),
+                PointsType::IntegerPoints(_) => todo!("int points in new structure"),
+            }
+        });
+    }
+
+    fn when_capacity(&self, new_count: usize, f: impl FnOnce(SeriesBufferGuard)) {
+        self.unflushed_points.fetch_add(new_count, Ordering::Release);
 
         if self.primary_buffer.has_capacity(new_count) {
             debug!("adding {} points to primary buffer", new_count);
-            self.primary_buffer
-                .add_points(channel_descriptor, new_points);
+            f(self.primary_buffer.lock());
+            self.primary_buffer.count.fetch_add(new_count, Ordering::Release);
         } else if self.secondary_buffer.has_capacity(new_count) {
             // primary buffer is definitely full
             self.primary_handle.thread().unpark();
             debug!("adding {} points to secondary buffer", new_count);
-            self.secondary_buffer
-                .add_points(channel_descriptor, new_points);
+            f(self.secondary_buffer.lock());
+            self.primary_buffer.count.fetch_add(new_count, Ordering::Release);
         } else {
-            warn!("both buffers are full, picking least recently flushed buffer to add to");
-            // both buffers are full - wait on the buffer that flushed least recently (i.e more
-            // likely that it's nearly done)
+            warn!("both buffers full, picking least recently flushed buffer to append single point");
             let buf = if self.primary_buffer < self.secondary_buffer {
                 debug!("waiting for primary buffer to flush...");
                 self.primary_handle.thread().unpark();
@@ -219,9 +246,46 @@ impl NominalDatasourceStream {
                 self.secondary_handle.thread().unpark();
                 &self.secondary_buffer
             };
-            buf.add_on_notify(channel_descriptor, new_points);
-            debug!("added points after wait to chosen buffer")
+
+            buf.on_notify(f);
+            buf.count.fetch_add(new_count, Ordering::Release);
         }
+
+    }
+}
+
+pub struct NominalDoubleWriter<'ds> {
+    channel: &'ds ChannelDescriptor,
+    stream: &'ds NominalDatasourceStream,
+    unflushed: Vec<DoublePoint>,
+}
+
+impl <'ds> NominalDoubleWriter<'ds> {
+    pub fn push(&mut self, ts: Duration, value: f64) {
+        // todo: time based check as well?
+        if self.unflushed.len() >= self.stream.opts.max_points_per_record {
+            self.flush();
+        }
+        self.unflushed.push(DoublePoint {
+            timestamp: Some(Timestamp {
+                seconds: ts.as_secs() as i64,
+                nanos: ts.subsec_nanos() as i32,
+            }),
+            value
+        });
+    }
+
+    pub fn flush(&mut self) {
+        info!("flushing double writer with {} points", self.unflushed.len());
+        self.stream.when_capacity(self.unflushed.len(), |f| {
+            f.double_mut(self.channel).extend(self.unflushed.drain(..));
+        })
+    }
+}
+
+impl Drop for NominalDoubleWriter<'_> {
+    fn drop(&mut self) {
+        self.flush();
     }
 }
 
@@ -231,6 +295,27 @@ struct SeriesBuffer {
     flush_time: AtomicU64,
     condvar: Condvar,
     max_capacity: usize,
+}
+
+struct SeriesBufferGuard<'sb> {
+    sb: MutexGuard<'sb, HashMap<ChannelDescriptor, PointsType>>
+}
+
+impl <'sb> SeriesBufferGuard<'sb> {
+    fn double_mut(mut self, channel_descriptor: &'sb ChannelDescriptor) -> MappedMutexGuard<'sb, RawMutex, Vec<DoublePoint>> {
+        if !self.sb.contains_key(channel_descriptor) {
+            self.sb.insert(channel_descriptor.clone(), PointsType::DoublePoints(Default::default()));
+        }
+
+        MutexGuard::map(self.sb, |sb| {
+            match sb.get_mut(channel_descriptor) {
+                Some(PointsType::DoublePoints(dp)) => &mut dp.points,
+                None => unreachable!(),
+                _ => panic!("invalid type"),
+            }
+        })
+    }
+
 }
 
 impl PartialEq for SeriesBuffer {
@@ -267,73 +352,9 @@ impl SeriesBuffer {
         count == 0 || count + new_points_count <= self.max_capacity
     }
 
-    fn add_points(&self, channel_descriptor: &ChannelDescriptor, new_points: PointsType) {
-        self.inner_add_points(channel_descriptor, new_points, self.points.lock());
-    }
-
-    fn inner_add_points(
-        &self,
-        channel_descriptor: &ChannelDescriptor,
-        new_points: PointsType,
-        mut points_guard: MutexGuard<HashMap<ChannelDescriptor, PointsType>>,
-    ) {
-        self.count
-            .fetch_add(points_len(&new_points), Ordering::Release);
-        match (points_guard.get_mut(channel_descriptor), new_points) {
-            (None, new_points) => {
-                points_guard.insert(channel_descriptor.clone(), new_points);
-            }
-            (Some(PointsType::DoublePoints(points)), PointsType::DoublePoints(new_points)) => {
-                points
-                    .points
-                    .extend_from_slice(new_points.points.as_slice());
-            }
-            (Some(PointsType::StringPoints(points)), PointsType::StringPoints(new_points)) => {
-                points
-                    .points
-                    .extend_from_slice(new_points.points.as_slice());
-            }
-            (Some(PointsType::IntegerPoints(points)), PointsType::IntegerPoints(new_points)) => {
-                points
-                    .points
-                    .extend_from_slice(new_points.points.as_slice());
-            }
-            (Some(PointsType::DoublePoints(_)), PointsType::StringPoints(_)) => {
-                // todo: return an error instead of panicking
-                panic!(
-                    "attempting to add points of the wrong type to an existing channel. expected: double. provided: string"
-                )
-            }
-            (Some(PointsType::DoublePoints(_)), PointsType::IntegerPoints(_)) => {
-                // todo: return an error instead of panicking
-                panic!(
-                    "attempting to add points of the wrong type to an existing channel. expected: double. provided: string"
-                )
-            }
-            (Some(PointsType::StringPoints(_)), PointsType::DoublePoints(_)) => {
-                // todo: return an error instead of panicking
-                panic!(
-                    "attempting to add points of the wrong type to an existing channel. expected: string. provided: double"
-                )
-            }
-            (Some(PointsType::StringPoints(_)), PointsType::IntegerPoints(_)) => {
-                // todo: return an error instead of panicking
-                panic!(
-                    "attempting to add points of the wrong type to an existing channel. expected: string. provided: double"
-                )
-            }
-            (Some(PointsType::IntegerPoints(_)), PointsType::DoublePoints(_)) => {
-                // todo: return an error instead of panicking
-                panic!(
-                    "attempting to add points of the wrong type to an existing channel. expected: string. provided: double"
-                )
-            }
-            (Some(PointsType::IntegerPoints(_)), PointsType::StringPoints(_)) => {
-                // todo: return an error instead of panicking
-                panic!(
-                    "attempting to add points of the wrong type to an existing channel. expected: string. provided: double"
-                )
-            }
+    fn lock(&self) -> SeriesBufferGuard<'_> {
+        SeriesBufferGuard {
+            sb: self.points.lock()
         }
     }
 
@@ -372,7 +393,7 @@ impl SeriesBuffer {
         self.count.load(Ordering::Acquire)
     }
 
-    fn add_on_notify(&self, channel_descriptor: &ChannelDescriptor, new_points: PointsType) {
+    fn on_notify(&self, on_notify: impl FnOnce(SeriesBufferGuard)) {
         let mut points_lock = self.points.lock();
         // concurrency bug without this - the buffer could have been emptied since we
         // checked the count, so this will wait forever & block any new points from entering
@@ -381,8 +402,11 @@ impl SeriesBuffer {
         } else {
             debug!("buffer emptied since last check, skipping condvar wait");
         }
-        self.inner_add_points(channel_descriptor, new_points, points_lock);
+        on_notify(SeriesBufferGuard {
+            sb: points_lock
+        });
     }
+
 
     fn notify(&self) -> bool {
         self.condvar.notify_one()

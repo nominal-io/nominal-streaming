@@ -74,7 +74,7 @@ mod tests {
                 });
             }
 
-            stream.enqueue(
+            stream.enqueue_batch(
                 &ChannelDescriptor::new("channel_1", [("batch_id", batch.to_string())]),
                 points,
             );
@@ -93,5 +93,48 @@ mod tests {
         } else {
             panic!("unexpected data type");
         }
+    }
+
+    #[test_log::test]
+    fn test_writer() {
+        let test_consumer = Box::new(TestDatasourceStream {
+            requests: Mutex::new(vec![]),
+        });
+        let test_consumer = Box::leak(test_consumer);
+        let stream = NominalDatasourceStream::new_with_consumer(
+            &*test_consumer,
+            NominalStreamOpts {
+                max_points_per_record: 1000,
+                max_request_delay: Default::default(),
+                max_buffered_requests: 2,
+                request_dispatcher_tasks: 4,
+            },
+        );
+
+        let cd = ChannelDescriptor::channel("channel_1");
+        let mut writer = stream.double_writer(&cd);
+
+        for i in 0..5000 {
+            let start_time = UNIX_EPOCH.elapsed().unwrap();
+            let value = i % 50;
+            writer.push(start_time, value as f64);
+        }
+        writer.flush();
+
+        drop(writer); // flush points to stream
+        drop(stream); // flush stream to nominal
+
+        let requests = test_consumer.requests.lock().unwrap();
+
+        assert_eq!(requests.len(), 5);
+        let series = requests.first().unwrap().series.first().unwrap();
+        if let Some(PointsType::DoublePoints(points)) =
+            series.points.as_ref().unwrap().points_type.as_ref()
+        {
+            assert_eq!(points.points.len(), 1000);
+        } else {
+            panic!("unexpected data type");
+        }
+
     }
 }
