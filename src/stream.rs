@@ -144,6 +144,32 @@ impl NominalDatasourceStream {
         }
     }
 
+    pub fn string_writer<'a>(
+        &'a self,
+        channel_descriptor: &'a ChannelDescriptor,
+    ) -> NominalStringWriter<'a> {
+        NominalStringWriter {
+            writer: NominalChannelWriter {
+                channel: channel_descriptor,
+                stream: self,
+                unflushed: vec![],
+            },
+        }
+    }
+
+    pub fn integer_writer<'a>(
+        &'a self,
+        channel_descriptor: &'a ChannelDescriptor,
+    ) -> NominalIntegerWriter<'a> {
+        NominalIntegerWriter {
+            writer: NominalChannelWriter {
+                channel: channel_descriptor,
+                stream: self,
+                unflushed: vec![],
+            },
+        }
+    }
+
     pub fn enqueue(&self, channel_descriptor: &ChannelDescriptor, new_points: impl IntoPoints) {
         let new_points = new_points.into_points();
         let new_count = points_len(&new_points);

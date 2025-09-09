@@ -27,10 +27,10 @@ pub mod prelude {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
     use std::sync::Arc;
     use std::sync::Mutex;
     use std::time::UNIX_EPOCH;
-
     use crate::consumer::ConsumerResult;
     use crate::consumer::WriteRequestConsumer;
     use crate::prelude::*;
@@ -134,35 +134,55 @@ mod tests {
     }
 
     #[test_log::test]
-    fn test_dual_writers() {
+    fn test_writer_types() {
         let (test_consumer, stream) = create_test_stream();
 
-        let cd1 = ChannelDescriptor::channel("channel_1");
-        let cd2 = ChannelDescriptor::channel("channel_2");
-        let mut writer1 = stream.double_writer(&cd1);
-        let mut writer2 = stream.double_writer(&cd2);
+        let cd1 = ChannelDescriptor::channel("double");
+        let cd2 = ChannelDescriptor::channel("int");
+        let cd3 = ChannelDescriptor::channel("string");
+        let mut double_writer = stream.double_writer(&cd1);
+        let mut string_writer = stream.string_writer(&cd2);
+        let mut integer_writer = stream.integer_writer(&cd3);
 
         for i in 0..5000 {
             let start_time = UNIX_EPOCH.elapsed().unwrap();
             let value = i % 50;
-            writer1.push(start_time, value as f64);
-            writer2.push(start_time, value as f64);
+            double_writer.push(start_time, value as f64);
+            string_writer.push(start_time, format!("{}", value));
+            integer_writer.push(start_time, value);
         }
 
-        drop(writer1);
-        drop(writer2);
+        drop(double_writer);
+        drop(string_writer);
+        drop(integer_writer);
         drop(stream);
 
         let requests = test_consumer.requests.lock().unwrap();
 
-        assert_eq!(requests.len(), 10);
-        let series = requests.first().unwrap().series.first().unwrap();
-        if let Some(PointsType::DoublePoints(points)) =
-            series.points.as_ref().unwrap().points_type.as_ref()
-        {
-            assert_eq!(points.points.len(), 1000);
-        } else {
-            panic!("unexpected data type");
-        }
+        assert_eq!(requests.len(), 15);
+
+        let r = requests.iter()
+            .flat_map(|r| {
+                r.series.clone()
+            })
+            .map(|s| (s.channel.unwrap().name, s.points.unwrap().points_type.unwrap()))
+            .collect::<HashMap<_, _>>();
+
+        let PointsType::DoublePoints(dp) = r.get("double").unwrap() else {
+            panic!("invalid double points type");
+        };
+
+        let PointsType::StringPoints(sp) = r.get("string").unwrap() else {
+            panic!("invalid string points type: {:?}", r.get("string").unwrap());
+        };
+
+        let PointsType::IntegerPoints(ip) = r.get("int").unwrap() else {
+            panic!("invalid int points type");
+        };
+
+        // collect() overwrites into a single request
+        assert_eq!(dp.points.len(), 1000);
+        assert_eq!(sp.points.len(), 1000);
+        assert_eq!(ip.points.len(), 1000);
     }
 }
