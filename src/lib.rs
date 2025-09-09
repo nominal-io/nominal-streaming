@@ -26,7 +26,7 @@ pub mod prelude {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Mutex;
+    use std::sync::{Arc, Mutex};
     use std::time::UNIX_EPOCH;
 
     use crate::consumer::ConsumerResult;
@@ -38,21 +38,19 @@ mod tests {
         requests: Mutex<Vec<WriteRequestNominal>>,
     }
 
-    impl WriteRequestConsumer for &TestDatasourceStream {
+    impl WriteRequestConsumer for Arc<TestDatasourceStream> {
         fn consume(&self, request: &WriteRequestNominal) -> ConsumerResult<()> {
             self.requests.lock().unwrap().push(request.clone());
             Ok(())
         }
     }
 
-    #[test]
-    fn test_stream() {
-        let test_consumer = Box::new(TestDatasourceStream {
+    fn create_test_stream() -> (Arc<TestDatasourceStream>, NominalDatasourceStream) {
+        let test_consumer = Arc::new(TestDatasourceStream {
             requests: Mutex::new(vec![]),
         });
-        let test_consumer = Box::leak(test_consumer);
         let stream = NominalDatasourceStream::new_with_consumer(
-            &*test_consumer,
+            test_consumer.clone(),
             NominalStreamOpts {
                 max_points_per_record: 1000,
                 max_request_delay: Default::default(),
@@ -60,6 +58,13 @@ mod tests {
                 request_dispatcher_tasks: 4,
             },
         );
+
+        (test_consumer, stream)
+    }
+
+    #[test]
+    fn test_stream() {
+        let (test_consumer, stream) = create_test_stream();
 
         for batch in 0..5 {
             let mut points = Vec::new();
@@ -84,6 +89,8 @@ mod tests {
 
         let requests = test_consumer.requests.lock().unwrap();
 
+        // validate that the requests were flushed based on the max_records value, not the
+        // max request delay
         assert_eq!(requests.len(), 5);
         let series = requests.first().unwrap().series.first().unwrap();
         if let Some(PointsType::DoublePoints(points)) =
@@ -97,19 +104,7 @@ mod tests {
 
     #[test_log::test]
     fn test_writer() {
-        let test_consumer = Box::new(TestDatasourceStream {
-            requests: Mutex::new(vec![]),
-        });
-        let test_consumer = Box::leak(test_consumer);
-        let stream = NominalDatasourceStream::new_with_consumer(
-            &*test_consumer,
-            NominalStreamOpts {
-                max_points_per_record: 1000,
-                max_request_delay: Default::default(),
-                max_buffered_requests: 2,
-                request_dispatcher_tasks: 4,
-            },
-        );
+        let (test_consumer, stream) = create_test_stream();
 
         let cd = ChannelDescriptor::channel("channel_1");
         let mut writer = stream.double_writer(&cd);
@@ -138,24 +133,12 @@ mod tests {
 
     #[test_log::test]
     fn test_dual_writers() {
-        let test_consumer = Box::new(TestDatasourceStream {
-            requests: Mutex::new(vec![]),
-        });
-        let test_consumer = Box::leak(test_consumer);
-        let stream = NominalDatasourceStream::new_with_consumer(
-            &*test_consumer,
-            NominalStreamOpts {
-                max_points_per_record: 1000,
-                max_request_delay: Default::default(),
-                max_buffered_requests: 2,
-                request_dispatcher_tasks: 4,
-            },
-        );
+        let (test_consumer, stream) = create_test_stream();
 
-        let cd = ChannelDescriptor::channel("channel_1");
-        let mut writer1 = stream.double_writer(&cd);
-        let cd = ChannelDescriptor::channel("channel_2");
-        let mut writer2 = stream.double_writer(&cd);
+        let cd1 = ChannelDescriptor::channel("channel_1");
+        let cd2 = ChannelDescriptor::channel("channel_2");
+        let mut writer1 = stream.double_writer(&cd1);
+        let mut writer2 = stream.double_writer(&cd2);
 
         for i in 0..5000 {
             let start_time = UNIX_EPOCH.elapsed().unwrap();
