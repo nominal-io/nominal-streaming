@@ -52,10 +52,11 @@ impl ChannelDescriptor {
     ) -> Self {
         Self {
             name: name.into(),
-            tags: Some(tags
-                .into_iter()
-                .map(|(key, value)| (key.into(), value.into()))
-                .collect()),
+            tags: Some(
+                tags.into_iter()
+                    .map(|(key, value)| (key.into(), value.into()))
+                    .collect(),
+            ),
         }
     }
 
@@ -210,11 +211,7 @@ impl NominalDatasourceStream {
         }
     }
 
-    pub fn enqueue(
-        &self,
-        channel_descriptor: &ChannelDescriptor,
-        new_points: impl IntoPoints,
-    ) {
+    pub fn enqueue(&self, channel_descriptor: &ChannelDescriptor, new_points: impl IntoPoints) {
         let new_points = new_points.into_points();
         let new_count = points_len(&new_points);
 
