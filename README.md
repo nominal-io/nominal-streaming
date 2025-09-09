@@ -119,7 +119,7 @@ async fn async_main() {
         NominalStreamOpts::default()
     );
 
-    // Generate 500 batches of test data, each containing 100,000 data points
+    // Generate 50 batches of test data, each containing 100,000 data points
     for batch in 0..50 {
         let mut points = Vec::new();
 
