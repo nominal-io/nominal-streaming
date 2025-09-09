@@ -1,4 +1,3 @@
-use std::any::Any;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::fmt::Debug;
@@ -210,7 +209,7 @@ impl NominalDatasourceStream {
                 channel: channel_descriptor,
                 stream: self,
                 unflushed: vec![],
-            }
+            },
         }
     }
 
@@ -258,13 +257,19 @@ impl NominalDatasourceStream {
     }
 }
 
-pub struct NominalChannelWriter<'ds, T> where Vec<T>: IntoPoints {
+pub struct NominalChannelWriter<'ds, T>
+where
+    Vec<T>: IntoPoints,
+{
     channel: &'ds ChannelDescriptor,
     stream: &'ds NominalDatasourceStream,
-    unflushed: Vec<T>
+    unflushed: Vec<T>,
 }
 
-impl <'ds, T> NominalChannelWriter<'ds, T> where Vec<T>: IntoPoints {
+impl<'ds, T> NominalChannelWriter<'ds, T>
+where
+    Vec<T>: IntoPoints,
+{
     fn push_point(&mut self, point: T) {
         // todo: time based check as well?
         if self.unflushed.len() >= self.stream.opts.max_points_per_record {
@@ -283,17 +288,19 @@ impl <'ds, T> NominalChannelWriter<'ds, T> where Vec<T>: IntoPoints {
             f.extend(self.channel, to_flush);
         })
     }
-
 }
 
-impl <T> Drop for NominalChannelWriter<'_, T> where Vec<T>: IntoPoints {
+impl<T> Drop for NominalChannelWriter<'_, T>
+where
+    Vec<T>: IntoPoints,
+{
     fn drop(&mut self) {
         self.flush();
     }
 }
 
 pub struct NominalDoubleWriter<'ds> {
-    writer: NominalChannelWriter<'ds, DoublePoint>
+    writer: NominalChannelWriter<'ds, DoublePoint>,
 }
 
 impl NominalDoubleWriter<'_> {
@@ -309,7 +316,7 @@ impl NominalDoubleWriter<'_> {
 }
 
 pub struct NominalIntegerWriter<'ds> {
-    writer: NominalChannelWriter<'ds, IntegerPoint>
+    writer: NominalChannelWriter<'ds, IntegerPoint>,
 }
 
 impl NominalIntegerWriter<'_> {
@@ -325,9 +332,8 @@ impl NominalIntegerWriter<'_> {
 }
 
 pub struct NominalStringWriter<'ds> {
-    writer: NominalChannelWriter<'ds, StringPoint>
+    writer: NominalChannelWriter<'ds, StringPoint>,
 }
-
 
 impl NominalStringWriter<'_> {
     pub fn push(&mut self, timestamp: Duration, value: impl Into<String>) {
@@ -340,7 +346,6 @@ impl NominalStringWriter<'_> {
         });
     }
 }
-
 
 struct SeriesBuffer {
     points: Mutex<HashMap<ChannelDescriptor, PointsType>>,

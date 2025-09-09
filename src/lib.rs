@@ -26,7 +26,8 @@ pub mod prelude {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{Arc, Mutex};
+    use std::sync::Arc;
+    use std::sync::Mutex;
     use std::time::UNIX_EPOCH;
 
     use crate::consumer::ConsumerResult;
