@@ -79,8 +79,7 @@ use nominal_streaming::prelude::*;
 use std::time::UNIX_EPOCH;
 
 
-static DATA_SOURCE_RID: &str =
-      "ri.catalog.gov-staging.dataset.d61e3cf9-094b-4612-9c1d-619b48c335f9";
+static DATA_SOURCE_RID: &str = "<your-datasource-rid-here>";
 
 
 fn core_consumer() -> NominalCoreConsumer<BearerToken> {
@@ -103,7 +102,7 @@ fn core_consumer() -> NominalCoreConsumer<BearerToken> {
 
 
 fn main() {
-    // Standard scaffolding for multi-threaded app
+    // The NominalCoreConsumer requires a tokio runtime
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .worker_threads(4)
