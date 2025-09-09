@@ -227,14 +227,16 @@ impl NominalDatasourceStream {
 
         if self.primary_buffer.has_capacity(new_count) {
             debug!("adding {} points to primary buffer", new_count);
-            f(self.primary_buffer.lock());
+            let sb = self.primary_buffer.lock();
             self.primary_buffer.count.fetch_add(new_count, Ordering::Release);
+            f(sb);
         } else if self.secondary_buffer.has_capacity(new_count) {
             // primary buffer is definitely full
             self.primary_handle.thread().unpark();
             debug!("adding {} points to secondary buffer", new_count);
-            f(self.secondary_buffer.lock());
-            self.primary_buffer.count.fetch_add(new_count, Ordering::Release);
+            let sb = self.secondary_buffer.lock();
+            self.secondary_buffer.count.fetch_add(new_count, Ordering::Release);
+            f(sb);
         } else {
             warn!("both buffers full, picking least recently flushed buffer to append single point");
             let buf = if self.primary_buffer < self.secondary_buffer {
@@ -247,8 +249,10 @@ impl NominalDatasourceStream {
                 &self.secondary_buffer
             };
 
-            buf.on_notify(f);
-            buf.count.fetch_add(new_count, Ordering::Release);
+            buf.on_notify(|sb| {
+                buf.count.fetch_add(new_count, Ordering::Release);
+                f(sb)
+            });
         }
 
     }
@@ -359,12 +363,12 @@ impl SeriesBuffer {
     }
 
     fn take(&self) -> (usize, Vec<Series>) {
-        let mut points = self.points.lock();
+        let mut points = self.lock();
         self.flush_time.store(
             UNIX_EPOCH.elapsed().unwrap().as_nanos() as u64,
             Ordering::Release,
         );
-        let result = points
+        let result = points.sb
             .drain()
             .map(|(ChannelDescriptor { name, tags }, points)| {
                 let channel = Channel { name };
