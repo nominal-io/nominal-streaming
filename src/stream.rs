@@ -40,8 +40,8 @@ use crate::consumer::WriteRequestConsumer;
 pub struct ChannelDescriptor {
     /// The name of the channel.
     pub name: String,
-    /// The tags associated with the channel.
-    pub tags: BTreeMap<String, String>,
+    /// The tags associated with the channel, if any.
+    pub tags: Option<BTreeMap<String, String>>,
 }
 
 impl ChannelDescriptor {
@@ -51,7 +51,7 @@ impl ChannelDescriptor {
     pub fn new(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
-            tags: BTreeMap::new(),
+            tags: None,
         }
     }
 
@@ -62,10 +62,11 @@ impl ChannelDescriptor {
     ) -> Self {
         Self {
             name: name.into(),
-            tags: tags
-                .into_iter()
-                .map(|(key, value)| (key.into(), value.into()))
-                .collect(),
+            tags: Some(
+                tags.into_iter()
+                    .map(|(key, value)| (key.into(), value.into()))
+                    .collect(),
+            ),
         }
     }
 }
@@ -363,7 +364,9 @@ impl SeriesBuffer {
                 };
                 Series {
                     channel: Some(channel),
-                    tags: tags.into_iter().collect(),
+                    tags: tags
+                        .map(|tags| tags.into_iter().collect())
+                        .unwrap_or_default(),
                     points: Some(points_obj),
                 }
             })
