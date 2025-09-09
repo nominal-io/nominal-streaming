@@ -31,9 +31,11 @@ mod tests {
     use std::sync::Arc;
     use std::sync::Mutex;
     use std::time::UNIX_EPOCH;
+    use nominal_api::tonic::io::nominal::scout::api::proto::IntegerPoint;
     use crate::consumer::ConsumerResult;
     use crate::consumer::WriteRequestConsumer;
     use crate::prelude::*;
+    use crate::types::IntoTimestamp;
 
     #[derive(Debug)]
     struct TestDatasourceStream {
@@ -102,6 +104,76 @@ mod tests {
         } else {
             panic!("unexpected data type");
         }
+    }
+
+    #[test]
+    fn test_stream_types() {
+        let (test_consumer, stream) = create_test_stream();
+
+        for batch in 0..5 {
+            let mut doubles = Vec::new();
+            let mut strings = Vec::new();
+            let mut ints = Vec::new();
+            for i in 0..1000 {
+                let start_time = UNIX_EPOCH.elapsed().unwrap();
+                doubles.push(DoublePoint {
+                    timestamp: Some(start_time.into_timestamp()),
+                    value: (i % 50) as f64,
+                });
+                strings.push(StringPoint {
+                    timestamp: Some(start_time.into_timestamp()),
+                    value: format!("{}", i % 50)
+                });
+                ints.push(IntegerPoint {
+                    timestamp: Some(start_time.into_timestamp()),
+                    value: i % 50
+                })
+            }
+
+            stream.enqueue(
+                &ChannelDescriptor::new("double", [("batch_id", batch.to_string())]),
+                doubles,
+            );
+            stream.enqueue(
+                &ChannelDescriptor::new("string", [("batch_id", batch.to_string())]),
+                strings,
+            );
+            stream.enqueue(
+                &ChannelDescriptor::new("int", [("batch_id", batch.to_string())]),
+                ints,
+            );
+        }
+
+        drop(stream); // wait for points to flush
+
+        let requests = test_consumer.requests.lock().unwrap();
+
+        // validate that the requests were flushed based on the max_records value, not the
+        // max request delay
+        assert_eq!(requests.len(), 15);
+
+        let r = requests.iter()
+            .flat_map(|r| {
+                r.series.clone()
+            })
+            .map(|s| (s.channel.unwrap().name, s.points.unwrap().points_type.unwrap()))
+            .collect::<HashMap<_, _>>();
+        let PointsType::DoublePoints(dp) = r.get("double").unwrap() else {
+            panic!("invalid double points type");
+        };
+
+        let PointsType::IntegerPoints(ip) = r.get("int").unwrap() else {
+            panic!("invalid int points type");
+        };
+
+        let PointsType::StringPoints(sp) = r.get("string").unwrap() else {
+            panic!("invalid string points type");
+        };
+
+        // collect() overwrites into a single request
+        assert_eq!(dp.points.len(), 1000);
+        assert_eq!(sp.points.len(), 1000);
+        assert_eq!(ip.points.len(), 1000);
     }
 
     #[test_log::test]

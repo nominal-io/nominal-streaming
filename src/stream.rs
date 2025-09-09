@@ -303,7 +303,7 @@ struct SeriesBufferGuard<'sb> {
 }
 
 impl<'sb> SeriesBufferGuard<'sb> {
-    fn extend<I: IntoPoints>(&mut self, channel_descriptor: &ChannelDescriptor, points: I) {
+    fn extend(&mut self, channel_descriptor: &ChannelDescriptor, points: impl IntoPoints) {
         let points = points.into_points();
         let new_point_count = points_len(&points);
 
@@ -328,30 +328,6 @@ impl<'sb> SeriesBufferGuard<'sb> {
         }
 
         self.count.fetch_add(new_point_count, Ordering::Release);
-    }
-
-    fn extend_doubles<I: IntoIterator<Item = DoublePoint>>(
-        &mut self,
-        channel_descriptor: &ChannelDescriptor,
-        doubles: I,
-    ) {
-        if !self.sb.contains_key(channel_descriptor) {
-            self.sb.insert(
-                channel_descriptor.clone(),
-                PointsType::DoublePoints(Default::default()),
-            );
-        }
-
-        match self.sb.get_mut(channel_descriptor) {
-            Some(PointsType::DoublePoints(dp)) => {
-                let existing_size = dp.points.len();
-                dp.points.extend(doubles);
-                self.count
-                    .fetch_add(dp.points.len() - existing_size, Ordering::Release);
-            }
-            None => unreachable!(),
-            _ => panic!("invalid type"),
-        };
     }
 }
 
