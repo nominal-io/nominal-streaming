@@ -18,7 +18,7 @@ You can view the crate documentation at https://docs.rs/nominal-streaming/latest
 
 Data points will be sent to a Consumer.
 The Consumer is responsible for, e.g., sending the data to Nominal Core, or for saving it to disk.
-A [NominalDatasourceStream](https://docs.rs/nominal-streaming/latest/nominal_streaming/stream/struct.NominalDatasourceStream.html) is the mechanism by which data points are fed to the consumer.
+A [`NominalDatasourceStream`](https://docs.rs/nominal-streaming/latest/nominal_streaming/stream/struct.NominalDatasourceStream.html) is the mechanism by which data points are fed to the consumer.
 
 We construct a stream from a consumer as follows:
 
