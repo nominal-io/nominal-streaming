@@ -443,7 +443,7 @@ impl Default for ReuploadOpts {
 // at stream idle times, it attempts reuploads of the files to Nominal Core,
 // removing them from disk if successful.
 #[derive(Clone)]
-pub struct ReuploadingNominalCoreConsumer<A: AuthProvider> {
+pub struct StoreAndForwardNominalCoreConsumer<A: AuthProvider> {
     core_consumer: NominalCoreConsumer<A>,
     fallback_consumer: AvroFileConsumer,
     stream_monitor: Arc<StreamHealthMonitor>,
@@ -451,9 +451,9 @@ pub struct ReuploadingNominalCoreConsumer<A: AuthProvider> {
     simulated_success_rate: Option<f64>,
 }
 
-impl<A: AuthProvider + 'static> Debug for ReuploadingNominalCoreConsumer<A> {
+impl<A: AuthProvider + 'static> Debug for StoreAndForwardNominalCoreConsumer<A> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ReuploadingNominalCoreConsumer")
+        f.debug_struct("StoreAndForwardNominalCoreConsumer")
             .field("core_consumer", &self.core_consumer)
             .field("fallback_consumer", &self.fallback_consumer)
             .finish()
@@ -463,7 +463,7 @@ impl<A: AuthProvider + 'static> Debug for ReuploadingNominalCoreConsumer<A> {
 // factory for ReuploadingNominalCoreConsumer instances
 // creates unique AvroFileConsumer instances for each consumer
 // for more optimal performance.
-pub struct ReuploadingNominalCoreConsumerFactory<A: AuthProvider> {
+pub struct StoreAndForwardNominalCoreConsumerFactory<A: AuthProvider> {
     clients: NominalApiClients,
     core_consumer: NominalCoreConsumer<A>,
     fallback_consumer_factory: AvroFileConsumerFactory,
@@ -473,7 +473,7 @@ pub struct ReuploadingNominalCoreConsumerFactory<A: AuthProvider> {
     simulated_success_rate: Option<f64>,
 }
 
-impl<A: AuthProvider> ReuploadingNominalCoreConsumerFactory<A> {
+impl<A: AuthProvider> StoreAndForwardNominalCoreConsumerFactory<A> {
     pub fn new(
         clients: NominalApiClients,
         handle: tokio::runtime::Handle,
@@ -528,12 +528,12 @@ impl<A: AuthProvider> ReuploadingNominalCoreConsumerFactory<A> {
 }
 
 impl<A: AuthProvider + 'static> WriteRequestConsumerFactory
-    for ReuploadingNominalCoreConsumerFactory<A>
+    for StoreAndForwardNominalCoreConsumerFactory<A>
 {
-    type Consumer = ReuploadingNominalCoreConsumer<A>;
+    type Consumer = StoreAndForwardNominalCoreConsumer<A>;
 
     fn create_consumer(&self, id: usize) -> Result<Self::Consumer, Box<dyn Error + Send + Sync>> {
-        Ok(ReuploadingNominalCoreConsumer::new_with_success_rate(
+        Ok(StoreAndForwardNominalCoreConsumer::new_with_success_rate(
             self.clients.clone(),
             self.core_consumer.clone(),
             self.fallback_consumer_factory.create_consumer(id)?,
@@ -545,7 +545,7 @@ impl<A: AuthProvider + 'static> WriteRequestConsumerFactory
     }
 }
 
-impl<T: AuthProvider + 'static> WriteRequestConsumer for ReuploadingNominalCoreConsumer<T> {
+impl<T: AuthProvider + 'static> WriteRequestConsumer for StoreAndForwardNominalCoreConsumer<T> {
     fn consume(&self, request: &WriteRequestNominal) -> ConsumerResult<()> {
         if let Some(simulated_success_rate) = self.simulated_success_rate {
             let mut rng = rand::thread_rng();
@@ -573,7 +573,7 @@ impl<T: AuthProvider + 'static> WriteRequestConsumer for ReuploadingNominalCoreC
     }
 }
 
-impl<A: AuthProvider + 'static> ReuploadingNominalCoreConsumer<A> {
+impl<A: AuthProvider + 'static> StoreAndForwardNominalCoreConsumer<A> {
     pub fn new(
         clients: NominalApiClients,
         core_consumer: NominalCoreConsumer<A>,
