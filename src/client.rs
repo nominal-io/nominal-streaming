@@ -22,7 +22,7 @@ use nominal_api::api::rids::NominalDataSourceOrDatasetRid;
 use snap::write::FrameEncoder;
 use url::Url;
 
-use crate::stream::AuthProvider;
+use crate::types::AuthProvider;
 
 pub mod conjure {
     pub use conjure_error as error;

@@ -2,6 +2,7 @@ pub mod client;
 pub mod consumer;
 pub mod notifier;
 pub mod stream;
+mod types;
 
 /// This includes the most common types in this crate, re-exported for your convenience.
 pub mod prelude {
@@ -19,9 +20,9 @@ pub mod prelude {
     pub use crate::client::PRODUCTION_STREAMING_CLIENT;
     pub use crate::client::STAGING_STREAMING_CLIENT;
     pub use crate::consumer::NominalCoreConsumer;
-    pub use crate::stream::ChannelDescriptor;
     pub use crate::stream::NominalDatasourceStream;
     pub use crate::stream::NominalStreamOpts;
+    pub use crate::types::ChannelDescriptor;
 }
 
 #[cfg(test)]

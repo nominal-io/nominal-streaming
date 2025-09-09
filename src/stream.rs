@@ -1,4 +1,3 @@
-use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::sync::atomic::AtomicBool;
@@ -11,18 +10,13 @@ use std::time::Duration;
 use std::time::Instant;
 use std::time::UNIX_EPOCH;
 
-use conjure_object::BearerToken;
-use nominal_api::tonic::google::protobuf::Timestamp;
 use nominal_api::tonic::io::nominal::scout::api::proto::points::PointsType;
 use nominal_api::tonic::io::nominal::scout::api::proto::Channel;
 use nominal_api::tonic::io::nominal::scout::api::proto::DoublePoint;
-use nominal_api::tonic::io::nominal::scout::api::proto::DoublePoints;
 use nominal_api::tonic::io::nominal::scout::api::proto::IntegerPoint;
-use nominal_api::tonic::io::nominal::scout::api::proto::IntegerPoints;
 use nominal_api::tonic::io::nominal::scout::api::proto::Points;
 use nominal_api::tonic::io::nominal::scout::api::proto::Series;
 use nominal_api::tonic::io::nominal::scout::api::proto::StringPoint;
-use nominal_api::tonic::io::nominal::scout::api::proto::StringPoints;
 use nominal_api::tonic::io::nominal::scout::api::proto::WriteRequestNominal;
 use parking_lot::Condvar;
 use parking_lot::Mutex;
@@ -33,72 +27,9 @@ use tracing::info;
 use tracing::warn;
 
 use crate::consumer::WriteRequestConsumer;
-
-/// A descriptor for a channel.
-///
-/// Note that this is used internally to compare channels.
-#[derive(Clone, Debug, Eq, Hash, PartialEq, Ord, PartialOrd)]
-pub struct ChannelDescriptor {
-    /// The name of the channel.
-    pub name: String,
-    /// The tags associated with the channel.
-    pub tags: Option<BTreeMap<String, String>>,
-}
-
-impl ChannelDescriptor {
-    pub fn new(
-        name: impl Into<String>,
-        tags: impl IntoIterator<Item = (impl Into<String>, impl Into<String>)>,
-    ) -> Self {
-        Self {
-            name: name.into(),
-            tags: Some(
-                tags.into_iter()
-                    .map(|(key, value)| (key.into(), value.into()))
-                    .collect(),
-            ),
-        }
-    }
-
-    pub fn channel(name: impl Into<String>) -> Self {
-        Self {
-            name: name.into(),
-            tags: None,
-        }
-    }
-}
-
-pub trait AuthProvider: Clone + Send + Sync {
-    fn token(&self) -> Option<BearerToken>;
-}
-
-pub trait IntoPoints {
-    fn into_points(self) -> PointsType;
-}
-
-impl IntoPoints for PointsType {
-    fn into_points(self) -> PointsType {
-        self
-    }
-}
-
-impl IntoPoints for Vec<DoublePoint> {
-    fn into_points(self) -> PointsType {
-        PointsType::DoublePoints(DoublePoints { points: self })
-    }
-}
-
-impl IntoPoints for Vec<StringPoint> {
-    fn into_points(self) -> PointsType {
-        PointsType::StringPoints(StringPoints { points: self })
-    }
-}
-
-impl IntoPoints for Vec<IntegerPoint> {
-    fn into_points(self) -> PointsType {
-        PointsType::IntegerPoints(IntegerPoints { points: self })
-    }
-}
+use crate::types::ChannelDescriptor;
+use crate::types::IntoPoints;
+use crate::types::IntoTimestamp;
 
 #[derive(Debug, Clone)]
 pub struct NominalStreamOpts {
@@ -304,12 +235,9 @@ pub struct NominalDoubleWriter<'ds> {
 }
 
 impl NominalDoubleWriter<'_> {
-    pub fn push(&mut self, timestamp: Duration, value: f64) {
+    pub fn push(&mut self, timestamp: impl IntoTimestamp, value: f64) {
         self.writer.push_point(DoublePoint {
-            timestamp: Some(Timestamp {
-                seconds: timestamp.as_secs() as i64,
-                nanos: timestamp.subsec_nanos() as i32,
-            }),
+            timestamp: Some(timestamp.into_timestamp()),
             value,
         });
     }
@@ -320,12 +248,9 @@ pub struct NominalIntegerWriter<'ds> {
 }
 
 impl NominalIntegerWriter<'_> {
-    pub fn push(&mut self, timestamp: Duration, value: i64) {
+    pub fn push(&mut self, timestamp: impl IntoTimestamp, value: i64) {
         self.writer.push_point(IntegerPoint {
-            timestamp: Some(Timestamp {
-                seconds: timestamp.as_secs() as i64,
-                nanos: timestamp.subsec_nanos() as i32,
-            }),
+            timestamp: Some(timestamp.into_timestamp()),
             value,
         });
     }
@@ -336,12 +261,9 @@ pub struct NominalStringWriter<'ds> {
 }
 
 impl NominalStringWriter<'_> {
-    pub fn push(&mut self, timestamp: Duration, value: impl Into<String>) {
+    pub fn push(&mut self, timestamp: impl IntoTimestamp, value: impl Into<String>) {
         self.writer.push_point(StringPoint {
-            timestamp: Some(Timestamp {
-                seconds: timestamp.as_secs() as i64,
-                nanos: timestamp.subsec_nanos() as i32,
-            }),
+            timestamp: Some(timestamp.into_timestamp()),
             value: value.into(),
         });
     }
