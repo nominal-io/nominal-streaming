@@ -1,10 +1,11 @@
 use std::error::Error;
 use std::fmt::Debug;
 use std::fmt::Formatter;
+use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::LazyLock;
-
+use std::time::Duration;
 use apache_avro::types::Record;
 use apache_avro::types::Value;
 use conjure_object::ResourceIdentifier;
@@ -17,7 +18,7 @@ use nominal_api::tonic::io::nominal::scout::api::proto::StringPoints;
 use nominal_api::tonic::io::nominal::scout::api::proto::WriteRequestNominal;
 use parking_lot::Mutex;
 use prost::Message;
-use tracing::warn;
+use tracing::{error, warn};
 
 use crate::client::StreamingClient;
 use crate::client::{self};
@@ -284,6 +285,26 @@ where
     }
 }
 
+impl<P, F> WriteRequestConsumer for RequestConsumerWithFallback<P, F>
+where
+    P: WriteRequestConsumer + Send + Sync,
+    F: WriteRequestConsumer + Send + Sync,
+{
+    fn consume(&self, request: &WriteRequestNominal) -> ConsumerResult<()> {
+        if let Err(e) = self.primary.consume(request) {
+            warn!("Sending request to primary consumer failed. Attempting fallback.");
+            let fallback_result = self.fallback.consume(request);
+            // we want to notify the caller about the missing token error as it is a user error
+            // todo: get rid of this once we figure out why the auth handle blocks in connect
+            if let ConsumerError::MissingTokenError = e {
+                return Err(ConsumerError::MissingTokenError);
+            }
+            return fallback_result;
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct DualWriteRequestConsumer<P, S>
 where
@@ -321,26 +342,6 @@ where
 
         // If either failed, return the error
         primary_result.and(secondary_result)
-    }
-}
-
-impl<P, F> WriteRequestConsumer for RequestConsumerWithFallback<P, F>
-where
-    P: WriteRequestConsumer + Send + Sync,
-    F: WriteRequestConsumer + Send + Sync,
-{
-    fn consume(&self, request: &WriteRequestNominal) -> ConsumerResult<()> {
-        if let Err(e) = self.primary.consume(request) {
-            warn!("Sending request to primary consumer failed. Attempting fallback.");
-            let fallback_result = self.fallback.consume(request);
-            // we want to notify the caller about the missing token error as it is a user error
-            // todo: get rid of this once we figure out why the auth handle blocks in connect
-            if let ConsumerError::MissingTokenError = e {
-                return Err(ConsumerError::MissingTokenError);
-            }
-            return fallback_result;
-        }
-        Ok(())
     }
 }
 

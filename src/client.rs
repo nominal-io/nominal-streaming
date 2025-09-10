@@ -12,7 +12,7 @@ use conjure_http::private::Request;
 use conjure_http::private::Response;
 use conjure_object::BearerToken;
 use conjure_object::ResourceIdentifier;
-use conjure_runtime::Agent;
+use conjure_runtime::{Agent, Idempotency};
 use conjure_runtime::BodyWriter;
 use conjure_runtime::Client;
 use conjure_runtime::ResponseBody;
@@ -59,6 +59,8 @@ fn async_conjure_streaming_client(uri: Url) -> Result<StreamingClient, Error> {
         .read_timeout(std::time::Duration::from_secs(2))
         .write_timeout(std::time::Duration::from_secs(2))
         .backoff_slot_size(std::time::Duration::from_millis(10))
+        // enables retries for POST methods (like the ingest endpoint)
+        .idempotency(Idempotency::Always)
         .build()
         .map(|client| client.into())
 }
