@@ -20,6 +20,7 @@ use conjure_runtime::UserAgent;
 use derive_more::From;
 use nominal_api::api::rids::NominalDataSourceOrDatasetRid;
 use snap::write::FrameEncoder;
+use tracing::{info, warn};
 use url::Url;
 
 use crate::stream::AuthProvider;
