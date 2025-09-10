@@ -40,7 +40,7 @@ use crate::consumer::ListeningWriteRequestConsumer;
 use crate::consumer::NominalCoreConsumer;
 use crate::consumer::RequestConsumerWithFallback;
 use crate::consumer::WriteRequestConsumer;
-use crate::notifier::LoggingListener;
+use crate::consumer::WriteRequestConsumerFactory;
 
 /// A descriptor for a channel.
 ///
@@ -82,6 +82,9 @@ impl ChannelDescriptor {
 
 pub trait AuthProvider: Clone + Send + Sync {
     fn token(&self) -> Option<BearerToken>;
+    fn workspace_rid(&self) -> Option<ResourceIdentifier> {
+        None
+    }
 }
 
 pub trait IntoPoints {
@@ -249,15 +252,66 @@ impl NominalDatasetStream {
         consumer: C,
         opts: NominalStreamOpts,
     ) -> Self {
+        let consumer = Arc::new(consumer);
+
+        Self::create_internal(
+            opts,
+            |running, unflushed_points, request_rx, dispatcher_id| {
+                thread::Builder::new()
+                    .name(format!("nmstream_dispatch_{dispatcher_id}"))
+                    .spawn({
+                        let consumer = Arc::clone(&consumer);
+                        debug!("starting request dispatcher from factory");
+                        move || {
+                            request_dispatcher(running, unflushed_points, request_rx, consumer);
+                        }
+                    })
+                    .unwrap();
+            },
+        )
+    }
+
+    pub fn new_with_consumer_factory<C: WriteRequestConsumerFactory + 'static>(
+        consumer_factory: C,
+        opts: NominalStreamOpts,
+    ) -> Self {
+        Self::create_internal(
+            opts,
+            |running, unflushed_points, request_rx, dispatcher_id| {
+                let consumer = Arc::new(
+                    consumer_factory
+                        .create_consumer(dispatcher_id)
+                        .expect("Failed to create consumer"),
+                );
+
+                thread::Builder::new()
+                    .name(format!("nmstream_dispatch_{dispatcher_id}"))
+                    .spawn({
+                        debug!("starting request dispatcher from factory");
+                        move || {
+                            request_dispatcher(running, unflushed_points, request_rx, consumer);
+                        }
+                    })
+                    .unwrap();
+            },
+        )
+    }
+
+    fn create_internal(
+        opts: NominalStreamOpts,
+        request_dispatcher_spawner: impl Fn(
+            Arc<AtomicBool>,
+            Arc<AtomicUsize>,
+            crossbeam_channel::Receiver<(WriteRequestNominal, usize)>,
+            usize,
+        ),
+    ) -> Self {
         let primary_buffer = Arc::new(SeriesBuffer::new(opts.max_points_per_record));
         let secondary_buffer = Arc::new(SeriesBuffer::new(opts.max_points_per_record));
-
         let (request_tx, request_rx) =
             crossbeam_channel::bounded::<(WriteRequestNominal, usize)>(opts.max_buffered_requests);
-
         let running = Arc::new(AtomicBool::new(true));
         let unflushed_points = Arc::new(AtomicUsize::new(0));
-
         let primary_handle = thread::Builder::new()
             .name("nmstream_primary".to_string())
             .spawn({
@@ -269,7 +323,6 @@ impl NominalDatasetStream {
                 }
             })
             .unwrap();
-
         let secondary_handle = thread::Builder::new()
             .name("nmstream_secondary".to_string())
             .spawn({
@@ -286,22 +339,13 @@ impl NominalDatasetStream {
             })
             .unwrap();
 
-        let consumer = Arc::new(consumer);
-
         for i in 0..opts.request_dispatcher_tasks {
-            thread::Builder::new()
-                .name(format!("nmstream_dispatch_{i}"))
-                .spawn({
-                    let running = Arc::clone(&running);
-                    let unflushed_points = Arc::clone(&unflushed_points);
-                    let rx = request_rx.clone();
-                    let consumer = consumer.clone();
-                    move || {
-                        debug!("starting request dispatcher");
-                        request_dispatcher(running, unflushed_points, rx, consumer);
-                    }
-                })
-                .unwrap();
+            request_dispatcher_spawner(
+                Arc::clone(&running),
+                Arc::clone(&unflushed_points),
+                request_rx.clone(),
+                i,
+            );
         }
 
         NominalDatasetStream {
