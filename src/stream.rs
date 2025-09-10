@@ -132,18 +132,17 @@ impl NominalDatasetStreamBuilder {
         self.stream_to_core = Some((token, dataset));
         self
     }
+    pub fn stream_to_file(mut self, file_path: impl Into<PathBuf>) -> Self {
+        self.stream_to_file = Some(file_path.into());
+        self
+    }
 
     pub fn with_tokio_handle(mut self, handle: tokio::runtime::Handle) -> Self {
         self.handle = Some(handle);
         self
     }
 
-    pub fn stream_to_file(mut self, file_path: impl Into<PathBuf>) -> Self {
-        self.stream_to_file = Some(file_path.into());
-        self
-    }
-
-    pub fn core_file_fallback(mut self, file_path: impl Into<PathBuf>) -> Self {
+    pub fn with_file_fallback(mut self, file_path: impl Into<PathBuf>) -> Self {
         self.file_fallback = Some(file_path.into());
         self
     }
@@ -180,11 +179,6 @@ impl NominalDatasetStreamBuilder {
         }
     }
 
-    fn into_stream<C: WriteRequestConsumer + 'static>(self, consumer: C) -> NominalDatasetStream {
-        let logging_consumer = ListeningWriteRequestConsumer::new(consumer, vec![Arc::new(LoggingListener)]);
-        NominalDatasetStream::new_with_consumer(logging_consumer, self.opts)
-    }
-
     fn core_consumer(&self) -> Option<NominalCoreConsumer<BearerToken>> {
         self.stream_to_core.as_ref().map(|(token, dataset)| {
             let handle = self.handle.clone().unwrap_or_else(|| {
@@ -214,6 +208,11 @@ impl NominalDatasetStreamBuilder {
         self.file_fallback.as_ref().map(|path| {
             AvroFileConsumer::new_with_full_path(path).unwrap()
         })
+    }
+
+    fn into_stream<C: WriteRequestConsumer + 'static>(self, consumer: C) -> NominalDatasetStream {
+        let logging_consumer = ListeningWriteRequestConsumer::new(consumer, vec![Arc::new(LoggingListener)]);
+        NominalDatasetStream::new_with_consumer(logging_consumer, self.opts)
     }
 
 }
