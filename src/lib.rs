@@ -32,7 +32,9 @@ mod tests {
     use std::sync::Arc;
     use std::sync::Mutex;
     use std::time::UNIX_EPOCH;
+
     use nominal_api::tonic::io::nominal::scout::api::proto::IntegerPoint;
+
     use crate::consumer::ConsumerResult;
     use crate::consumer::WriteRequestConsumer;
     use crate::prelude::*;
@@ -123,11 +125,11 @@ mod tests {
                 });
                 strings.push(StringPoint {
                     timestamp: Some(start_time.into_timestamp()),
-                    value: format!("{}", i % 50)
+                    value: format!("{}", i % 50),
                 });
                 ints.push(IntegerPoint {
                     timestamp: Some(start_time.into_timestamp()),
-                    value: i % 50
+                    value: i % 50,
                 })
             }
 
@@ -153,11 +155,15 @@ mod tests {
         // max request delay
         assert_eq!(requests.len(), 15);
 
-        let r = requests.iter()
-            .flat_map(|r| {
-                r.series.clone()
+        let r = requests
+            .iter()
+            .flat_map(|r| r.series.clone())
+            .map(|s| {
+                (
+                    s.channel.unwrap().name,
+                    s.points.unwrap().points_type.unwrap(),
+                )
             })
-            .map(|s| (s.channel.unwrap().name, s.points.unwrap().points_type.unwrap()))
             .collect::<HashMap<_, _>>();
         let PointsType::DoublePoints(dp) = r.get("double").unwrap() else {
             panic!("invalid double points type");
@@ -234,11 +240,15 @@ mod tests {
 
         assert_eq!(requests.len(), 15);
 
-        let r = requests.iter()
-            .flat_map(|r| {
-                r.series.clone()
+        let r = requests
+            .iter()
+            .flat_map(|r| r.series.clone())
+            .map(|s| {
+                (
+                    s.channel.unwrap().name,
+                    s.points.unwrap().points_type.unwrap(),
+                )
             })
-            .map(|s| (s.channel.unwrap().name, s.points.unwrap().points_type.unwrap()))
             .collect::<HashMap<_, _>>();
 
         let PointsType::DoublePoints(dp) = r.get("double").unwrap() else {

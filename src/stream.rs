@@ -10,7 +10,9 @@ use std::thread;
 use std::time::Duration;
 use std::time::Instant;
 use std::time::UNIX_EPOCH;
-use conjure_object::{BearerToken, ResourceIdentifier};
+
+use conjure_object::BearerToken;
+use conjure_object::ResourceIdentifier;
 use nominal_api::tonic::io::nominal::scout::api::proto::points::PointsType;
 use nominal_api::tonic::io::nominal::scout::api::proto::Channel;
 use nominal_api::tonic::io::nominal::scout::api::proto::DoublePoint;
@@ -286,7 +288,9 @@ impl NominalDatasetStream {
         let new_points = new_points.into_points();
         let new_count = points_len(&new_points);
 
-        self.when_capacity(new_count, |mut sb| sb.extend(channel_descriptor, new_points));
+        self.when_capacity(new_count, |mut sb| {
+            sb.extend(channel_descriptor, new_points)
+        });
     }
 
     fn when_capacity(&self, new_count: usize, f: impl FnOnce(SeriesBufferGuard)) {
@@ -325,7 +329,7 @@ where
     Vec<T>: IntoPoints,
 {
     channel: &'ds ChannelDescriptor,
-    stream: &'ds NominalDatasourceStream,
+    stream: &'ds NominalDatasetStream,
     unflushed: Vec<T>,
 }
 
@@ -587,7 +591,7 @@ fn batch_processor(
 
 impl Drop for NominalDatasetStream {
     fn drop(&mut self) {
-        debug!("starting drop for NominalDatasourceStream");
+        debug!("starting drop for NominalDatasetStream");
         self.running.store(false, Ordering::Release);
         while self.unflushed_points.load(Ordering::Acquire) > 0 {
             debug!(

@@ -108,7 +108,7 @@ impl<T: chrono::TimeZone> IntoTimestamp for chrono::DateTime<T> {
 impl IntoTimestamp for i64 {
     fn into_timestamp(self) -> Timestamp {
         Timestamp {
-            seconds: (self / NANOS_PER_SECOND) as i64,
+            seconds: (self / NANOS_PER_SECOND),
             nanos: (self % NANOS_PER_SECOND) as i32,
         }
     }
