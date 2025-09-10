@@ -1,6 +1,7 @@
 use std::error::Error;
 use std::fmt::Debug;
 use std::fmt::Formatter;
+use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::LazyLock;
@@ -18,6 +19,7 @@ use nominal_api::tonic::io::nominal::scout::api::proto::StringPoints;
 use nominal_api::tonic::io::nominal::scout::api::proto::WriteRequestNominal;
 use parking_lot::Mutex;
 use prost::Message;
+use snap::write::FrameEncoder;
 use tracing::{info, warn};
 
 use crate::client::StreamingClient;
@@ -85,46 +87,51 @@ impl<T: AuthProvider + 'static> WriteRequestConsumer for NominalCoreConsumer<T> 
             .token()
             .ok_or(ConsumerError::MissingTokenError)?;
 
-        // let client = reqwest::blocking::Client::new();
-        // let req = client
-        //     .post(format!(
-        //         "https://api-staging.gov.nominal.io/api/storage/writer/v1/nominal/{}",
-        //         &self.data_source_rid
-        //     ))
-        //     .header("Authorization", token.clone().as_str())
-        //     .header("Content-Encoding", "x-snappy-framed")
-        //     .header("Content-Type", "application/x-protobuf")
-        //     .body(request.encode_to_vec());
+        let write_request_bytes: Vec<u8> = request.encode_to_vec();
+        let mut encoder = FrameEncoder::new(Vec::with_capacity(write_request_bytes.len()));
+        encoder.write_all(&write_request_bytes)?;
+        let encoded_body: Vec<u8> = encoder.into_inner().unwrap().into();
 
-        // let upload_start = Instant::now();
-        // self.handle.block_on(async {
-        //     req.send()
-        //         .map_err(|e| ConsumerError::RequestError(format!("{e:?}")))
-        // })?;
-        // info!(
-        //     "Spent {} ms making request",
-        //     upload_start.elapsed().as_millis()
-        // );
-
-        let encode_start = Instant::now();
-        let write_request =
-            client::encode_request(request.encode_to_vec(), &token, &self.data_source_rid)?;
-        info!(
-            "Spent {} ms encoding request",
-            encode_start.elapsed().as_millis()
-        );
+        let client = reqwest::blocking::Client::new();
+        let req = client
+            .post(format!(
+                "https://api-staging.gov.nominal.io/api/storage/writer/v1/nominal/{}",
+                &self.data_source_rid
+            ))
+            .header("Authorization", token.clone().as_str())
+            .header("Content-Encoding", "x-snappy-framed")
+            .header("Content-Type", "application/x-protobuf")
+            .body(encoded_body);
 
         let upload_start = Instant::now();
         self.handle.block_on(async {
-            self.client
-                .send(write_request)
-                .await
+            req.send()
                 .map_err(|e| ConsumerError::RequestError(format!("{e:?}")))
         })?;
         info!(
-            "Spent {} ms uploading request",
+            "Spent {} ms making request",
             upload_start.elapsed().as_millis()
         );
+
+        // let encode_start = Instant::now();
+        // let write_request =
+        //     client::encode_request(request.encode_to_vec(), &token, &self.data_source_rid)?;
+        // info!(
+        //     "Spent {} ms encoding request",
+        //     encode_start.elapsed().as_millis()
+        // );
+
+        // let upload_start = Instant::now();
+        // self.handle.block_on(async {
+        //     self.client
+        //         .send(write_request)
+        //         .await
+        //         .map_err(|e| ConsumerError::RequestError(format!("{e:?}")))
+        // })?;
+        // info!(
+        //     "Spent {} ms uploading request",
+        //     upload_start.elapsed().as_millis()
+        // );
         Ok(())
     }
 }
