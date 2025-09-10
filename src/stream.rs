@@ -114,10 +114,9 @@ impl Default for NominalStreamOpts {
 
 #[derive(Debug, Default)]
 pub struct NominalDatasetStreamBuilder {
-    stream_to_core: Option<(BearerToken, ResourceIdentifier)>,
+    stream_to_core: Option<(BearerToken, ResourceIdentifier, tokio::runtime::Handle)>,
     stream_to_file: Option<PathBuf>,
     file_fallback: Option<PathBuf>,
-    handle: Option<tokio::runtime::Handle>,
     opts: NominalStreamOpts,
 }
 
@@ -128,17 +127,12 @@ impl NominalDatasetStreamBuilder {
         }
     }
 
-    pub fn stream_to_core(mut self, token: BearerToken, dataset: ResourceIdentifier) -> Self {
-        self.stream_to_core = Some((token, dataset));
+    pub fn stream_to_core(mut self, token: BearerToken, dataset: ResourceIdentifier, handle: tokio::runtime::Handle) -> Self {
+        self.stream_to_core = Some((token, dataset, handle));
         self
     }
     pub fn stream_to_file(mut self, file_path: impl Into<PathBuf>) -> Self {
         self.stream_to_file = Some(file_path.into());
-        self
-    }
-
-    pub fn with_tokio_handle(mut self, handle: tokio::runtime::Handle) -> Self {
-        self.handle = Some(handle);
         self
     }
 
@@ -180,18 +174,10 @@ impl NominalDatasetStreamBuilder {
     }
 
     fn core_consumer(&self) -> Option<NominalCoreConsumer<BearerToken>> {
-        self.stream_to_core.as_ref().map(|(token, dataset)| {
-            let handle = self.handle.clone().unwrap_or_else(|| {
-                tokio::runtime::Builder::new_multi_thread()
-                    .enable_all()
-                    .thread_name("nm_tokio")
-                    .build().unwrap()
-                    .handle().clone()
-            });
-
+        self.stream_to_core.as_ref().map(|(token, dataset, handle)| {
             NominalCoreConsumer::new(
                 PRODUCTION_STREAMING_CLIENT.clone(),
-                handle,
+                handle.clone(),
                 token.clone(),
                 dataset.clone()
             )
