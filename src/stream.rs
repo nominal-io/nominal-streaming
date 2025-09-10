@@ -12,7 +12,8 @@ use std::time::Duration;
 use std::time::Instant;
 use std::time::UNIX_EPOCH;
 
-use conjure_object::{BearerToken, ResourceIdentifier};
+use conjure_object::BearerToken;
+use conjure_object::ResourceIdentifier;
 use nominal_api::tonic::io::nominal::scout::api::proto::points::PointsType;
 use nominal_api::tonic::io::nominal::scout::api::proto::Channel;
 use nominal_api::tonic::io::nominal::scout::api::proto::DoublePoint;
@@ -31,8 +32,14 @@ use tracing::debug;
 use tracing::error;
 use tracing::info;
 use tracing::warn;
+
 use crate::client::PRODUCTION_STREAMING_CLIENT;
-use crate::consumer::{AvroFileConsumer, DualWriteRequestConsumer, ListeningWriteRequestConsumer, NominalCoreConsumer, RequestConsumerWithFallback, WriteRequestConsumer};
+use crate::consumer::AvroFileConsumer;
+use crate::consumer::DualWriteRequestConsumer;
+use crate::consumer::ListeningWriteRequestConsumer;
+use crate::consumer::NominalCoreConsumer;
+use crate::consumer::RequestConsumerWithFallback;
+use crate::consumer::WriteRequestConsumer;
 use crate::notifier::LoggingListener;
 
 /// A descriptor for a channel.
@@ -127,7 +134,12 @@ impl NominalDatasetStreamBuilder {
         }
     }
 
-    pub fn stream_to_core(mut self, token: BearerToken, dataset: ResourceIdentifier, handle: tokio::runtime::Handle) -> Self {
+    pub fn stream_to_core(
+        mut self,
+        token: BearerToken,
+        dataset: ResourceIdentifier,
+        handle: tokio::runtime::Handle,
+    ) -> Self {
         self.stream_to_core = Some((token, dataset, handle));
         self
     }
@@ -153,20 +165,18 @@ impl NominalDatasetStreamBuilder {
 
         match (core_consumer, file_consumer, fallback_consumer) {
             (None, None, _) => panic!("nominal dataset stream must either stream to file or core"),
-            (Some(_), Some(_), Some(_)) => panic!("must choose one of stream_to_file and file_fallback when streaming to core"),
-            (Some(core), None, None) => {
-                self.into_stream(core)
-            },
+            (Some(_), Some(_), Some(_)) => {
+                panic!("must choose one of stream_to_file and file_fallback when streaming to core")
+            }
+            (Some(core), None, None) => self.into_stream(core),
             (Some(core), None, Some(fallback)) => {
                 self.into_stream(RequestConsumerWithFallback::new(core, fallback))
-            },
-            (None, Some(file), None) => {
-                self.into_stream(file)
-            },
+            }
+            (None, Some(file), None) => self.into_stream(file),
             (None, Some(file), Some(fallback)) => {
                 // todo: should this even be supported?
                 self.into_stream(RequestConsumerWithFallback::new(file, fallback))
-            },
+            }
             (Some(core), Some(file), None) => {
                 self.into_stream(DualWriteRequestConsumer::new(core, file))
             }
@@ -174,33 +184,35 @@ impl NominalDatasetStreamBuilder {
     }
 
     fn core_consumer(&self) -> Option<NominalCoreConsumer<BearerToken>> {
-        self.stream_to_core.as_ref().map(|(token, dataset, handle)| {
-            NominalCoreConsumer::new(
-                PRODUCTION_STREAMING_CLIENT.clone(),
-                handle.clone(),
-                token.clone(),
-                dataset.clone()
-            )
-        })
+        self.stream_to_core
+            .as_ref()
+            .map(|(token, dataset, handle)| {
+                NominalCoreConsumer::new(
+                    PRODUCTION_STREAMING_CLIENT.clone(),
+                    handle.clone(),
+                    token.clone(),
+                    dataset.clone(),
+                )
+            })
     }
 
     fn file_consumer(&self) -> Option<AvroFileConsumer> {
-        self.stream_to_file.as_ref().map(|path| {
-            AvroFileConsumer::new_with_full_path(path).unwrap()
-        })
+        self.stream_to_file
+            .as_ref()
+            .map(|path| AvroFileConsumer::new_with_full_path(path).unwrap())
     }
 
     fn fallback_consumer(&self) -> Option<AvroFileConsumer> {
-        self.file_fallback.as_ref().map(|path| {
-            AvroFileConsumer::new_with_full_path(path).unwrap()
-        })
+        self.file_fallback
+            .as_ref()
+            .map(|path| AvroFileConsumer::new_with_full_path(path).unwrap())
     }
 
     fn into_stream<C: WriteRequestConsumer + 'static>(self, consumer: C) -> NominalDatasetStream {
-        let logging_consumer = ListeningWriteRequestConsumer::new(consumer, vec![Arc::new(LoggingListener)]);
+        let logging_consumer =
+            ListeningWriteRequestConsumer::new(consumer, vec![Arc::new(LoggingListener)]);
         NominalDatasetStream::new_with_consumer(logging_consumer, self.opts)
     }
-
 }
 
 // for backcompat, new code should use NominalDatasetStream
