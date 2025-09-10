@@ -4,6 +4,7 @@ use std::fmt::Formatter;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::LazyLock;
+use std::time::Instant;
 
 use apache_avro::types::Record;
 use apache_avro::types::Value;
@@ -17,7 +18,7 @@ use nominal_api::tonic::io::nominal::scout::api::proto::StringPoints;
 use nominal_api::tonic::io::nominal::scout::api::proto::WriteRequestNominal;
 use parking_lot::Mutex;
 use prost::Message;
-use tracing::warn;
+use tracing::{info, warn};
 
 use crate::client::StreamingClient;
 use crate::client::{self};
@@ -83,14 +84,25 @@ impl<T: AuthProvider + 'static> WriteRequestConsumer for NominalCoreConsumer<T> 
             .token_provider
             .token()
             .ok_or(ConsumerError::MissingTokenError)?;
+        let encode_start = Instant::now();
         let write_request =
             client::encode_request(request.encode_to_vec(), &token, &self.data_source_rid)?;
+        info!(
+            "Spent {} ms encoding request",
+            encode_start.elapsed().as_millis()
+        );
+
+        let upload_start = Instant::now();
         self.handle.block_on(async {
             self.client
                 .send(write_request)
                 .await
                 .map_err(|e| ConsumerError::RequestError(format!("{e:?}")))
         })?;
+        info!(
+            "Spent {} ms uploading request",
+            upload_start.elapsed().as_millis()
+        );
         Ok(())
     }
 }
