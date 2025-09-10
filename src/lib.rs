@@ -21,7 +21,6 @@ pub mod prelude {
     pub use crate::client::STAGING_STREAMING_CLIENT;
     pub use crate::consumer::NominalCoreConsumer;
     pub use crate::stream::NominalDatasetStream;
-    pub use crate::stream::NominalDatasourceStream;
     pub use crate::stream::NominalStreamOpts;
     pub use crate::types::ChannelDescriptor;
 }
@@ -52,7 +51,7 @@ mod tests {
         }
     }
 
-    fn create_test_stream() -> (Arc<TestDatasourceStream>, NominalDatasourceStream) {
+    fn create_test_stream() -> (Arc<TestDatasourceStream>, NominalDatasetStream) {
         let test_consumer = Arc::new(TestDatasourceStream {
             requests: Mutex::new(vec![]),
         });
@@ -87,7 +86,7 @@ mod tests {
             }
 
             stream.enqueue(
-                &ChannelDescriptor::new("channel_1", [("batch_id", batch.to_string())]),
+                &ChannelDescriptor::with_tags("channel_1", [("batch_id", batch.to_string())]),
                 points,
             );
         }
@@ -134,15 +133,15 @@ mod tests {
             }
 
             stream.enqueue(
-                &ChannelDescriptor::new("double", [("batch_id", batch.to_string())]),
+                &ChannelDescriptor::with_tags("double", [("batch_id", batch.to_string())]),
                 doubles,
             );
             stream.enqueue(
-                &ChannelDescriptor::new("string", [("batch_id", batch.to_string())]),
+                &ChannelDescriptor::with_tags("string", [("batch_id", batch.to_string())]),
                 strings,
             );
             stream.enqueue(
-                &ChannelDescriptor::new("int", [("batch_id", batch.to_string())]),
+                &ChannelDescriptor::with_tags("int", [("batch_id", batch.to_string())]),
                 ints,
             );
         }
@@ -187,7 +186,7 @@ mod tests {
     fn test_writer() {
         let (test_consumer, stream) = create_test_stream();
 
-        let cd = ChannelDescriptor::channel("channel_1");
+        let cd = ChannelDescriptor::new("channel_1");
         let mut writer = stream.double_writer(&cd);
 
         for i in 0..5000 {
@@ -216,9 +215,9 @@ mod tests {
     fn test_writer_types() {
         let (test_consumer, stream) = create_test_stream();
 
-        let cd1 = ChannelDescriptor::channel("double");
-        let cd2 = ChannelDescriptor::channel("string");
-        let cd3 = ChannelDescriptor::channel("int");
+        let cd1 = ChannelDescriptor::new("double");
+        let cd2 = ChannelDescriptor::new("string");
+        let cd3 = ChannelDescriptor::new("int");
         let mut double_writer = stream.double_writer(&cd1);
         let mut string_writer = stream.string_writer(&cd2);
         let mut integer_writer = stream.integer_writer(&cd3);
