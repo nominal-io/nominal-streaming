@@ -115,5 +115,6 @@ pub fn encode_request<'a, 'b>(
             "writeNominalBatches",
             "/storage/writer/v1/nominal/{dataSourceRid}",
         ));
+    info!("Got request body: {}", request.body());
     Ok(request)
 }
