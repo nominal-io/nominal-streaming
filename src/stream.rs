@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::fmt::Debug;
+use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::AtomicUsize;
@@ -32,6 +33,12 @@ use tracing::error;
 use tracing::info;
 use tracing::warn;
 
+use crate::client::PRODUCTION_STREAMING_CLIENT;
+use crate::consumer::AvroFileConsumer;
+use crate::consumer::DualWriteRequestConsumer;
+use crate::consumer::ListeningWriteRequestConsumer;
+use crate::consumer::NominalCoreConsumer;
+use crate::consumer::RequestConsumerWithFallback;
 use crate::consumer::WriteRequestConsumer;
 use crate::consumer::WriteRequestConsumerFactory;
 
@@ -42,21 +49,33 @@ use crate::consumer::WriteRequestConsumerFactory;
 pub struct ChannelDescriptor {
     /// The name of the channel.
     pub name: String,
-    /// The tags associated with the channel.
-    pub tags: BTreeMap<String, String>,
+    /// The tags associated with the channel, if any.
+    pub tags: Option<BTreeMap<String, String>>,
 }
 
 impl ChannelDescriptor {
-    pub fn new(
+    /// Creates a new channel descriptor from the given `name`.
+    ///
+    /// If you would like to include tags, see also [`Self::new_with_tags`].
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            tags: None,
+        }
+    }
+
+    /// Creates a new channel descriptor from the given `name` and `tags`.
+    pub fn with_tags(
         name: impl Into<String>,
         tags: impl IntoIterator<Item = (impl Into<String>, impl Into<String>)>,
     ) -> Self {
         Self {
             name: name.into(),
-            tags: tags
-                .into_iter()
-                .map(|(key, value)| (key.into(), value.into()))
-                .collect(),
+            tags: Some(
+                tags.into_iter()
+                    .map(|(key, value)| (key.into(), value.into()))
+                    .collect(),
+            ),
         }
     }
 }
@@ -115,7 +134,107 @@ impl Default for NominalStreamOpts {
     }
 }
 
-pub struct NominalDatasourceStream {
+#[derive(Debug, Default)]
+pub struct NominalDatasetStreamBuilder {
+    stream_to_core: Option<(BearerToken, ResourceIdentifier, tokio::runtime::Handle)>,
+    stream_to_file: Option<PathBuf>,
+    file_fallback: Option<PathBuf>,
+    opts: NominalStreamOpts,
+}
+
+impl NominalDatasetStreamBuilder {
+    pub fn new() -> NominalDatasetStreamBuilder {
+        NominalDatasetStreamBuilder {
+            ..Default::default()
+        }
+    }
+
+    pub fn stream_to_core(
+        mut self,
+        token: BearerToken,
+        dataset: ResourceIdentifier,
+        handle: tokio::runtime::Handle,
+    ) -> Self {
+        self.stream_to_core = Some((token, dataset, handle));
+        self
+    }
+    pub fn stream_to_file(mut self, file_path: impl Into<PathBuf>) -> Self {
+        self.stream_to_file = Some(file_path.into());
+        self
+    }
+
+    pub fn with_file_fallback(mut self, file_path: impl Into<PathBuf>) -> Self {
+        self.file_fallback = Some(file_path.into());
+        self
+    }
+
+    pub fn with_options(mut self, opts: NominalStreamOpts) -> Self {
+        self.opts = opts;
+        self
+    }
+
+    pub fn build(self) -> NominalDatasetStream {
+        let core_consumer = self.core_consumer();
+        let file_consumer = self.file_consumer();
+        let fallback_consumer = self.fallback_consumer();
+
+        match (core_consumer, file_consumer, fallback_consumer) {
+            (None, None, _) => panic!("nominal dataset stream must either stream to file or core"),
+            (Some(_), Some(_), Some(_)) => {
+                panic!("must choose one of stream_to_file and file_fallback when streaming to core")
+            }
+            (Some(core), None, None) => self.into_stream(core),
+            (Some(core), None, Some(fallback)) => {
+                self.into_stream(RequestConsumerWithFallback::new(core, fallback))
+            }
+            (None, Some(file), None) => self.into_stream(file),
+            (None, Some(file), Some(fallback)) => {
+                // todo: should this even be supported?
+                self.into_stream(RequestConsumerWithFallback::new(file, fallback))
+            }
+            (Some(core), Some(file), None) => {
+                self.into_stream(DualWriteRequestConsumer::new(core, file))
+            }
+        }
+    }
+
+    fn core_consumer(&self) -> Option<NominalCoreConsumer<BearerToken>> {
+        self.stream_to_core
+            .as_ref()
+            .map(|(token, dataset, handle)| {
+                NominalCoreConsumer::new(
+                    PRODUCTION_STREAMING_CLIENT.clone(),
+                    handle.clone(),
+                    token.clone(),
+                    dataset.clone(),
+                )
+            })
+    }
+
+    fn file_consumer(&self) -> Option<AvroFileConsumer> {
+        self.stream_to_file
+            .as_ref()
+            .map(|path| AvroFileConsumer::new_with_full_path(path).unwrap())
+    }
+
+    fn fallback_consumer(&self) -> Option<AvroFileConsumer> {
+        self.file_fallback
+            .as_ref()
+            .map(|path| AvroFileConsumer::new_with_full_path(path).unwrap())
+    }
+
+    fn into_stream<C: WriteRequestConsumer + 'static>(self, consumer: C) -> NominalDatasetStream {
+        let logging_consumer =
+            ListeningWriteRequestConsumer::new(consumer, vec![Arc::new(LoggingListener)]);
+        NominalDatasetStream::new_with_consumer(logging_consumer, self.opts)
+    }
+}
+
+// for backcompat, new code should use NominalDatasetStream
+#[deprecated]
+pub type NominalDatasourceStream = NominalDatasetStream;
+
+pub struct NominalDatasetStream {
     running: Arc<AtomicBool>,
     unflushed_points: Arc<AtomicUsize>,
     primary_buffer: Arc<SeriesBuffer>,
@@ -124,7 +243,11 @@ pub struct NominalDatasourceStream {
     secondary_handle: thread::JoinHandle<()>,
 }
 
-impl NominalDatasourceStream {
+impl NominalDatasetStream {
+    pub fn builder() -> NominalDatasetStreamBuilder {
+        NominalDatasetStreamBuilder::new()
+    }
+
     pub fn new_with_consumer<C: WriteRequestConsumer + 'static>(
         consumer: C,
         opts: NominalStreamOpts,
@@ -225,7 +348,7 @@ impl NominalDatasourceStream {
             );
         }
 
-        NominalDatasourceStream {
+        NominalDatasetStream {
             running,
             unflushed_points,
             primary_buffer,
@@ -398,7 +521,9 @@ impl SeriesBuffer {
                 };
                 Series {
                     channel: Some(channel),
-                    tags: tags.into_iter().collect(),
+                    tags: tags
+                        .map(|tags| tags.into_iter().collect())
+                        .unwrap_or_default(),
                     points: Some(points_obj),
                 }
             })
@@ -478,7 +603,7 @@ fn batch_processor(
     debug!("batch processor thread exiting");
 }
 
-impl Drop for NominalDatasourceStream {
+impl Drop for NominalDatasetStream {
     fn drop(&mut self) {
         debug!("starting drop for NominalDatasourceStream");
         self.running.store(false, Ordering::Release);

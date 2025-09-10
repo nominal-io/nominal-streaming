@@ -22,6 +22,7 @@ pub mod prelude {
     pub use crate::client::STAGING_STREAMING_CLIENT;
     pub use crate::consumer::NominalCoreConsumer;
     pub use crate::stream::ChannelDescriptor;
+    pub use crate::stream::NominalDatasetStream;
     pub use crate::stream::NominalDatasourceStream;
     pub use crate::stream::NominalStreamOpts;
 }
@@ -53,7 +54,7 @@ mod tests {
             requests: Mutex::new(vec![]),
         });
         let test_consumer = Box::leak(test_consumer);
-        let stream = NominalDatasourceStream::new_with_consumer(
+        let stream = NominalDatasetStream::new_with_consumer(
             &*test_consumer,
             NominalStreamOpts {
                 max_points_per_record: 1000,
@@ -77,7 +78,7 @@ mod tests {
             }
 
             stream.enqueue(
-                &ChannelDescriptor::new("channel_1", [("batch_id", batch.to_string())]),
+                &ChannelDescriptor::with_tags("channel_1", [("batch_id", batch.to_string())]),
                 points,
             );
         }
