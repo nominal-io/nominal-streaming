@@ -20,12 +20,23 @@ const NANOS_PER_SECOND: i64 = 1_000_000_000;
 pub struct ChannelDescriptor {
     /// The name of the channel.
     pub name: String,
-    /// The tags associated with the channel.
+    /// The tags associated with the channel, if any.
     pub tags: Option<BTreeMap<String, String>>,
 }
 
 impl ChannelDescriptor {
-    pub fn new(
+    /// Creates a new channel descriptor from the given `name`.
+    ///
+    /// If you would like to include tags, see also [`Self::with_tags`].
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            tags: None,
+        }
+    }
+
+    /// Creates a new channel descriptor from the given `name` and `tags`.
+    pub fn with_tags(
         name: impl Into<String>,
         tags: impl IntoIterator<Item = (impl Into<String>, impl Into<String>)>,
     ) -> Self {
@@ -36,13 +47,6 @@ impl ChannelDescriptor {
                     .map(|(key, value)| (key.into(), value.into()))
                     .collect(),
             ),
-        }
-    }
-
-    pub fn channel(name: impl Into<String>) -> Self {
-        Self {
-            name: name.into(),
-            tags: None,
         }
     }
 }

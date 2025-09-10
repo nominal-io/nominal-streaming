@@ -20,6 +20,7 @@ pub mod prelude {
     pub use crate::client::PRODUCTION_STREAMING_CLIENT;
     pub use crate::client::STAGING_STREAMING_CLIENT;
     pub use crate::consumer::NominalCoreConsumer;
+    pub use crate::stream::NominalDatasetStream;
     pub use crate::stream::NominalDatasourceStream;
     pub use crate::stream::NominalStreamOpts;
     pub use crate::types::ChannelDescriptor;
@@ -53,7 +54,7 @@ mod tests {
         let test_consumer = Arc::new(TestDatasourceStream {
             requests: Mutex::new(vec![]),
         });
-        let stream = NominalDatasourceStream::new_with_consumer(
+        let stream = NominalDatasetStream::new_with_consumer(
             test_consumer.clone(),
             NominalStreamOpts {
                 max_points_per_record: 1000,
