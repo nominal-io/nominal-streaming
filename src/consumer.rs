@@ -85,46 +85,46 @@ impl<T: AuthProvider + 'static> WriteRequestConsumer for NominalCoreConsumer<T> 
             .token()
             .ok_or(ConsumerError::MissingTokenError)?;
 
-        let client = reqwest::blocking::Client::new();
-        let req = client
-            .post(format!(
-                "https://api-staging.gov.nominal.io/api/storage/writer/v1/nominal/{}",
-                &self.data_source_rid
-            ))
-            .header("Authorization", token.clone().as_str())
-            .header("Content-Encoding", "x-snappy-framed")
-            .header("Content-Type", "application/x-protobuf")
-            .body(request.encode_to_vec());
-
-        let upload_start = Instant::now();
-        self.handle.block_on(async {
-            req.send()
-                .map_err(|e| ConsumerError::RequestError(format!("{e:?}")))
-        })?;
-        info!(
-            "Spent {} ms making request",
-            upload_start.elapsed().as_millis()
-        );
-
-        // let encode_start = Instant::now();
-        // let write_request =
-        //     client::encode_request(request.encode_to_vec(), &token, &self.data_source_rid)?;
-        // info!(
-        //     "Spent {} ms encoding request",
-        //     encode_start.elapsed().as_millis()
-        // );
+        // let client = reqwest::blocking::Client::new();
+        // let req = client
+        //     .post(format!(
+        //         "https://api-staging.gov.nominal.io/api/storage/writer/v1/nominal/{}",
+        //         &self.data_source_rid
+        //     ))
+        //     .header("Authorization", token.clone().as_str())
+        //     .header("Content-Encoding", "x-snappy-framed")
+        //     .header("Content-Type", "application/x-protobuf")
+        //     .body(request.encode_to_vec());
 
         // let upload_start = Instant::now();
         // self.handle.block_on(async {
-        //     self.client
-        //         .send(write_request)
-        //         .await
+        //     req.send()
         //         .map_err(|e| ConsumerError::RequestError(format!("{e:?}")))
         // })?;
         // info!(
-        //     "Spent {} ms uploading request",
+        //     "Spent {} ms making request",
         //     upload_start.elapsed().as_millis()
         // );
+
+        let encode_start = Instant::now();
+        let write_request =
+            client::encode_request(request.encode_to_vec(), &token, &self.data_source_rid)?;
+        info!(
+            "Spent {} ms encoding request",
+            encode_start.elapsed().as_millis()
+        );
+
+        let upload_start = Instant::now();
+        self.handle.block_on(async {
+            self.client
+                .send(write_request)
+                .await
+                .map_err(|e| ConsumerError::RequestError(format!("{e:?}")))
+        })?;
+        info!(
+            "Spent {} ms uploading request",
+            upload_start.elapsed().as_millis()
+        );
         Ok(())
     }
 }
