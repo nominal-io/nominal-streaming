@@ -218,6 +218,10 @@ impl NominalDatasetStreamBuilder {
 
 }
 
+// for backcompat, new code should use NominalDatasetStream
+#[deprecated]
+pub type NominalDatasourceStream = NominalDatasetStream;
+
 pub struct NominalDatasetStream {
     running: Arc<AtomicBool>,
     unflushed_points: Arc<AtomicUsize>,
