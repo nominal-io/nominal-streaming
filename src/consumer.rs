@@ -22,7 +22,7 @@ use tracing::warn;
 use crate::client::StreamingClient;
 use crate::client::{self};
 use crate::notifier::NominalStreamListener;
-use crate::stream::AuthProvider;
+use crate::types::AuthProvider;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConsumerError {

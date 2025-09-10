@@ -26,3 +26,6 @@ crossbeam-channel = "0.5.15"
 
 [profile.release]
 debug = true
+
+[dev-dependencies]
+test-log = { version = "0.2.18", features = ["trace"] }
