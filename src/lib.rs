@@ -75,7 +75,7 @@ mod tests {
             }
 
             stream.enqueue(
-                &ChannelDescriptor::new("channel_1", [("batch_id", batch.to_string())]),
+                &ChannelDescriptor::with_tags("channel_1", [("batch_id", batch.to_string())]),
                 points,
             );
         }
