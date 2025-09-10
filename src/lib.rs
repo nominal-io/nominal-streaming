@@ -20,6 +20,7 @@ pub mod prelude {
     pub use crate::client::STAGING_STREAMING_CLIENT;
     pub use crate::consumer::NominalCoreConsumer;
     pub use crate::stream::ChannelDescriptor;
+    pub use crate::stream::NominalDatasourceStream;
     pub use crate::stream::NominalDatasetStream;
     pub use crate::stream::NominalStreamOpts;
 }
