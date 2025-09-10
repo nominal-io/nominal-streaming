@@ -228,6 +228,10 @@ pub struct NominalDatasetStream {
 }
 
 impl NominalDatasetStream {
+    pub fn builder() -> NominalDatasetStreamBuilder {
+        NominalDatasetStreamBuilder::new()
+    }
+
     pub fn new_with_consumer<C: WriteRequestConsumer + 'static>(
         consumer: C,
         opts: NominalStreamOpts,
