@@ -187,7 +187,7 @@ mod tests {
         let (test_consumer, stream) = create_test_stream();
 
         let cd = ChannelDescriptor::new("channel_1");
-        let mut writer = stream.double_writer(&cd);
+        let mut writer = stream.writer::<f64>(&cd);
 
         for i in 0..5000 {
             let start_time = UNIX_EPOCH.elapsed().unwrap();
@@ -218,9 +218,9 @@ mod tests {
         let cd1 = ChannelDescriptor::new("double");
         let cd2 = ChannelDescriptor::new("string");
         let cd3 = ChannelDescriptor::new("int");
-        let mut double_writer = stream.double_writer(&cd1);
-        let mut string_writer = stream.string_writer(&cd2);
-        let mut integer_writer = stream.integer_writer(&cd3);
+        let mut double_writer = stream.writer::<f64>(&cd1);
+        let mut string_writer = stream.writer::<String>(&cd2);
+        let mut integer_writer = stream.writer::<i64>(&cd3);
 
         for i in 0..5000 {
             let start_time = UNIX_EPOCH.elapsed().unwrap();

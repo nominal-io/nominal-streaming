@@ -245,42 +245,18 @@ impl NominalDatasetStream {
         }
     }
 
-    pub fn double_writer<'a>(
+    pub fn writer<'a, V>(
         &'a self,
         channel_descriptor: &'a ChannelDescriptor,
-    ) -> NominalDoubleWriter<'a> {
-        NominalDoubleWriter {
-            writer: NominalChannelWriter {
-                channel: channel_descriptor,
-                stream: self,
-                unflushed: vec![],
-            },
-        }
-    }
-
-    pub fn string_writer<'a>(
-        &'a self,
-        channel_descriptor: &'a ChannelDescriptor,
-    ) -> NominalStringWriter<'a> {
-        NominalStringWriter {
-            writer: NominalChannelWriter {
-                channel: channel_descriptor,
-                stream: self,
-                unflushed: vec![],
-            },
-        }
-    }
-
-    pub fn integer_writer<'a>(
-        &'a self,
-        channel_descriptor: &'a ChannelDescriptor,
-    ) -> NominalIntegerWriter<'a> {
-        NominalIntegerWriter {
-            writer: NominalChannelWriter {
-                channel: channel_descriptor,
-                stream: self,
-                unflushed: vec![],
-            },
+    ) -> NominalChannelWriter<'a, V::Point>
+    where
+        V: IntoPointType,
+        Vec<V::Point>: IntoPoints,
+    {
+        NominalChannelWriter {
+            channel: channel_descriptor,
+            stream: self,
+            unflushed: vec![],
         }
     }
 
@@ -324,6 +300,22 @@ impl NominalDatasetStream {
     }
 }
 
+pub trait IntoPointType {
+    type Point;
+}
+
+impl IntoPointType for f64 {
+    type Point = DoublePoint;
+}
+
+impl IntoPointType for i64 {
+    type Point = IntegerPoint;
+}
+
+impl IntoPointType for String {
+    type Point = StringPoint;
+}
+
 pub struct NominalChannelWriter<'ds, T>
 where
     Vec<T>: IntoPoints,
@@ -333,7 +325,7 @@ where
     unflushed: Vec<T>,
 }
 
-impl<'ds, T> NominalChannelWriter<'ds, T>
+impl<T> NominalChannelWriter<'_, T>
 where
     Vec<T>: IntoPoints,
 {
@@ -366,39 +358,27 @@ where
     }
 }
 
-pub struct NominalDoubleWriter<'ds> {
-    writer: NominalChannelWriter<'ds, DoublePoint>,
-}
-
-impl NominalDoubleWriter<'_> {
+impl NominalChannelWriter<'_, DoublePoint> {
     pub fn push(&mut self, timestamp: impl IntoTimestamp, value: f64) {
-        self.writer.push_point(DoublePoint {
+        self.push_point(DoublePoint {
             timestamp: Some(timestamp.into_timestamp()),
             value,
         });
     }
 }
 
-pub struct NominalIntegerWriter<'ds> {
-    writer: NominalChannelWriter<'ds, IntegerPoint>,
-}
-
-impl NominalIntegerWriter<'_> {
+impl NominalChannelWriter<'_, IntegerPoint> {
     pub fn push(&mut self, timestamp: impl IntoTimestamp, value: i64) {
-        self.writer.push_point(IntegerPoint {
+        self.push_point(IntegerPoint {
             timestamp: Some(timestamp.into_timestamp()),
             value,
         });
     }
 }
 
-pub struct NominalStringWriter<'ds> {
-    writer: NominalChannelWriter<'ds, StringPoint>,
-}
-
-impl NominalStringWriter<'_> {
+impl NominalChannelWriter<'_, StringPoint> {
     pub fn push(&mut self, timestamp: impl IntoTimestamp, value: impl Into<String>) {
-        self.writer.push_point(StringPoint {
+        self.push_point(StringPoint {
             timestamp: Some(timestamp.into_timestamp()),
             value: value.into(),
         });
