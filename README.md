@@ -235,3 +235,21 @@ impl NominalStreamListener for MyListener {
 
 let stream = ListeningWriteRequestConsumer::new(core_consumer(), vec![Arc::new(MyListener)]);
 ```
+
+## The builder interface
+
+The latest version of `nominal-streaming` contains a [builder interface](https://docs.rs/nominal-streaming/latest/nominal_streaming/stream/struct.NominalDatasetStream.html#method.builder) to make all of the above simpler.
+
+E.g., you can now do:
+
+```rust
+use nominal_streaming::stream::NominalDatasetStreamBuilder;
+
+let handle = tokio::runtime::Handle::current();
+let dataset_rid = ResourceIdentifier::new(DATASET_RID).unwrap();
+
+let stream = NominalDatasetStreamBuilder::new()
+  .stream_to_core(token, dataset_rid, handle)
+  .with_file_fallback("/tmp/fallback.avro")
+  .build();
+```
