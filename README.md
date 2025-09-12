@@ -17,8 +17,8 @@ You can view the crate documentation at https://docs.rs/nominal-streaming/latest
 ## Conceptual overview
 
 Data points will be sent to a Consumer.
-The Consumer is responsible for, e.g., sending the data to Nominal Core, or for saving it to disk.
-A [`NominalDatasourceStream`](https://docs.rs/nominal-streaming/latest/nominal_streaming/stream/struct.NominalDatasourceStream.html) is the mechanism by which data points are fed to the consumer.
+The Consumer is responsible for, e.g., sending the data to a dataset in Nominal Core, or for saving it to disk.
+A [`NominalDatasetStream`](https://docs.rs/nominal-streaming/latest/nominal_streaming/stream/struct.NominalDatasetStream.html) is the mechanism by which data points are fed to the consumer.
 
 We construct a stream from a consumer as follows:
 
@@ -26,7 +26,7 @@ We construct a stream from a consumer as follows:
 use nominal_streaming::consumer::AvroFileConsumer;
 
 let avro_consumer = AvroFileConsumer::new_with_full_path("/tmp/my_stream.avro").expect("Could not open Avro file");
-let stream = NominalDatasourceStream::new_with_consumer(avro_consumer, NominalStreamOpts::default());
+let stream = NominalDatasetStream::new_with_consumer(avro_consumer, NominalStreamOpts::default());
 ```
 
 Recall that the consumer takes the data points, and sends it somewhere—in this case, into an Avro file.
@@ -46,7 +46,7 @@ points.push(DoublePoint {
 
 // Stream to Avro file
 stream.enqueue(
-    &ChannelDescriptor::new("channel_1", [("name", "my stream"), ("batch", "1")]),
+    &ChannelDescriptor::with_tags("channel_1", [("name", "my stream"), ("batch", "1")]),
     points,
 );
 ```
@@ -79,7 +79,7 @@ use nominal_streaming::prelude::*;
 use std::time::UNIX_EPOCH;
 
 
-static DATA_SOURCE_RID: &str = "<your-datasource-rid-here>";
+static DATASET_RID: &str = "ri.catalog....";  // your dataset ID here
 
 
 fn core_consumer() -> NominalCoreConsumer<BearerToken> {
@@ -90,13 +90,13 @@ fn core_consumer() -> NominalCoreConsumer<BearerToken> {
     )
     .expect("Invalid token");
 
-    let data_source_rid = ResourceIdentifier::new(DATA_SOURCE_RID).unwrap();
+    let dataset_rid = ResourceIdentifier::new(DATASET_RID).unwrap();
 
     NominalCoreConsumer::new(
         STAGING_STREAMING_CLIENT.clone(),
         tokio::runtime::Handle::current(),
         token.clone(),
-        data_source_rid.clone(),
+        dataset_rid.clone(),
     )
 }
 
@@ -114,7 +114,7 @@ fn main() {
 
 
 async fn async_main() {
-    let stream = NominalDatasourceStream::new_with_consumer(
+    let stream = NominalDatasetStream::new_with_consumer(
         core_consumer(),
         NominalStreamOpts::default()
     );
@@ -137,7 +137,7 @@ async fn async_main() {
         // Push current batch onto the upload queue
         println!("Enqueue batch: {}", batch);
         stream.enqueue(
-            &ChannelDescriptor::new("channel_1", [("batch_id", batch.to_string())]),
+            &ChannelDescriptor::with_tags("channel_1", [("batch_id", batch.to_string())]),
             points,
         );
     }
@@ -163,7 +163,7 @@ consumer if the first one fails:
 ```rust
 use nominal_streaming::consumer::RequestConsumerWithFallback;
 
-let stream = NominalDatasourceStream::new_with_consumer(
+let stream = NominalDatasetStream::new_with_consumer(
     RequestConsumerWithFallback::new(core_consumer(), avro_consumer),
     NominalStreamOpts::default(),
 );
