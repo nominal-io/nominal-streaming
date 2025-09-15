@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0](https://github.com/nominal-io/nominal-streaming/compare/v0.3.0...v0.4.0) - 2025-09-15
+
+### Added
+
+- improved API for point-by-point insertion ([#12](https://github.com/nominal-io/nominal-streaming/pull/12))
+- enable retries for conjure client ([#14](https://github.com/nominal-io/nominal-streaming/pull/14))
+
+### Fixed
+
+- export datasource stream ([#16](https://github.com/nominal-io/nominal-streaming/pull/16))
+
+### Other
+
+- explain streaming in README ([#5](https://github.com/nominal-io/nominal-streaming/pull/5))
+
 ## [0.3.0](https://github.com/nominal-io/nominal-streaming/compare/v0.2.0...v0.3.0) - 2025-09-10
 
 ### Added
