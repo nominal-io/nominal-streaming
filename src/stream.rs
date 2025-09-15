@@ -36,7 +36,6 @@ use crate::consumer::ListeningWriteRequestConsumer;
 use crate::consumer::NominalCoreConsumer;
 use crate::consumer::RequestConsumerWithFallback;
 use crate::consumer::WriteRequestConsumer;
-use crate::consumer::WriteRequestConsumerFactory;
 use crate::notifier::LoggingListener;
 use crate::types::ChannelDescriptor;
 use crate::types::IntoPoints;
@@ -61,18 +60,23 @@ impl Default for NominalStreamOpts {
     }
 }
 
-#[derive(Debug, Default)]
-pub struct NominalDatasetStreamBuilder {
+#[derive(Debug)]
+pub struct NominalDatasetStreamBuilder<C: WriteRequestConsumer + 'static> {
     stream_to_core: Option<(BearerToken, ResourceIdentifier, tokio::runtime::Handle)>,
     stream_to_file: Option<PathBuf>,
     file_fallback: Option<PathBuf>,
+    custom_consumer: Option<C>,
     opts: NominalStreamOpts,
 }
 
-impl NominalDatasetStreamBuilder {
-    pub fn new() -> NominalDatasetStreamBuilder {
+impl<C: WriteRequestConsumer + 'static> NominalDatasetStreamBuilder<C> {
+    pub fn new() -> NominalDatasetStreamBuilder<C> {
         NominalDatasetStreamBuilder {
-            ..Default::default()
+            stream_to_core: None,
+            stream_to_file: None,
+            file_fallback: None,
+            custom_consumer: None,
+            opts: NominalStreamOpts::default(),
         }
     }
 
@@ -100,10 +104,33 @@ impl NominalDatasetStreamBuilder {
         self
     }
 
-    pub fn build(self) -> NominalDatasetStream {
+    pub fn with_consumer<CC: WriteRequestConsumer + 'static>(
+        self,
+        consumer: CC
+    ) -> NominalDatasetStreamBuilder<CC> {
+        NominalDatasetStreamBuilder {
+            stream_to_core: self.stream_to_core,
+            stream_to_file: self.stream_to_file,
+            file_fallback: self.file_fallback,
+            custom_consumer: Some(consumer),
+            opts: self.opts,
+        }
+    }
+
+    pub fn build(mut self) -> NominalDatasetStream {
+        if let Some(custom) = self.custom_consumer.take() {
+            if self.stream_to_core.is_some()
+                || self.stream_to_file.is_some()
+                || self.file_fallback.is_some()
+            {
+                panic!("cannot use custom consumer with other streaming options");
+            }
+            return self.into_stream(custom);
+        }
+
         let core_consumer = self.core_consumer();
         let file_consumer = self.file_consumer();
-        let fallback_consumer = self.fallback_consumer();
+        let fallback_consumer = self.fallback_consumer().map(Arc::new);
 
         match (core_consumer, file_consumer, fallback_consumer) {
             (None, None, _) => panic!("nominal dataset stream must either stream to file or core"),
@@ -150,7 +177,7 @@ impl NominalDatasetStreamBuilder {
             .map(|path| AvroFileConsumer::new_with_full_path(path).unwrap())
     }
 
-    fn into_stream<C: WriteRequestConsumer + 'static>(self, consumer: C) -> NominalDatasetStream {
+    fn into_stream<CC: WriteRequestConsumer + 'static>(self, consumer: CC) -> NominalDatasetStream {
         let logging_consumer =
             ListeningWriteRequestConsumer::new(consumer, vec![Arc::new(LoggingListener)]);
         NominalDatasetStream::new_with_consumer(logging_consumer, self.opts)
@@ -172,7 +199,7 @@ pub struct NominalDatasetStream {
 }
 
 impl NominalDatasetStream {
-    pub fn builder() -> NominalDatasetStreamBuilder {
+    pub fn builder<C: WriteRequestConsumer + 'static>() -> NominalDatasetStreamBuilder<C> {
         NominalDatasetStreamBuilder::new()
     }
 
@@ -180,50 +207,92 @@ impl NominalDatasetStream {
         consumer: C,
         opts: NominalStreamOpts,
     ) -> Self {
-        let consumer = Arc::new(consumer);
+        let primary_buffer = Arc::new(SeriesBuffer::new(opts.max_points_per_record));
+        let secondary_buffer = Arc::new(SeriesBuffer::new(opts.max_points_per_record));
+        let (request_tx, request_rx) =
+            crossbeam_channel::bounded::<(WriteRequestNominal, usize)>(opts.max_buffered_requests);
+        let running = Arc::new(AtomicBool::new(true));
+        let unflushed_points = Arc::new(AtomicUsize::new(0));
+        let primary_handle = thread::Builder::new()
+            .name("nmstream_primary".to_string())
+            .spawn({
+                let points_buffer = Arc::clone(&primary_buffer);
+                let running = running.clone();
+                let tx = request_tx.clone();
+                move || {
+                    batch_processor(running, points_buffer, tx, opts.max_request_delay);
+                }
+            })
+            .unwrap();
+        let secondary_handle = thread::Builder::new()
+            .name("nmstream_secondary".to_string())
+            .spawn({
+                let secondary_buffer = Arc::clone(&secondary_buffer);
+                let running = running.clone();
+                move || {
+                    batch_processor(
+                        running,
+                        secondary_buffer,
+                        request_tx,
+                        opts.max_request_delay,
+                    );
+                }
+            })
+            .unwrap();
 
-        Self::create_internal(
+        for i in 0..opts.request_dispatcher_tasks {
+            thread::Builder::new()
+                .name(format!("nmstream_dispatch_{i}"))
+                .spawn({
+                    let running = Arc::clone(&running);
+                    let unflushed_points = Arc::clone(&unflushed_points);
+                    let rx = request_rx.clone();
+                    let consumer = consumer.clone();
+                    move || {
+                        debug!("starting request dispatcher");
+                        request_dispatcher(running, unflushed_points, rx, consumer);
+                    }
+                })
+                .unwrap();
+        }
+
+
+        NominalDatasetStream {
             opts,
-            |running, unflushed_points, request_rx, dispatcher_id| {
-                thread::Builder::new()
-                    .name(format!("nmstream_dispatch_{dispatcher_id}"))
-                    .spawn({
-                        let consumer = Arc::clone(&consumer);
-                        debug!("starting request dispatcher from factory");
-                        move || {
-                            request_dispatcher(running, unflushed_points, request_rx, consumer);
-                        }
-                    })
-                    .unwrap();
-            },
-        )
+            running,
+            unflushed_points,
+            primary_buffer,
+            secondary_buffer,
+            primary_handle,
+            secondary_handle,
+        }
     }
 
-    pub fn new_with_consumer_factory<C: WriteRequestConsumerFactory + 'static>(
-        consumer_factory: C,
-        opts: NominalStreamOpts,
-    ) -> Self {
-        Self::create_internal(
-            opts,
-            |running, unflushed_points, request_rx, dispatcher_id| {
-                let consumer = Arc::new(
-                    consumer_factory
-                        .create_consumer(dispatcher_id)
-                        .expect("Failed to create consumer"),
-                );
-
-                thread::Builder::new()
-                    .name(format!("nmstream_dispatch_{dispatcher_id}"))
-                    .spawn({
-                        debug!("starting request dispatcher from factory");
-                        move || {
-                            request_dispatcher(running, unflushed_points, request_rx, consumer);
-                        }
-                    })
-                    .unwrap();
-            },
-        )
-    }
+    // pub fn new_with_consumer_factory<C: WriteRequestConsumerFactory + 'static>(
+    //     consumer_factory: C,
+    //     opts: NominalStreamOpts,
+    // ) -> Self {
+    //     Self::create_internal(
+    //         opts,
+    //         |running, unflushed_points, request_rx, dispatcher_id| {
+    //             let consumer = Arc::new(
+    //                 consumer_factory
+    //                     .create_consumer(dispatcher_id)
+    //                     .expect("Failed to create consumer"),
+    //             );
+    //
+    //             thread::Builder::new()
+    //                 .name(format!("nmstream_dispatch_{dispatcher_id}"))
+    //                 .spawn({
+    //                     debug!("starting request dispatcher from factory");
+    //                     move || {
+    //                         request_dispatcher(running, unflushed_points, request_rx, consumer);
+    //                     }
+    //                 })
+    //                 .unwrap();
+    //         },
+    //     )
+    // }
 
     fn create_internal(
         opts: NominalStreamOpts,
@@ -664,7 +733,7 @@ fn request_dispatcher<C: WriteRequestConsumer + 'static>(
     running: Arc<AtomicBool>,
     unflushed_points: Arc<AtomicUsize>,
     request_rx: crossbeam_channel::Receiver<(WriteRequestNominal, usize)>,
-    consumer: Arc<C>,
+    consumer: C,
 ) {
     let mut total_request_time = 0;
     loop {
