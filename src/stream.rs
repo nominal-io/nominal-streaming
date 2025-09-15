@@ -1,4 +1,3 @@
-use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::path::PathBuf;
@@ -17,13 +16,10 @@ use conjure_object::ResourceIdentifier;
 use nominal_api::tonic::io::nominal::scout::api::proto::points::PointsType;
 use nominal_api::tonic::io::nominal::scout::api::proto::Channel;
 use nominal_api::tonic::io::nominal::scout::api::proto::DoublePoint;
-use nominal_api::tonic::io::nominal::scout::api::proto::DoublePoints;
 use nominal_api::tonic::io::nominal::scout::api::proto::IntegerPoint;
-use nominal_api::tonic::io::nominal::scout::api::proto::IntegerPoints;
 use nominal_api::tonic::io::nominal::scout::api::proto::Points;
 use nominal_api::tonic::io::nominal::scout::api::proto::Series;
 use nominal_api::tonic::io::nominal::scout::api::proto::StringPoint;
-use nominal_api::tonic::io::nominal::scout::api::proto::StringPoints;
 use nominal_api::tonic::io::nominal::scout::api::proto::WriteRequestNominal;
 use parking_lot::Condvar;
 use parking_lot::Mutex;
@@ -42,79 +38,9 @@ use crate::consumer::RequestConsumerWithFallback;
 use crate::consumer::WriteRequestConsumer;
 use crate::consumer::WriteRequestConsumerFactory;
 use crate::notifier::LoggingListener;
-
-/// A descriptor for a channel.
-///
-/// Note that this is used internally to compare channels.
-#[derive(Clone, Debug, Eq, Hash, PartialEq, Ord, PartialOrd)]
-pub struct ChannelDescriptor {
-    /// The name of the channel.
-    pub name: String,
-    /// The tags associated with the channel, if any.
-    pub tags: Option<BTreeMap<String, String>>,
-}
-
-impl ChannelDescriptor {
-    /// Creates a new channel descriptor from the given `name`.
-    ///
-    /// If you would like to include tags, see also [`Self::new_with_tags`].
-    pub fn new(name: impl Into<String>) -> Self {
-        Self {
-            name: name.into(),
-            tags: None,
-        }
-    }
-
-    /// Creates a new channel descriptor from the given `name` and `tags`.
-    pub fn with_tags(
-        name: impl Into<String>,
-        tags: impl IntoIterator<Item = (impl Into<String>, impl Into<String>)>,
-    ) -> Self {
-        Self {
-            name: name.into(),
-            tags: Some(
-                tags.into_iter()
-                    .map(|(key, value)| (key.into(), value.into()))
-                    .collect(),
-            ),
-        }
-    }
-}
-
-pub trait AuthProvider: Clone + Send + Sync {
-    fn token(&self) -> Option<BearerToken>;
-    fn workspace_rid(&self) -> Option<ResourceIdentifier> {
-        None
-    }
-}
-
-pub trait IntoPoints {
-    fn into_points(self) -> PointsType;
-}
-
-impl IntoPoints for PointsType {
-    fn into_points(self) -> PointsType {
-        self
-    }
-}
-
-impl IntoPoints for Vec<DoublePoint> {
-    fn into_points(self) -> PointsType {
-        PointsType::DoublePoints(DoublePoints { points: self })
-    }
-}
-
-impl IntoPoints for Vec<StringPoint> {
-    fn into_points(self) -> PointsType {
-        PointsType::StringPoints(StringPoints { points: self })
-    }
-}
-
-impl IntoPoints for Vec<IntegerPoint> {
-    fn into_points(self) -> PointsType {
-        PointsType::IntegerPoints(IntegerPoints { points: self })
-    }
-}
+use crate::types::ChannelDescriptor;
+use crate::types::IntoPoints;
+use crate::types::IntoTimestamp;
 
 #[derive(Debug, Clone)]
 pub struct NominalStreamOpts {
@@ -236,6 +162,7 @@ impl NominalDatasetStreamBuilder {
 pub type NominalDatasourceStream = NominalDatasetStream;
 
 pub struct NominalDatasetStream {
+    opts: NominalStreamOpts,
     running: Arc<AtomicBool>,
     unflushed_points: Arc<AtomicUsize>,
     primary_buffer: Arc<SeriesBuffer>,
@@ -350,6 +277,7 @@ impl NominalDatasetStream {
         }
 
         NominalDatasetStream {
+            opts,
             running,
             unflushed_points,
             primary_buffer,
@@ -359,27 +287,58 @@ impl NominalDatasetStream {
         }
     }
 
+    pub fn double_writer<'a>(
+        &'a self,
+        channel_descriptor: &'a ChannelDescriptor,
+    ) -> NominalDoubleWriter<'a> {
+        NominalDoubleWriter {
+            writer: NominalChannelWriter::new(self, channel_descriptor),
+        }
+    }
+
+    pub fn string_writer<'a>(
+        &'a self,
+        channel_descriptor: &'a ChannelDescriptor,
+    ) -> NominalStringWriter<'a> {
+        NominalStringWriter {
+            writer: NominalChannelWriter::new(self, channel_descriptor),
+        }
+    }
+
+    pub fn integer_writer<'a>(
+        &'a self,
+        channel_descriptor: &'a ChannelDescriptor,
+    ) -> NominalIntegerWriter<'a> {
+        NominalIntegerWriter {
+            writer: NominalChannelWriter::new(self, channel_descriptor),
+        }
+    }
+
     pub fn enqueue(&self, channel_descriptor: &ChannelDescriptor, new_points: impl IntoPoints) {
         let new_points = new_points.into_points();
         let new_count = points_len(&new_points);
 
+        self.when_capacity(new_count, |mut sb| {
+            sb.extend(channel_descriptor, new_points)
+        });
+    }
+
+    fn when_capacity(&self, new_count: usize, callback: impl FnOnce(SeriesBufferGuard)) {
         self.unflushed_points
             .fetch_add(new_count, Ordering::Release);
 
         if self.primary_buffer.has_capacity(new_count) {
             debug!("adding {} points to primary buffer", new_count);
-            self.primary_buffer
-                .add_points(channel_descriptor, new_points);
+            callback(self.primary_buffer.lock());
         } else if self.secondary_buffer.has_capacity(new_count) {
             // primary buffer is definitely full
             self.primary_handle.thread().unpark();
             debug!("adding {} points to secondary buffer", new_count);
-            self.secondary_buffer
-                .add_points(channel_descriptor, new_points);
+            callback(self.secondary_buffer.lock());
         } else {
-            warn!("both buffers are full, picking least recently flushed buffer to add to");
-            // both buffers are full - wait on the buffer that flushed least recently (i.e more
-            // likely that it's nearly done)
+            warn!(
+                "both buffers full, picking least recently flushed buffer to append single point"
+            );
             let buf = if self.primary_buffer < self.secondary_buffer {
                 debug!("waiting for primary buffer to flush...");
                 self.primary_handle.thread().unpark();
@@ -389,9 +348,116 @@ impl NominalDatasetStream {
                 self.secondary_handle.thread().unpark();
                 &self.secondary_buffer
             };
-            buf.add_on_notify(channel_descriptor, new_points);
-            debug!("added points after wait to chosen buffer")
+
+            buf.on_notify(callback);
         }
+    }
+}
+
+pub struct NominalChannelWriter<'ds, T>
+where
+    Vec<T>: IntoPoints,
+{
+    channel: &'ds ChannelDescriptor,
+    stream: &'ds NominalDatasetStream,
+    last_flushed_at: Instant,
+    unflushed: Vec<T>,
+}
+
+impl<T> NominalChannelWriter<'_, T>
+where
+    Vec<T>: IntoPoints,
+{
+    fn new<'ds>(
+        stream: &'ds NominalDatasetStream,
+        channel: &'ds ChannelDescriptor,
+    ) -> NominalChannelWriter<'ds, T> {
+        NominalChannelWriter {
+            channel,
+            stream,
+            last_flushed_at: Instant::now(),
+            unflushed: vec![],
+        }
+    }
+
+    fn push_point(&mut self, point: T) {
+        self.unflushed.push(point);
+        if self.unflushed.len() >= self.stream.opts.max_points_per_record
+            || self.last_flushed_at.elapsed() > self.stream.opts.max_request_delay
+        {
+            debug!(
+                "conditionally flushing {:?}, ({} points, {:?} since last)",
+                self.channel,
+                self.unflushed.len(),
+                self.last_flushed_at.elapsed()
+            );
+            self.flush();
+        }
+    }
+
+    fn flush(&mut self) {
+        if self.unflushed.is_empty() {
+            return;
+        }
+        info!(
+            "flushing writer for {:?} with {} points",
+            self.channel,
+            self.unflushed.len()
+        );
+        self.stream.when_capacity(self.unflushed.len(), |mut buf| {
+            let to_flush: Vec<T> = self.unflushed.drain(..).collect();
+            buf.extend(self.channel, to_flush);
+            self.last_flushed_at = Instant::now();
+        })
+    }
+}
+
+impl<T> Drop for NominalChannelWriter<'_, T>
+where
+    Vec<T>: IntoPoints,
+{
+    fn drop(&mut self) {
+        info!("flushing then dropping writer for: {:?}", self.channel);
+        self.flush();
+    }
+}
+
+pub struct NominalDoubleWriter<'ds> {
+    writer: NominalChannelWriter<'ds, DoublePoint>,
+}
+
+impl NominalDoubleWriter<'_> {
+    pub fn push(&mut self, timestamp: impl IntoTimestamp, value: f64) {
+        self.writer.push_point(DoublePoint {
+            timestamp: Some(timestamp.into_timestamp()),
+            value,
+        });
+    }
+}
+
+pub struct NominalIntegerWriter<'ds> {
+    writer: NominalChannelWriter<'ds, IntegerPoint>,
+}
+
+impl NominalIntegerWriter<'_> {
+    pub fn push(&mut self, timestamp: impl IntoTimestamp, value: i64) {
+        self.writer.push_point(IntegerPoint {
+            timestamp: Some(timestamp.into_timestamp()),
+            value,
+        });
+    }
+}
+
+pub struct NominalStringWriter<'ds> {
+    writer: NominalChannelWriter<'ds, StringPoint>,
+}
+
+impl NominalStringWriter<'_> {
+    pub fn push(&mut self, timestamp: impl IntoTimestamp, value: impl Into<String>) {
+        self.writer.push_point(StringPoint {
+            timestamp: Some(timestamp.into_timestamp()),
+            value: value.into(),
+        });
     }
 }
 
@@ -401,6 +467,40 @@ struct SeriesBuffer {
     flush_time: AtomicU64,
     condvar: Condvar,
     max_capacity: usize,
+}
+
+struct SeriesBufferGuard<'sb> {
+    sb: MutexGuard<'sb, HashMap<ChannelDescriptor, PointsType>>,
+    count: &'sb AtomicUsize,
+}
+
+impl SeriesBufferGuard<'_> {
+    fn extend(&mut self, channel_descriptor: &ChannelDescriptor, points: impl IntoPoints) {
+        let points = points.into_points();
+        let new_point_count = points_len(&points);
+
+        if !self.sb.contains_key(channel_descriptor) {
+            self.sb.insert(channel_descriptor.clone(), points);
+        } else {
+            match (self.sb.get_mut(channel_descriptor).unwrap(), points) {
+                (PointsType::DoublePoints(existing), PointsType::DoublePoints(new)) => {
+                    existing.points.extend(new.points)
+                }
+                (PointsType::StringPoints(existing), PointsType::StringPoints(new)) => {
+                    existing.points.extend(new.points)
+                }
+                (PointsType::IntegerPoints(existing), PointsType::IntegerPoints(new)) => {
+                    existing.points.extend(new.points)
+                }
+                (_, _) => {
+                    // todo: improve error
+                    panic!("mismatched types");
+                }
+            }
+        }
+
+        self.count.fetch_add(new_point_count, Ordering::Release);
+    }
 }
 
 impl PartialEq for SeriesBuffer {
@@ -437,83 +537,21 @@ impl SeriesBuffer {
         count == 0 || count + new_points_count <= self.max_capacity
     }
 
-    fn add_points(&self, channel_descriptor: &ChannelDescriptor, new_points: PointsType) {
-        self.inner_add_points(channel_descriptor, new_points, self.points.lock());
-    }
-
-    fn inner_add_points(
-        &self,
-        channel_descriptor: &ChannelDescriptor,
-        new_points: PointsType,
-        mut points_guard: MutexGuard<HashMap<ChannelDescriptor, PointsType>>,
-    ) {
-        self.count
-            .fetch_add(points_len(&new_points), Ordering::Release);
-        match (points_guard.get_mut(channel_descriptor), new_points) {
-            (None, new_points) => {
-                points_guard.insert(channel_descriptor.clone(), new_points);
-            }
-            (Some(PointsType::DoublePoints(points)), PointsType::DoublePoints(new_points)) => {
-                points
-                    .points
-                    .extend_from_slice(new_points.points.as_slice());
-            }
-            (Some(PointsType::StringPoints(points)), PointsType::StringPoints(new_points)) => {
-                points
-                    .points
-                    .extend_from_slice(new_points.points.as_slice());
-            }
-            (Some(PointsType::IntegerPoints(points)), PointsType::IntegerPoints(new_points)) => {
-                points
-                    .points
-                    .extend_from_slice(new_points.points.as_slice());
-            }
-            (Some(PointsType::DoublePoints(_)), PointsType::StringPoints(_)) => {
-                // todo: return an error instead of panicking
-                panic!(
-                    "attempting to add points of the wrong type to an existing channel. expected: double. provided: string"
-                )
-            }
-            (Some(PointsType::DoublePoints(_)), PointsType::IntegerPoints(_)) => {
-                // todo: return an error instead of panicking
-                panic!(
-                    "attempting to add points of the wrong type to an existing channel. expected: double. provided: string"
-                )
-            }
-            (Some(PointsType::StringPoints(_)), PointsType::DoublePoints(_)) => {
-                // todo: return an error instead of panicking
-                panic!(
-                    "attempting to add points of the wrong type to an existing channel. expected: string. provided: double"
-                )
-            }
-            (Some(PointsType::StringPoints(_)), PointsType::IntegerPoints(_)) => {
-                // todo: return an error instead of panicking
-                panic!(
-                    "attempting to add points of the wrong type to an existing channel. expected: string. provided: double"
-                )
-            }
-            (Some(PointsType::IntegerPoints(_)), PointsType::DoublePoints(_)) => {
-                // todo: return an error instead of panicking
-                panic!(
-                    "attempting to add points of the wrong type to an existing channel. expected: string. provided: double"
-                )
-            }
-            (Some(PointsType::IntegerPoints(_)), PointsType::StringPoints(_)) => {
-                // todo: return an error instead of panicking
-                panic!(
-                    "attempting to add points of the wrong type to an existing channel. expected: string. provided: double"
-                )
-            }
+    fn lock(&self) -> SeriesBufferGuard<'_> {
+        SeriesBufferGuard {
+            sb: self.points.lock(),
+            count: &self.count,
         }
     }
 
     fn take(&self) -> (usize, Vec<Series>) {
-        let mut points = self.points.lock();
+        let mut points = self.lock();
         self.flush_time.store(
             UNIX_EPOCH.elapsed().unwrap().as_nanos() as u64,
             Ordering::Release,
         );
         let result = points
+            .sb
             .drain()
             .map(|(ChannelDescriptor { name, tags }, points)| {
                 let channel = Channel { name };
@@ -544,7 +582,7 @@ impl SeriesBuffer {
         self.count.load(Ordering::Acquire)
     }
 
-    fn add_on_notify(&self, channel_descriptor: &ChannelDescriptor, new_points: PointsType) {
+    fn on_notify(&self, on_notify: impl FnOnce(SeriesBufferGuard)) {
         let mut points_lock = self.points.lock();
         // concurrency bug without this - the buffer could have been emptied since we
         // checked the count, so this will wait forever & block any new points from entering
@@ -553,7 +591,10 @@ impl SeriesBuffer {
         } else {
             debug!("buffer emptied since last check, skipping condvar wait");
         }
-        self.inner_add_points(channel_descriptor, new_points, points_lock);
+        on_notify(SeriesBufferGuard {
+            sb: points_lock,
+            count: &self.count,
+        });
     }
 
     fn notify(&self) -> bool {
@@ -606,7 +647,7 @@ fn batch_processor(
 
 impl Drop for NominalDatasetStream {
     fn drop(&mut self) {
-        debug!("starting drop for NominalDatasourceStream");
+        debug!("starting drop for NominalDatasetStream");
         self.running.store(false, Ordering::Release);
         while self.unflushed_points.load(Ordering::Acquire) > 0 {
             debug!(

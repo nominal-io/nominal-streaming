@@ -32,3 +32,6 @@ bytes = "1.10.1"
 
 [profile.release]
 debug = true
+
+[dev-dependencies]
+test-log = { version = "0.2.18", features = ["trace"] }

@@ -15,6 +15,7 @@ use conjure_object::ResourceIdentifier;
 use conjure_runtime::Agent;
 use conjure_runtime::BodyWriter;
 use conjure_runtime::Client;
+use conjure_runtime::Idempotency;
 use conjure_runtime::ResponseBody;
 use conjure_runtime::UserAgent;
 use nominal_api::api::rids::NominalDataSourceOrDatasetRid;
@@ -23,7 +24,7 @@ use nominal_api::upload::api::UploadServiceAsyncClient;
 use snap::write::FrameEncoder;
 use url::Url;
 
-use crate::stream::AuthProvider;
+use crate::types::AuthProvider;
 
 pub mod conjure {
     pub use conjure_error as error;
@@ -119,6 +120,9 @@ fn async_conjure_streaming_client(uri: Url) -> Result<Client, Error> {
         .read_timeout(std::time::Duration::from_secs(2))
         .write_timeout(std::time::Duration::from_secs(2))
         .backoff_slot_size(std::time::Duration::from_millis(10))
+        .max_num_retries(2)
+        // enables retries for POST endpoints like the streaming ingest one
+        .idempotency(Idempotency::Always)
         .build()
 }
 
