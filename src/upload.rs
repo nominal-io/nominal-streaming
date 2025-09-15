@@ -35,7 +35,7 @@ use tracing::error;
 use tracing::info;
 
 use crate::client::NominalApiClients;
-use crate::stream::AuthProvider;
+use crate::types::AuthProvider;
 
 const SMALL_FILE_SIZE_LIMIT: u64 = 256 * 1024 * 1024; // 256 MB
 

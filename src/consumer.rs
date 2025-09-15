@@ -25,7 +25,7 @@ use crate::client::NominalApiClients;
 use crate::client::{self};
 use crate::monitor::StreamHealthMonitor;
 use crate::notifier::NominalStreamListener;
-use crate::stream::AuthProvider;
+use crate::types::AuthProvider;
 use crate::upload::UploadManager;
 use crate::upload::UploaderOpts;
 
