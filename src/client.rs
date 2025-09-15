@@ -1,5 +1,4 @@
 use std::fmt::Debug;
-use std::fmt::Formatter;
 use std::io::Write;
 use std::sync::LazyLock;
 
@@ -18,7 +17,6 @@ use conjure_runtime::BodyWriter;
 use conjure_runtime::Client;
 use conjure_runtime::ResponseBody;
 use conjure_runtime::UserAgent;
-use derive_more::From;
 use nominal_api::api::rids::NominalDataSourceOrDatasetRid;
 use nominal_api::ingest::api::IngestServiceAsyncClient;
 use nominal_api::upload::api::UploadServiceAsyncClient;
@@ -62,9 +60,25 @@ impl AuthProvider for TokenAndWorkspaceRid {
 
 #[derive(Clone)]
 pub struct NominalApiClients {
-    pub streaming: StreamingClient,
+    pub streaming: Client,
     pub upload: UploadServiceAsyncClient<Client>,
     pub ingest: IngestServiceAsyncClient<Client>,
+}
+
+impl Debug for NominalApiClients {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NominalApiClients")
+            .field("streaming", &"Client")
+            .field("upload", &"UploadServiceAsyncClient<Client>")
+            .field("ingest", &"IngestServiceAsyncClient<Client>")
+            .finish()
+    }
+}
+
+impl NominalApiClients {
+    pub async fn send(&self, req: WriteRequest<'_>) -> Result<Response<ResponseBody>, Error> {
+        self.streaming.send(req).await
+    }
 }
 
 pub static PRODUCTION_CLIENTS: LazyLock<NominalApiClients> = LazyLock::new(|| NominalApiClients {
@@ -93,17 +107,7 @@ pub static STAGING_CLIENTS: LazyLock<NominalApiClients> = LazyLock::new(|| Nomin
     ),
 });
 
-pub static PRODUCTION_STREAMING_CLIENT: LazyLock<StreamingClient> = LazyLock::new(|| {
-    async_conjure_streaming_client("https://api.gov.nominal.io/api".try_into().unwrap())
-        .expect("Failed to create client")
-});
-
-pub static STAGING_STREAMING_CLIENT: LazyLock<StreamingClient> = LazyLock::new(|| {
-    async_conjure_streaming_client("https://api-staging.gov.nominal.io/api".try_into().unwrap())
-        .expect("Failed to create client")
-});
-
-fn async_conjure_streaming_client(uri: Url) -> Result<StreamingClient, Error> {
+fn async_conjure_streaming_client(uri: Url) -> Result<Client, Error> {
     Client::builder()
         .service("core-streaming-rs")
         .user_agent(UserAgent::new(Agent::new(
@@ -116,7 +120,6 @@ fn async_conjure_streaming_client(uri: Url) -> Result<StreamingClient, Error> {
         .write_timeout(std::time::Duration::from_secs(2))
         .backoff_slot_size(std::time::Duration::from_millis(10))
         .build()
-        .map(|client| client.into())
 }
 
 fn async_conjure_client(service: &'static str, uri: Url) -> Result<Client, Error> {
@@ -128,21 +131,6 @@ fn async_conjure_client(service: &'static str, uri: Url) -> Result<Client, Error
         )))
         .uri(uri)
         .build()
-}
-
-#[derive(From, Clone)]
-pub struct StreamingClient(Client);
-
-impl Debug for StreamingClient {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "StreamingClient")
-    }
-}
-
-impl StreamingClient {
-    pub async fn send(&self, req: WriteRequest<'_>) -> Result<Response<ResponseBody>, Error> {
-        self.0.send(req).await
-    }
 }
 
 pub type WriteRequest<'a> = Request<AsyncRequestBody<'a, BodyWriter>>;

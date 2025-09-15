@@ -18,8 +18,8 @@ pub mod prelude {
     pub use nominal_api::tonic::io::nominal::scout::api::proto::WriteRequest;
     pub use nominal_api::tonic::io::nominal::scout::api::proto::WriteRequestNominal;
 
-    pub use crate::client::PRODUCTION_STREAMING_CLIENT;
-    pub use crate::client::STAGING_STREAMING_CLIENT;
+    pub use crate::client::PRODUCTION_CLIENTS;
+    pub use crate::client::STAGING_CLIENTS;
     pub use crate::consumer::NominalCoreConsumer;
     pub use crate::stream::ChannelDescriptor;
     pub use crate::stream::NominalDatasetStream;

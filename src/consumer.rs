@@ -22,7 +22,6 @@ use rand::Rng;
 use tracing::warn;
 
 use crate::client::NominalApiClients;
-use crate::client::StreamingClient;
 use crate::client::{self};
 use crate::monitor::StreamHealthMonitor;
 use crate::notifier::NominalStreamListener;
@@ -57,7 +56,7 @@ pub trait WriteRequestConsumerFactory: Send + Sync {
 
 #[derive(Clone)]
 pub struct NominalCoreConsumer<A: AuthProvider> {
-    client: StreamingClient,
+    client: NominalApiClients,
     handle: tokio::runtime::Handle,
     auth_provider: A,
     data_source_rid: ResourceIdentifier,
@@ -65,7 +64,7 @@ pub struct NominalCoreConsumer<A: AuthProvider> {
 
 impl<A: AuthProvider> NominalCoreConsumer<A> {
     pub fn new(
-        client: StreamingClient,
+        client: NominalApiClients,
         handle: tokio::runtime::Handle,
         auth_provider: A,
         data_source_rid: ResourceIdentifier,
@@ -507,7 +506,7 @@ impl<A: AuthProvider> StoreAndForwardNominalCoreConsumerFactory<A> {
         simulated_success_rate: Option<f64>,
     ) -> Self {
         let core_consumer = NominalCoreConsumer::new(
-            clients.streaming.clone(),
+            clients.clone(),
             handle.clone(),
             auth_provider.clone(),
             data_source_rid,
@@ -702,7 +701,6 @@ where
         primary_result.and(secondary_result)
     }
 }
-
 
 #[derive(Debug, Clone)]
 pub struct ListeningWriteRequestConsumer<C>
