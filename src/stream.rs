@@ -250,11 +250,7 @@ impl NominalDatasetStream {
         channel_descriptor: &'a ChannelDescriptor,
     ) -> NominalDoubleWriter<'a> {
         NominalDoubleWriter {
-            writer: NominalChannelWriter {
-                channel: channel_descriptor,
-                stream: self,
-                unflushed: vec![],
-            },
+            writer: NominalChannelWriter::new(self, channel_descriptor),
         }
     }
 
@@ -263,11 +259,7 @@ impl NominalDatasetStream {
         channel_descriptor: &'a ChannelDescriptor,
     ) -> NominalStringWriter<'a> {
         NominalStringWriter {
-            writer: NominalChannelWriter {
-                channel: channel_descriptor,
-                stream: self,
-                unflushed: vec![],
-            },
+            writer: NominalChannelWriter::new(self, channel_descriptor),
         }
     }
 
@@ -276,11 +268,7 @@ impl NominalDatasetStream {
         channel_descriptor: &'a ChannelDescriptor,
     ) -> NominalIntegerWriter<'a> {
         NominalIntegerWriter {
-            writer: NominalChannelWriter {
-                channel: channel_descriptor,
-                stream: self,
-                unflushed: vec![],
-            },
+            writer: NominalChannelWriter::new(self, channel_descriptor),
         }
     }
 
@@ -293,18 +281,18 @@ impl NominalDatasetStream {
         });
     }
 
-    fn when_capacity(&self, new_count: usize, f: impl FnOnce(SeriesBufferGuard)) {
+    fn when_capacity(&self, new_count: usize, callback: impl FnOnce(SeriesBufferGuard)) {
         self.unflushed_points
             .fetch_add(new_count, Ordering::Release);
 
         if self.primary_buffer.has_capacity(new_count) {
             debug!("adding {} points to primary buffer", new_count);
-            f(self.primary_buffer.lock());
+            callback(self.primary_buffer.lock());
         } else if self.secondary_buffer.has_capacity(new_count) {
             // primary buffer is definitely full
             self.primary_handle.thread().unpark();
             debug!("adding {} points to secondary buffer", new_count);
-            f(self.secondary_buffer.lock());
+            callback(self.secondary_buffer.lock());
         } else {
             warn!(
                 "both buffers full, picking least recently flushed buffer to append single point"
@@ -319,7 +307,7 @@ impl NominalDatasetStream {
                 &self.secondary_buffer
             };
 
-            buf.on_notify(f);
+            buf.on_notify(callback);
         }
     }
 }
@@ -330,29 +318,54 @@ where
 {
     channel: &'ds ChannelDescriptor,
     stream: &'ds NominalDatasetStream,
+    last_flushed_at: Instant,
     unflushed: Vec<T>,
 }
 
-impl<'ds, T> NominalChannelWriter<'ds, T>
+impl<T> NominalChannelWriter<'_, T>
 where
     Vec<T>: IntoPoints,
 {
+    fn new<'ds>(
+        stream: &'ds NominalDatasetStream,
+        channel: &'ds ChannelDescriptor,
+    ) -> NominalChannelWriter<'ds, T> {
+        NominalChannelWriter {
+            channel,
+            stream,
+            last_flushed_at: Instant::now(),
+            unflushed: vec![],
+        }
+    }
+
     fn push_point(&mut self, point: T) {
-        // todo: time based check as well?
-        if self.unflushed.len() >= self.stream.opts.max_points_per_record {
+        self.unflushed.push(point);
+        if self.unflushed.len() >= self.stream.opts.max_points_per_record
+            || self.last_flushed_at.elapsed() > self.stream.opts.max_request_delay
+        {
+            debug!(
+                "conditionally flushing {:?}, ({} points, {:?} since last)",
+                self.channel,
+                self.unflushed.len(),
+                self.last_flushed_at.elapsed()
+            );
             self.flush();
         }
-        self.unflushed.push(point);
     }
 
     fn flush(&mut self) {
-        debug!(
-            "flushing double writer with {} points",
+        if self.unflushed.is_empty() {
+            return;
+        }
+        info!(
+            "flushing writer for {:?} with {} points",
+            self.channel,
             self.unflushed.len()
         );
-        self.stream.when_capacity(self.unflushed.len(), |mut f| {
+        self.stream.when_capacity(self.unflushed.len(), |mut buf| {
             let to_flush: Vec<T> = self.unflushed.drain(..).collect();
-            f.extend(self.channel, to_flush);
+            buf.extend(self.channel, to_flush);
+            self.last_flushed_at = Instant::now();
         })
     }
 }
@@ -362,6 +375,7 @@ where
     Vec<T>: IntoPoints,
 {
     fn drop(&mut self) {
+        info!("flushing then dropping writer for: {:?}", self.channel);
         self.flush();
     }
 }
@@ -418,7 +432,7 @@ struct SeriesBufferGuard<'sb> {
     count: &'sb AtomicUsize,
 }
 
-impl<'sb> SeriesBufferGuard<'sb> {
+impl SeriesBufferGuard<'_> {
     fn extend(&mut self, channel_descriptor: &ChannelDescriptor, points: impl IntoPoints) {
         let points = points.into_points();
         let new_point_count = points_len(&points);

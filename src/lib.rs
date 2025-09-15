@@ -30,6 +30,8 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::Arc;
     use std::sync::Mutex;
+    use std::thread;
+    use std::time::Duration;
     use std::time::UNIX_EPOCH;
 
     use nominal_api::tonic::io::nominal::scout::api::proto::IntegerPoint;
@@ -59,7 +61,7 @@ mod tests {
             test_consumer.clone(),
             NominalStreamOpts {
                 max_points_per_record: 1000,
-                max_request_delay: Default::default(),
+                max_request_delay: Duration::from_millis(100),
                 max_buffered_requests: 2,
                 request_dispatcher_tasks: 4,
             },
@@ -209,6 +211,27 @@ mod tests {
         } else {
             panic!("unexpected data type");
         }
+    }
+
+    #[test_log::test]
+    fn test_time_flush() {
+        let (test_consumer, stream) = create_test_stream();
+
+        let cd = ChannelDescriptor::new("channel_1");
+        let mut writer = stream.double_writer(&cd);
+
+        writer.push(UNIX_EPOCH.elapsed().unwrap(), 1.0);
+        thread::sleep(Duration::from_millis(101));
+        writer.push(UNIX_EPOCH.elapsed().unwrap(), 2.0); // first flush
+        thread::sleep(Duration::from_millis(101));
+        writer.push(UNIX_EPOCH.elapsed().unwrap(), 3.0); // second flush
+
+        drop(writer);
+        drop(stream);
+
+        let requests = test_consumer.requests.lock().unwrap();
+        dbg!(&requests);
+        assert_eq!(requests.len(), 2);
     }
 
     #[test_log::test]
