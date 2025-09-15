@@ -41,6 +41,7 @@ use crate::consumer::NominalCoreConsumer;
 use crate::consumer::RequestConsumerWithFallback;
 use crate::consumer::WriteRequestConsumer;
 use crate::consumer::WriteRequestConsumerFactory;
+use crate::notifier::LoggingListener;
 
 /// A descriptor for a channel.
 ///

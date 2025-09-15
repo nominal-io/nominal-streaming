@@ -664,6 +664,47 @@ impl<A: AuthProvider + 'static> StoreAndForwardNominalCoreConsumer<A> {
 }
 
 #[derive(Debug, Clone)]
+pub struct DualWriteRequestConsumer<P, S>
+where
+    P: WriteRequestConsumer,
+    S: WriteRequestConsumer,
+{
+    primary: P,
+    secondary: S,
+}
+
+impl<P, S> DualWriteRequestConsumer<P, S>
+where
+    P: WriteRequestConsumer,
+    S: WriteRequestConsumer,
+{
+    pub fn new(primary: P, secondary: S) -> Self {
+        Self { primary, secondary }
+    }
+}
+
+impl<P, S> WriteRequestConsumer for DualWriteRequestConsumer<P, S>
+where
+    P: WriteRequestConsumer + Send + Sync,
+    S: WriteRequestConsumer + Send + Sync,
+{
+    fn consume(&self, request: &WriteRequestNominal) -> ConsumerResult<()> {
+        let primary_result = self.primary.consume(request);
+        let secondary_result = self.secondary.consume(request);
+        if let Err(e) = &primary_result {
+            warn!("Sending request to primary consumer failed: {:?}", e);
+        }
+        if let Err(e) = &secondary_result {
+            warn!("Sending request to secondary consumer failed: {:?}", e);
+        }
+
+        // If either failed, return the error
+        primary_result.and(secondary_result)
+    }
+}
+
+
+#[derive(Debug, Clone)]
 pub struct ListeningWriteRequestConsumer<C>
 where
     C: WriteRequestConsumer,
