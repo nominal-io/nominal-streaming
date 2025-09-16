@@ -144,13 +144,24 @@ async fn async_main() {
 }
 ```
 
-The `Cargo.toml` will contain the following dependencies:
+### Simplified writing
 
-```toml
-[dependencies]
-nominal-api = "0.867.0"
-nominal-streaming = "0.2.0"
-tokio = { version = "1", features = ["full", "tracing"] }
+As a more direct shorthand for the above, you can use a writer:
+
+```rust
+let stream = NominalDatasetStream::new_with_consumer(
+    core_consumer(),
+    NominalStreamOpts::default()
+);
+let cd = ChannelDescriptor::new("channel_1");
+
+let mut writer = stream.double_writer(&cd);
+
+for i in 0..5000 {
+    let start_time = UNIX_EPOCH.elapsed().unwrap();
+    let value = i % 50;
+    writer.push(start_time, value as f64);
+}
 ```
 
 ## Streaming with fallback
@@ -170,6 +181,8 @@ let stream = NominalDatasetStream::new_with_consumer(
 ```
 
 Similarly, you can use `DualWriteRequestConsumer` to send data to two consumers simultaneously.
+
+The `Cargo.toml` will contain the following dependencies:
 
 ## Logging errors
 
