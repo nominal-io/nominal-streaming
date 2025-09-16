@@ -2,8 +2,8 @@ use std::error::Error;
 use std::fmt::Debug;
 use std::fmt::Formatter;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
+use std::sync::Arc;
 use std::sync::LazyLock;
 
 use apache_avro::types::Record;
@@ -205,6 +205,7 @@ pub enum AvroPathConfig {
     Raw(PathBuf),
 }
 
+#[expect(dead_code)]
 pub struct AvroFileConsumer {
     refcount: Arc<AtomicUsize>,
     id: usize,
@@ -215,8 +216,10 @@ pub struct AvroFileConsumer {
 
 impl Clone for AvroFileConsumer {
     fn clone(&self) -> Self {
-        let id = self.refcount.fetch_add(1, std::sync::atomic::Ordering::Release);
-        let new_path = self.generate_timestamped_path();
+        let id = self
+            .refcount
+            .fetch_add(1, std::sync::atomic::Ordering::Release);
+        let new_path = Self::generate_timestamped_path(self.path_config.clone(), id);
         let new_file = std::fs::OpenOptions::new()
             .create(true)
             .truncate(false)
@@ -267,17 +270,7 @@ impl AvroFileConsumer {
     }
 
     pub fn new_with_path_config(path_config: AvroPathConfig) -> std::io::Result<Self> {
-        let path = match &path_config {
-            AvroPathConfig::Template {
-                directory,
-                file_prefix,
-            } => {
-                let datetime = chrono::Utc::now().format("%Y%m%d_%H%M%S").to_string();
-                let filename = format!("{file_prefix}_{datetime}.avro");
-                directory.join(filename)
-            }
-            AvroPathConfig::Raw(path) => path.clone(),
-        };
+        let path = Self::generate_timestamped_path(path_config.clone(), 0);
 
         std::fs::create_dir_all(path.parent().unwrap_or(&path))?;
         let file = std::fs::OpenOptions::new()
@@ -335,52 +328,23 @@ impl AvroFileConsumer {
         self.path.clone()
     }
 
-    // rotates file the consumer points to. uses a timestamped filename
-    // returns old file name
-    pub fn rotate_file(&mut self) -> std::io::Result<PathBuf> {
-        let new_path = self.generate_timestamped_path();
-        self.rotate_file_with(new_path)
-    }
-
-    // rotates file the consumer points to. uses a custom path
-    pub fn rotate_file_with(&mut self, new_path: impl Into<PathBuf>) -> std::io::Result<PathBuf> {
-        let new_path = new_path.into();
-        std::fs::create_dir_all(new_path.parent().unwrap_or(&new_path))?;
-        let file = std::fs::OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .write(true)
-            .open(&new_path)?;
-
-        let new_writer = apache_avro::Writer::builder()
-            .schema(&CORE_AVRO_SCHEMA)
-            .writer(file)
-            .codec(apache_avro::Codec::Snappy)
-            .build();
-
-        *self.writer.lock() = new_writer;
-        let old_path = self.path.clone();
-
-        self.path = new_path;
-        Ok(old_path)
-    }
-
-    fn generate_timestamped_path(&self) -> PathBuf {
-        match &self.path_config {
+    fn generate_timestamped_path(path_config: AvroPathConfig, id: usize) -> PathBuf {
+        match &path_config {
             AvroPathConfig::Template {
                 directory,
                 file_prefix,
             } => {
                 let datetime = chrono::Utc::now().format("%Y%m%d_%H%M%S").to_string();
-                let filename = format!("{file_prefix}_{datetime}.avro");
+                let filename = format!("{datetime}_{id}_{file_prefix}.avro");
                 directory.join(filename)
             }
             AvroPathConfig::Raw(path) => {
                 let datetime = chrono::Utc::now().format("%Y%m%d_%H%M%S").to_string();
                 let filename = format!(
-                    "{}_{}.avro",
+                    "{}_{}_{}.avro",
+                    id,
+                    datetime,
                     path.file_stem().unwrap().to_str().unwrap(),
-                    datetime
                 );
                 path.with_file_name(filename)
             }
@@ -433,32 +397,6 @@ fn convert_timestamp_to_nanoseconds(timestamp: Timestamp) -> Value {
     Value::Long(timestamp.seconds * 1_000_000_000 + timestamp.nanos as i64)
 }
 
-// factory for timestamped and id-ed AvroFileConsumer instances
-// #[derive(Clone, Debug)]
-// pub struct AvroFileConsumerFactory {
-//     directory: PathBuf,
-//     file_prefix: String,
-// }
-//
-// impl AvroFileConsumerFactory {
-//     pub fn new(directory: impl Into<PathBuf>, file_prefix: Option<String>) -> Self {
-//         Self {
-//             directory: directory.into(),
-//             file_prefix: file_prefix.unwrap_or_else(|| DEFAULT_FILE_PREFIX.to_string()),
-//         }
-//     }
-// }
-//
-// impl WriteRequestConsumerFactory for AvroFileConsumerFactory {
-//     type Consumer = AvroFileConsumer;
-//
-//     fn create_consumer(&self, id: usize) -> Result<Self::Consumer, Box<dyn Error + Send + Sync>> {
-//         let file_prefix = format!("{}_{}", self.file_prefix, id);
-//         let consumer = AvroFileConsumer::new(self.directory.clone(), Some(file_prefix))?;
-//         Ok(consumer)
-//     }
-// }
-
 #[derive(Debug, Clone)]
 pub struct ReuploadOpts {
     pub idle_threshold: std::time::Duration,
@@ -499,91 +437,6 @@ impl<A: AuthProvider + 'static> Debug for StoreAndForwardNominalCoreConsumer<A> 
             .finish()
     }
 }
-
-// factory for ReuploadingNominalCoreConsumer instances
-// creates unique AvroFileConsumer instances for each consumer
-// for more optimal performance.
-// pub struct StoreAndForwardNominalCoreConsumerFactory<A: AuthProvider> {
-//     clients: NominalApiClients,
-//     core_consumer: NominalCoreConsumer<A>,
-//     fallback_consumer_factory: AvroFileConsumerFactory,
-//     auth_provider: A,
-//     handle: tokio::runtime::Handle,
-//     reupload_opts: ReuploadOpts,
-//     simulated_success_rate: Option<f64>,
-// }
-//
-// impl<A: AuthProvider> StoreAndForwardNominalCoreConsumerFactory<A> {
-//     pub fn new(
-//         clients: NominalApiClients,
-//         handle: tokio::runtime::Handle,
-//         auth_provider: A,
-//         data_source_rid: ResourceIdentifier,
-//         fallback_directory: impl Into<PathBuf>,
-//         fallback_file_prefix: Option<String>,
-//         reupload_opts: ReuploadOpts,
-//     ) -> Self {
-//         Self::new_with_success_rate(
-//             clients,
-//             handle,
-//             auth_provider,
-//             data_source_rid,
-//             fallback_directory,
-//             fallback_file_prefix,
-//             reupload_opts,
-//             None,
-//         )
-//     }
-//
-//     #[expect(clippy::too_many_arguments)]
-//     pub fn new_with_success_rate(
-//         clients: NominalApiClients,
-//         handle: tokio::runtime::Handle,
-//         auth_provider: A,
-//         data_source_rid: ResourceIdentifier,
-//         fallback_directory: impl Into<PathBuf>,
-//         fallback_file_prefix: Option<String>,
-//         reupload_opts: ReuploadOpts,
-//         simulated_success_rate: Option<f64>,
-//     ) -> Self {
-//         let core_consumer = NominalCoreConsumer::new(
-//             clients.clone(),
-//             handle.clone(),
-//             auth_provider.clone(),
-//             data_source_rid,
-//         );
-//         let fallback_consumer_factory =
-//             AvroFileConsumerFactory::new(fallback_directory, fallback_file_prefix);
-//
-//         Self {
-//             clients,
-//             core_consumer,
-//             fallback_consumer_factory,
-//             auth_provider,
-//             handle,
-//             reupload_opts,
-//             simulated_success_rate,
-//         }
-//     }
-// }
-//
-// impl<A: AuthProvider + 'static> WriteRequestConsumerFactory
-//     for StoreAndForwardNominalCoreConsumerFactory<A>
-// {
-//     type Consumer = StoreAndForwardNominalCoreConsumer<A>;
-//
-//     fn create_consumer(&self, id: usize) -> Result<Self::Consumer, Box<dyn Error + Send + Sync>> {
-//         Ok(StoreAndForwardNominalCoreConsumer::new_with_success_rate(
-//             self.clients.clone(),
-//             self.core_consumer.clone(),
-//             self.fallback_consumer_factory.create_consumer(id)?,
-//             self.auth_provider.clone(),
-//             self.handle.clone(),
-//             self.reupload_opts.clone(),
-//             self.simulated_success_rate,
-//         ))
-//     }
-// }
 
 impl<T: AuthProvider + 'static> WriteRequestConsumer for StoreAndForwardNominalCoreConsumer<T> {
     fn consume(&self, request: &WriteRequestNominal) -> ConsumerResult<()> {
@@ -673,7 +526,7 @@ impl<A: AuthProvider + 'static> StoreAndForwardNominalCoreConsumer<A> {
         reupload_opts: ReuploadOpts,
     ) {
         let handle = self.handle.clone();
-        let mut fallback_consumer = Arc::clone(&self.fallback_consumer);
+        let fallback_consumer = Arc::clone(&self.fallback_consumer);
         let stream_monitor = Arc::clone(&self.stream_monitor);
 
         handle.spawn(async move {
