@@ -29,6 +29,7 @@ use tracing::error;
 use tracing::info;
 use tracing::warn;
 
+use crate::client::TokenAndWorkspaceRid;
 use crate::client::PRODUCTION_CLIENTS;
 use crate::consumer::AvroFileConsumer;
 use crate::consumer::DualWriteRequestConsumer;
@@ -54,7 +55,7 @@ pub struct NominalStreamOpts {
 impl Default for NominalStreamOpts {
     fn default() -> Self {
         Self {
-            max_points_per_record: 250_000,
+            max_points_per_record: 50000,
             max_request_delay: Duration::from_millis(100),
             max_buffered_requests: 4,
             request_dispatcher_tasks: 8,
@@ -68,6 +69,7 @@ pub struct NominalDatasetStreamBuilder {
     stream_to_file: Option<PathBuf>,
     file_fallback: Option<PathBuf>,
     reupload_opts: Option<ReuploadOpts>,
+    workspace_rid: Option<ResourceIdentifier>,
     opts: NominalStreamOpts,
 }
 
@@ -78,6 +80,7 @@ impl NominalDatasetStreamBuilder {
             stream_to_file: None,
             file_fallback: None,
             reupload_opts: None,
+            workspace_rid: None,
             opts: NominalStreamOpts::default(),
         }
     }
@@ -96,17 +99,22 @@ impl NominalDatasetStreamBuilder {
         self
     }
 
-    pub fn with_file_fallback(
-        mut self,
-        file_path: impl Into<PathBuf>,
-        reupload_opts: Option<ReuploadOpts>,
-    ) -> Self {
+    pub fn with_file_fallback(mut self, file_path: impl Into<PathBuf>) -> Self {
         self.file_fallback = Some(file_path.into());
-        self.reupload_opts = reupload_opts;
         self
     }
 
-    pub fn with_options(mut self, opts: NominalStreamOpts) -> Self {
+    pub fn with_reupload_options(mut self, opts: ReuploadOpts) -> Self {
+        self.reupload_opts = Some(opts);
+        self
+    }
+
+    pub fn with_workspace_rid(mut self, rid: ResourceIdentifier) -> Self {
+        self.workspace_rid = Some(rid);
+        self
+    }
+
+    pub fn with_streaming_options(mut self, opts: NominalStreamOpts) -> Self {
         self.opts = opts;
         self
     }
@@ -116,6 +124,7 @@ impl NominalDatasetStreamBuilder {
         let file_consumer = self.file_consumer();
         let fallback_consumer = self.fallback_consumer();
         let reupload_opts = self.reupload_opts.clone();
+        let workspace_rid = self.workspace_rid.clone();
 
         match (core_consumer, file_consumer, fallback_consumer) {
             (None, None, _) => panic!("nominal dataset stream must either stream to file or core"),
@@ -125,8 +134,13 @@ impl NominalDatasetStreamBuilder {
             (Some(core), None, None) => self.into_stream(core),
             (Some(core), None, Some(fallback)) => {
                 if let Some(opts) = reupload_opts {
+                    if workspace_rid.is_none() {
+                        panic!("reuploads require a workspace rid to be set");
+                    }
                     self.into_stream(StoreAndForwardNominalCoreConsumer::new(
-                        core, fallback, opts,
+                        core,
+                        fallback,
+                        opts
                     ))
                 } else {
                     self.into_stream(RequestConsumerWithFallback::new(core, Arc::new(fallback)))
@@ -143,14 +157,19 @@ impl NominalDatasetStreamBuilder {
         }
     }
 
-    fn core_consumer(&self) -> Option<NominalCoreConsumer<BearerToken>> {
+    fn core_consumer(&self) -> Option<NominalCoreConsumer<TokenAndWorkspaceRid>> {
+        let workspace_rid = self.workspace_rid.clone();
         self.stream_to_core
             .as_ref()
             .map(|(token, dataset, handle)| {
+                let auth_provider = TokenAndWorkspaceRid {
+                    token: token.clone(),
+                    workspace_rid: workspace_rid.clone(),
+                };
                 NominalCoreConsumer::new(
                     PRODUCTION_CLIENTS.clone(),
                     handle.clone(),
-                    token.clone(),
+                    auth_provider,
                     dataset.clone(),
                 )
             })

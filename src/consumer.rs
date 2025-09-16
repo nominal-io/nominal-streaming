@@ -324,10 +324,6 @@ impl AvroFileConsumer {
         Ok(())
     }
 
-    pub fn get_path(&self) -> PathBuf {
-        self.path.clone()
-    }
-
     fn generate_timestamped_path(path_config: AvroPathConfig, id: usize) -> PathBuf {
         match &path_config {
             AvroPathConfig::Template {
@@ -472,43 +468,33 @@ impl<A: AuthProvider + 'static> StoreAndForwardNominalCoreConsumer<A> {
         fallback_consumer: AvroFileConsumer,
         reupload_opts: ReuploadOpts,
     ) -> Self {
-        let client = core_consumer.client.clone();
-        let auth_provider = core_consumer.auth_provider.clone();
-        let handle = core_consumer.handle.clone();
-        Self::new_with_success_rate(
-            client,
-            core_consumer,
-            Arc::new(Mutex::new(fallback_consumer)),
-            auth_provider,
-            handle,
-            reupload_opts,
-            None,
-        )
+        Self::new_with_success_rate(core_consumer, fallback_consumer, reupload_opts, None)
     }
 
     pub fn new_with_success_rate(
-        clients: NominalApiClients,
         core_consumer: NominalCoreConsumer<A>,
-        fallback_consumer: Arc<Mutex<AvroFileConsumer>>,
-        auth_provider: A,
-        handle: tokio::runtime::Handle,
+        fallback_consumer: AvroFileConsumer,
         reupload_opts: ReuploadOpts,
         simulated_success_rate: Option<f64>,
     ) -> Self {
         let stream_monitor = Arc::new(StreamHealthMonitor::new());
         let (file_tx, file_rx) = async_channel::bounded::<PathBuf>(5);
+        let clients = core_consumer.client.clone();
+        let auth_provider = core_consumer.auth_provider.clone();
+        let handle = core_consumer.handle.clone();
+        let data_source_rid = core_consumer.data_source_rid.clone();
         let upload_manager = UploadManager::new(
-            clients.clone(),
+            clients,
             reqwest::Client::new(),
             handle.clone(),
             reupload_opts.upload_opts.clone(),
             file_rx,
             auth_provider,
-            core_consumer.data_source_rid.clone(),
+            data_source_rid,
         );
         let consumer = Self {
             core_consumer,
-            fallback_consumer,
+            fallback_consumer: Arc::new(Mutex::new(fallback_consumer)),
             stream_monitor,
             handle,
             simulated_success_rate,

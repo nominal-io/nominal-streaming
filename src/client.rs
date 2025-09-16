@@ -46,7 +46,7 @@ impl AuthProvider for BearerToken {
 #[derive(Debug, Clone)]
 pub struct TokenAndWorkspaceRid {
     pub token: BearerToken,
-    pub workspace_rid: ResourceIdentifier,
+    pub workspace_rid: Option<ResourceIdentifier>,
 }
 
 impl AuthProvider for TokenAndWorkspaceRid {
@@ -55,7 +55,7 @@ impl AuthProvider for TokenAndWorkspaceRid {
     }
 
     fn workspace_rid(&self) -> Option<ResourceIdentifier> {
-        Some(self.workspace_rid.clone())
+        self.workspace_rid.clone()
     }
 }
 
