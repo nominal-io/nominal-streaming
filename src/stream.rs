@@ -138,9 +138,7 @@ impl NominalDatasetStreamBuilder {
                         panic!("reuploads require a workspace rid to be set");
                     }
                     self.into_stream(StoreAndForwardNominalCoreConsumer::new(
-                        core,
-                        fallback,
-                        opts
+                        core, fallback, opts,
                     ))
                 } else {
                     self.into_stream(RequestConsumerWithFallback::new(core, Arc::new(fallback)))
