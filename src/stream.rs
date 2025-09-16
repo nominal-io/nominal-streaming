@@ -29,12 +29,15 @@ use tracing::error;
 use tracing::info;
 use tracing::warn;
 
-use crate::client::PRODUCTION_STREAMING_CLIENT;
+use crate::client::TokenAndWorkspaceRid;
+use crate::client::PRODUCTION_CLIENTS;
 use crate::consumer::AvroFileConsumer;
 use crate::consumer::DualWriteRequestConsumer;
 use crate::consumer::ListeningWriteRequestConsumer;
 use crate::consumer::NominalCoreConsumer;
 use crate::consumer::RequestConsumerWithFallback;
+use crate::consumer::ReuploadOpts;
+use crate::consumer::StoreAndForwardNominalCoreConsumer;
 use crate::consumer::WriteRequestConsumer;
 use crate::notifier::LoggingListener;
 use crate::types::ChannelDescriptor;
@@ -52,7 +55,7 @@ pub struct NominalStreamOpts {
 impl Default for NominalStreamOpts {
     fn default() -> Self {
         Self {
-            max_points_per_record: 250_000,
+            max_points_per_record: 50000,
             max_request_delay: Duration::from_millis(100),
             max_buffered_requests: 4,
             request_dispatcher_tasks: 8,
@@ -60,18 +63,25 @@ impl Default for NominalStreamOpts {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct NominalDatasetStreamBuilder {
     stream_to_core: Option<(BearerToken, ResourceIdentifier, tokio::runtime::Handle)>,
     stream_to_file: Option<PathBuf>,
     file_fallback: Option<PathBuf>,
+    reupload_opts: Option<ReuploadOpts>,
+    workspace_rid: Option<ResourceIdentifier>,
     opts: NominalStreamOpts,
 }
 
 impl NominalDatasetStreamBuilder {
     pub fn new() -> NominalDatasetStreamBuilder {
         NominalDatasetStreamBuilder {
-            ..Default::default()
+            stream_to_core: None,
+            stream_to_file: None,
+            file_fallback: None,
+            reupload_opts: None,
+            workspace_rid: None,
+            opts: NominalStreamOpts::default(),
         }
     }
 
@@ -94,7 +104,17 @@ impl NominalDatasetStreamBuilder {
         self
     }
 
-    pub fn with_options(mut self, opts: NominalStreamOpts) -> Self {
+    pub fn with_reupload_options(mut self, opts: ReuploadOpts) -> Self {
+        self.reupload_opts = Some(opts);
+        self
+    }
+
+    pub fn with_workspace_rid(mut self, rid: ResourceIdentifier) -> Self {
+        self.workspace_rid = Some(rid);
+        self
+    }
+
+    pub fn with_streaming_options(mut self, opts: NominalStreamOpts) -> Self {
         self.opts = opts;
         self
     }
@@ -103,6 +123,8 @@ impl NominalDatasetStreamBuilder {
         let core_consumer = self.core_consumer();
         let file_consumer = self.file_consumer();
         let fallback_consumer = self.fallback_consumer();
+        let reupload_opts = self.reupload_opts.clone();
+        let workspace_rid = self.workspace_rid.clone();
 
         match (core_consumer, file_consumer, fallback_consumer) {
             (None, None, _) => panic!("nominal dataset stream must either stream to file or core"),
@@ -111,7 +133,16 @@ impl NominalDatasetStreamBuilder {
             }
             (Some(core), None, None) => self.into_stream(core),
             (Some(core), None, Some(fallback)) => {
-                self.into_stream(RequestConsumerWithFallback::new(core, fallback))
+                if let Some(opts) = reupload_opts {
+                    if workspace_rid.is_none() {
+                        panic!("reuploads require a workspace rid to be set");
+                    }
+                    self.into_stream(StoreAndForwardNominalCoreConsumer::new(
+                        core, fallback, opts,
+                    ))
+                } else {
+                    self.into_stream(RequestConsumerWithFallback::new(core, Arc::new(fallback)))
+                }
             }
             (None, Some(file), None) => self.into_stream(file),
             (None, Some(file), Some(fallback)) => {
@@ -124,14 +155,19 @@ impl NominalDatasetStreamBuilder {
         }
     }
 
-    fn core_consumer(&self) -> Option<NominalCoreConsumer<BearerToken>> {
+    fn core_consumer(&self) -> Option<NominalCoreConsumer<TokenAndWorkspaceRid>> {
+        let workspace_rid = self.workspace_rid.clone();
         self.stream_to_core
             .as_ref()
             .map(|(token, dataset, handle)| {
+                let auth_provider = TokenAndWorkspaceRid {
+                    token: token.clone(),
+                    workspace_rid: workspace_rid.clone(),
+                };
                 NominalCoreConsumer::new(
-                    PRODUCTION_STREAMING_CLIENT.clone(),
+                    PRODUCTION_CLIENTS.clone(),
                     handle.clone(),
-                    token.clone(),
+                    auth_provider,
                     dataset.clone(),
                 )
             })
@@ -149,7 +185,7 @@ impl NominalDatasetStreamBuilder {
             .map(|path| AvroFileConsumer::new_with_full_path(path).unwrap())
     }
 
-    fn into_stream<C: WriteRequestConsumer + 'static>(self, consumer: C) -> NominalDatasetStream {
+    fn into_stream<CC: WriteRequestConsumer + 'static>(self, consumer: CC) -> NominalDatasetStream {
         let logging_consumer =
             ListeningWriteRequestConsumer::new(consumer, vec![Arc::new(LoggingListener)]);
         NominalDatasetStream::new_with_consumer(logging_consumer, self.opts)
@@ -181,13 +217,10 @@ impl NominalDatasetStream {
     ) -> Self {
         let primary_buffer = Arc::new(SeriesBuffer::new(opts.max_points_per_record));
         let secondary_buffer = Arc::new(SeriesBuffer::new(opts.max_points_per_record));
-
         let (request_tx, request_rx) =
             crossbeam_channel::bounded::<(WriteRequestNominal, usize)>(opts.max_buffered_requests);
-
         let running = Arc::new(AtomicBool::new(true));
         let unflushed_points = Arc::new(AtomicUsize::new(0));
-
         let primary_handle = thread::Builder::new()
             .name("nmstream_primary".to_string())
             .spawn({
@@ -199,7 +232,6 @@ impl NominalDatasetStream {
                 }
             })
             .unwrap();
-
         let secondary_handle = thread::Builder::new()
             .name("nmstream_secondary".to_string())
             .spawn({
@@ -215,8 +247,6 @@ impl NominalDatasetStream {
                 }
             })
             .unwrap();
-
-        let consumer = Arc::new(consumer);
 
         for i in 0..opts.request_dispatcher_tasks {
             thread::Builder::new()
@@ -622,7 +652,7 @@ fn request_dispatcher<C: WriteRequestConsumer + 'static>(
     running: Arc<AtomicBool>,
     unflushed_points: Arc<AtomicUsize>,
     request_rx: crossbeam_channel::Receiver<(WriteRequestNominal, usize)>,
-    consumer: Arc<C>,
+    consumer: C,
 ) {
     let mut total_request_time = 0;
     loop {
