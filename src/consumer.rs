@@ -468,15 +468,15 @@ impl<T: AuthProvider + 'static> WriteRequestConsumer for StoreAndForwardNominalC
 
 impl<A: AuthProvider + 'static> StoreAndForwardNominalCoreConsumer<A> {
     pub fn new(
-        clients: NominalApiClients,
         core_consumer: NominalCoreConsumer<A>,
         fallback_consumer: AvroFileConsumer,
-        auth_provider: A,
-        handle: tokio::runtime::Handle,
         reupload_opts: ReuploadOpts,
     ) -> Self {
+        let client = core_consumer.client.clone();
+        let auth_provider = core_consumer.auth_provider.clone();
+        let handle = core_consumer.handle.clone();
         Self::new_with_success_rate(
-            clients,
+            client,
             core_consumer,
             Arc::new(Mutex::new(fallback_consumer)),
             auth_provider,

@@ -35,6 +35,8 @@ use crate::consumer::DualWriteRequestConsumer;
 use crate::consumer::ListeningWriteRequestConsumer;
 use crate::consumer::NominalCoreConsumer;
 use crate::consumer::RequestConsumerWithFallback;
+use crate::consumer::ReuploadOpts;
+use crate::consumer::StoreAndForwardNominalCoreConsumer;
 use crate::consumer::WriteRequestConsumer;
 use crate::notifier::LoggingListener;
 use crate::types::ChannelDescriptor;
@@ -65,6 +67,7 @@ pub struct NominalDatasetStreamBuilder {
     stream_to_core: Option<(BearerToken, ResourceIdentifier, tokio::runtime::Handle)>,
     stream_to_file: Option<PathBuf>,
     file_fallback: Option<PathBuf>,
+    reupload_opts: Option<ReuploadOpts>,
     opts: NominalStreamOpts,
 }
 
@@ -74,6 +77,7 @@ impl NominalDatasetStreamBuilder {
             stream_to_core: None,
             stream_to_file: None,
             file_fallback: None,
+            reupload_opts: None,
             opts: NominalStreamOpts::default(),
         }
     }
@@ -92,8 +96,13 @@ impl NominalDatasetStreamBuilder {
         self
     }
 
-    pub fn with_file_fallback(mut self, file_path: impl Into<PathBuf>) -> Self {
+    pub fn with_file_fallback(
+        mut self,
+        file_path: impl Into<PathBuf>,
+        reupload_opts: Option<ReuploadOpts>,
+    ) -> Self {
         self.file_fallback = Some(file_path.into());
+        self.reupload_opts = reupload_opts;
         self
     }
 
@@ -105,7 +114,8 @@ impl NominalDatasetStreamBuilder {
     pub fn build(self) -> NominalDatasetStream {
         let core_consumer = self.core_consumer();
         let file_consumer = self.file_consumer();
-        let fallback_consumer = self.fallback_consumer().map(Arc::new);
+        let fallback_consumer = self.fallback_consumer();
+        let reupload_opts = self.reupload_opts.clone();
 
         match (core_consumer, file_consumer, fallback_consumer) {
             (None, None, _) => panic!("nominal dataset stream must either stream to file or core"),
@@ -114,7 +124,13 @@ impl NominalDatasetStreamBuilder {
             }
             (Some(core), None, None) => self.into_stream(core),
             (Some(core), None, Some(fallback)) => {
-                self.into_stream(RequestConsumerWithFallback::new(core, fallback))
+                if let Some(opts) = reupload_opts {
+                    self.into_stream(StoreAndForwardNominalCoreConsumer::new(
+                        core, fallback, opts,
+                    ))
+                } else {
+                    self.into_stream(RequestConsumerWithFallback::new(core, Arc::new(fallback)))
+                }
             }
             (None, Some(file), None) => self.into_stream(file),
             (None, Some(file), Some(fallback)) => {
