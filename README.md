@@ -54,7 +54,33 @@ stream.enqueue(
 Note that we are enquing our data onto Channel 1, with tags "name" and "batch".
 These are just examples, you can choose your own.
 
-## Stream options
+### Builder interface
+
+A shorthand for setting up the stream as above uses the [builder interface](https://docs.rs/nominal-streaming/latest/nominal_streaming/stream/struct.NominalDatasetStream.html#method.builder):
+
+```rust
+let stream = NominalDatasetStreamBuilder::new()
+    .stream_to_file("/tmp/fallback.avro")
+    .build();
+
+```
+
+### Writer interface
+
+A shorthand for enqueuing values onto the stream is the [writer interface]():
+
+```rust
+let mut writer = stream.double_writer(&channel_descriptor);
+
+// Stream single data point
+let start_time = UNIX_EPOCH.elapsed().unwrap();
+let value = i % 50;
+writer.push(start_Time, value as f64);
+}
+
+```
+
+### Stream options
 
 Above, you saw an example using [`NominalStreamOpts::default`](https://docs.rs/nominal-streaming/latest/nominal_streaming/stream/struct.NominalStreamOpts.html). The
 following stream options can be set:
@@ -68,11 +94,17 @@ NominalStreamOpts {
 }
 ```
 
-## Full example: streaming from memory to Nominal Core
+When using the builder, you can set it using `.with_options(...)`.
 
-In this simplest case, we want to stream some values from memory into a [Nominal Dataset](https://docs.nominal.io/core/sdk/python-client/streaming/overview#streaming-data-to-a-dataset).
+## Full example: streaming from memory to Nominal Core, with file fallback
 
-Note that the [`NominalCoreConsumer`](https://docs.rs/nominal-streaming/latest/nominal_streaming/consumer/struct.NominalCoreConsumer.html) requires the async [Tokio runtime](https://tokio.rs/).
+In this typical scenario, we want to stream some values from memory into a [Nominal Dataset](https://docs.nominal.io/core/sdk/python-client/streaming/overview#streaming-data-to-a-dataset).
+If the upload fails, we'd like to store the data points to an AVRO file.
+
+Note that we set up the async [Tokio runtime](https://tokio.rs/), since that is required by the underlying [`NominalCoreConsumer`](https://docs.rs/nominal-streaming/latest/nominal_streaming/consumer/struct.NominalCoreConsumer.html).
+
+For simplicity, we use the builder interface.
+We'll discuss further down how to build the various components explicitly.
 
 ```rust
 use nominal_streaming::prelude::*;
@@ -81,6 +113,51 @@ use std::time::UNIX_EPOCH;
 
 static DATASET_RID: &str = "ri.catalog....";  // your dataset ID here
 
+
+fn main() {
+    // The NominalCoreConsumer requires a tokio runtime
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .worker_threads(4)
+        .thread_name("tokio")
+        .build()
+        .expect("Failed to create Tokio runtime")
+        .block_on(async_main());
+}
+
+
+async fn async_main() {
+    let token = BearerToken::new(
+        std::env::var("NOMINAL_TOKEN")
+            .expect("NOMINAL_TOKEN environment variable not set")
+            .as_str(),
+    )
+    .expect("Invalid token");
+    let dataset_rid = ResourceIdentifier::new(DATASET_RID).unwrap();
+    let handle = tokio::runtime::Handle::current();
+
+    let stream = NominalDatasetStreamBuilder::new()
+        .stream_to_core(token, dataset_rid, handle)
+        .with_file_fallback("fallback.avro")
+        .build();
+
+    let channel_descriptor = ChannelDescriptor::with_tags("channel_1", [("experiment_id", "123")]);
+
+    let mut writer = stream.double_writer(&channel_descriptor);
+
+    // Generate and upload 100,000 data points
+    for i in 0..100_000 {
+        let start_time = UNIX_EPOCH.elapsed().unwrap();
+        let value = i % 50;
+        writer.push(start_Time, value as f64);
+    }
+}
+```
+
+Instead of using the builder interface, we could have constructed the stream explicitly from consumers:
+
+```rust
+use nominal_streaming::consumer::RequestConsumerWithFallback;
 
 fn core_consumer() -> NominalCoreConsumer<BearerToken> {
     let token = BearerToken::new(
@@ -100,79 +177,7 @@ fn core_consumer() -> NominalCoreConsumer<BearerToken> {
     )
 }
 
-
-fn main() {
-    // The NominalCoreConsumer requires a tokio runtime
-    tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .worker_threads(4)
-        .thread_name("tokio")
-        .build()
-        .expect("Failed to create Tokio runtime")
-        .block_on(async_main());
-}
-
-
-async fn async_main() {
-    let stream = NominalDatasetStream::new_with_consumer(
-        core_consumer(),
-        NominalStreamOpts::default()
-    );
-
-    // Generate 50 batches of test data, each containing 100,000 data points
-    for batch in 0..50 {
-        let mut points = Vec::new();
-
-        for i in 0..100_000 {
-            let start_time = UNIX_EPOCH.elapsed().unwrap();
-            points.push(DoublePoint {
-                timestamp: Some(Timestamp {
-                    seconds: start_time.as_secs() as i64,
-                    nanos: start_time.subsec_nanos() as i32 + i,
-                }),
-                value: (i % 50) as f64,
-            });
-        }
-
-        // Push current batch onto the upload queue
-        println!("Enqueue batch: {}", batch);
-        stream.enqueue(
-            &ChannelDescriptor::with_tags("channel_1", [("batch_id", batch.to_string())]),
-            points,
-        );
-    }
-}
-```
-
-### Simplified writing
-
-As a more direct shorthand for the above, you can use a writer:
-
-```rust
-let stream = NominalDatasetStream::new_with_consumer(
-    core_consumer(),
-    NominalStreamOpts::default()
-);
-let cd = ChannelDescriptor::new("channel_1");
-
-let mut writer = stream.double_writer(&cd);
-
-for i in 0..5000 {
-    let start_time = UNIX_EPOCH.elapsed().unwrap();
-    let value = i % 50;
-    writer.push(start_time, value as f64);
-}
-```
-
-## Streaming with fallback
-
-Often, it is imperative that we capture data values even when a
-network connection is interrupted. For that purpose, the library has
-support for a fallback, so that it attempts to write to a secondary
-consumer if the first one fails:
-
-```rust
-use nominal_streaming::consumer::RequestConsumerWithFallback;
+let avro_consumer = AvroFileConsumer::new_with_full_path("/tmp/my_stream.avro").expect("Could not open Avro file");
 
 let stream = NominalDatasetStream::new_with_consumer(
     RequestConsumerWithFallback::new(core_consumer(), avro_consumer),
@@ -182,31 +187,14 @@ let stream = NominalDatasetStream::new_with_consumer(
 
 Similarly, you can use `DualWriteRequestConsumer` to send data to two consumers simultaneously.
 
-The `Cargo.toml` will contain the following dependencies:
-
 ## Logging errors
 
-Most of the time, when things go wrong, we also want some form of reporting.
-That is the purpose of the `ListeningWriteRequestConsumer`:
-
-```rust
-use nominal_streaming::consumer::ListeningWriteRequestConsumer;
-use nominal_streaming::notifier::LoggingListener;
-use std::sync::Arc;
-
-let consumer_with_logging = ListeningWriteRequestConsumer::new(
-    core_consumer(),
-    vec![Arc::new(LoggingListener)]
-);
-```
-
-You'll also need to enable tracing in `main`:
+Most of the time, when things go wrong, we also want some form of
+reporting, which you can enable in `main()`:
 
 ```rust
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::EnvFilter;
-use tracing_subscriber::layer::SubscriberExt;
-use tracing_subscriber::util::SubscriberInitExt;
 
 tracing_subscriber::registry()
 .with(
@@ -228,41 +216,4 @@ And add the necessary tracing dependencies to `Cargo.toml`:
 ```toml
 tracing = "^0.1"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
-```
-
-If you want to avoid printing full tracebacks for errors, customize the error printing:
-
-```rust
-use nominal_streaming::notifier::NominalStreamListener;
-use std::error::Error;
-use tracing::error;
-
-#[derive(Debug, Default, Clone)]
-pub struct MyListener;
-
-impl NominalStreamListener for MyListener {
-    fn on_error(&self, message: &str, _error: &dyn Error) {
-        error!("{}", message);
-    }
-}
-
-let stream = ListeningWriteRequestConsumer::new(core_consumer(), vec![Arc::new(MyListener)]);
-```
-
-## The builder interface
-
-The latest version of `nominal-streaming` contains a [builder interface](https://docs.rs/nominal-streaming/latest/nominal_streaming/stream/struct.NominalDatasetStream.html#method.builder) to make all of the above simpler.
-
-E.g., you can now do:
-
-```rust
-use nominal_streaming::stream::NominalDatasetStreamBuilder;
-
-let handle = tokio::runtime::Handle::current();
-let dataset_rid = ResourceIdentifier::new(DATASET_RID).unwrap();
-
-let stream = NominalDatasetStreamBuilder::new()
-  .stream_to_core(token, dataset_rid, handle)
-  .with_file_fallback("/tmp/fallback.avro")
-  .build();
 ```
