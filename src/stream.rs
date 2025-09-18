@@ -99,14 +99,14 @@ impl NominalDatasetStreamBuilder {
     }
 
     #[cfg(feature = "logging")]
-    pub fn enable_logging(self, level: tracing::level_filters::LevelFilter) -> Self {
+    pub fn enable_logging(self) -> Self {
         use tracing_subscriber::layer::SubscriberExt;
         use tracing_subscriber::util::SubscriberInitExt;
 
         let subscriber = tracing_subscriber::registry()
             .with(
                 tracing_subscriber::EnvFilter::builder()
-                    .with_default_directive(level.into())
+                    .with_default_directive(tracing_subscriber::filter::LevelFilter::INFO.into())
                     .from_env_lossy(),
             )
             .with(tracing_subscriber::fmt::layer());
