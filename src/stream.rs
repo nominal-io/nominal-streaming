@@ -27,7 +27,6 @@ use parking_lot::MutexGuard;
 use tracing::debug;
 use tracing::error;
 use tracing::info;
-use tracing::level_filters::LevelFilter;
 use tracing::warn;
 
 use crate::client::PRODUCTION_STREAMING_CLIENT;
@@ -100,7 +99,8 @@ impl NominalDatasetStreamBuilder {
         self
     }
 
-    pub fn enable_logging(self, level: LevelFilter) -> Self {
+    #[cfg(feature = "logging")]
+    pub fn enable_logging(self, level: tracing::level_filters::LevelFilter) -> Self {
         use tracing_subscriber::layer::SubscriberExt;
         use tracing_subscriber::util::SubscriberInitExt;
 
@@ -113,7 +113,7 @@ impl NominalDatasetStreamBuilder {
             .with(tracing_subscriber::fmt::layer());
 
         if let Err(error) = subscriber.try_init() {
-            eprintln!("failed to initialize tracing subscriber: {error}");
+            eprintln!("nominal streaming failed to enabled logging: {error}");
         }
 
         self
