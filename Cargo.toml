@@ -10,7 +10,7 @@ conjure-error = "4"
 conjure-http = "4"
 conjure-object = "4"
 conjure-runtime = "6"
-nominal-api = "0.867.0"
+nominal-api = "0.917.0"
 prost = "0.13"
 snap = "1"
 tokio = { version = "1", features = ["full", "tracing"] }
