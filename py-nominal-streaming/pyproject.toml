@@ -1,0 +1,28 @@
+[project]
+name = "nominal-streaming"
+description = "Python bindings for the Nominal Rust streaming client"
+requires-python = ">=3.9"
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Rust",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+]
+
+# Let maturin source the version from Cargo.toml
+dynamic = ["version"]
+
+[build-system]
+requires = ["maturin>=1.5,<2.0"]
+build-backend = "maturin"
+
+[tool.maturin]
+# Put the compiled extension *inside* the Python package folder we add below
+module-name   = "nominal_streaming.nominal_streaming"
+requires-python = ">=3.9"
+profile = "release"
+strip = true
+# Not strictly required, but documents how we expect to build
+# Also skips linking against libpython.so
+features = ["pyo3/extension-module", "pyo3/abi3-py39"]
+manifest-path = "./Cargo.toml"

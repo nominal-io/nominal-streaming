@@ -29,3 +29,7 @@ debug = true
 
 [dev-dependencies]
 test-log = { version = "0.2.18", features = ["trace"] }
+
+[workspace]
+members = ["py-nominal-streaming"]
+resolver = "2"

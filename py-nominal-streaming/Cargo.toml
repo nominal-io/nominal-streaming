@@ -1,0 +1,25 @@
+[package]
+name = "py-nominal-streaming"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Python bindings for the nominal-streaming Rust library"
+
+[lib]
+# This becomes the *module* name on the Python side unless overridden by tool.maturin.module-name
+name = "nominal_streaming"
+crate-type = ["cdylib"]
+
+[dependencies]
+# PyO3 with a stable ABI across Python 3.9+ (reduces wheel matrix)
+pyo3 = { version = "0.26", features = ["extension-module", "abi3-py39", "time"] }
+
+tokio = { version = "1", features = ["rt-multi-thread", "time"] }
+once_cell = "1.19"
+
+# Logging setup
+tracing = "^0.1"
+tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
+
+# Depend on the Rust core crate in the repository root
+nominal-streaming = { path = "..", package = "nominal-streaming" }
