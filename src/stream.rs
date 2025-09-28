@@ -28,6 +28,7 @@ use tracing::debug;
 use tracing::error;
 use tracing::info;
 use tracing::warn;
+
 use crate::client::PRODUCTION_CLIENTS;
 use crate::consumer::AvroFileConsumer;
 use crate::consumer::DualWriteRequestConsumer;
