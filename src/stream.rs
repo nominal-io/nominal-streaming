@@ -27,7 +27,6 @@ use parking_lot::MutexGuard;
 use tracing::debug;
 use tracing::error;
 use tracing::info;
-use tracing::warn;
 
 use crate::client::PRODUCTION_CLIENTS;
 use crate::consumer::AvroFileConsumer;
