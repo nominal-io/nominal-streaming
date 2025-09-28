@@ -28,8 +28,7 @@ use tracing::debug;
 use tracing::error;
 use tracing::info;
 use tracing::warn;
-
-use crate::client::PRODUCTION_STREAMING_CLIENT;
+use crate::client::PRODUCTION_CLIENTS;
 use crate::consumer::AvroFileConsumer;
 use crate::consumer::DualWriteRequestConsumer;
 use crate::consumer::ListeningWriteRequestConsumer;
@@ -129,7 +128,7 @@ impl NominalDatasetStreamBuilder {
             .as_ref()
             .map(|(token, dataset, handle)| {
                 NominalCoreConsumer::new(
-                    PRODUCTION_STREAMING_CLIENT.clone(),
+                    PRODUCTION_CLIENTS.clone(),
                     handle.clone(),
                     token.clone(),
                     dataset.clone(),

@@ -19,7 +19,7 @@ use parking_lot::Mutex;
 use prost::Message;
 use tracing::warn;
 
-use crate::client::StreamingClient;
+use crate::client::NominalApiClients;
 use crate::client::{self};
 use crate::notifier::NominalStreamListener;
 use crate::types::AuthProvider;
@@ -45,24 +45,24 @@ pub trait WriteRequestConsumer: Send + Sync + Debug {
 }
 
 #[derive(Clone)]
-pub struct NominalCoreConsumer<T: AuthProvider> {
-    client: StreamingClient,
+pub struct NominalCoreConsumer<A: AuthProvider> {
+    client: NominalApiClients,
     handle: tokio::runtime::Handle,
-    token_provider: T,
+    auth_provider: A,
     data_source_rid: ResourceIdentifier,
 }
 
-impl<T: AuthProvider> NominalCoreConsumer<T> {
+impl<A: AuthProvider> NominalCoreConsumer<A> {
     pub fn new(
-        client: StreamingClient,
+        client: NominalApiClients,
         handle: tokio::runtime::Handle,
-        token_provider: T,
+        auth_provider: A,
         data_source_rid: ResourceIdentifier,
     ) -> Self {
         Self {
             client,
             handle,
-            token_provider,
+            auth_provider,
             data_source_rid,
         }
     }
@@ -80,7 +80,7 @@ impl<T: AuthProvider> Debug for NominalCoreConsumer<T> {
 impl<T: AuthProvider + 'static> WriteRequestConsumer for NominalCoreConsumer<T> {
     fn consume(&self, request: &WriteRequestNominal) -> ConsumerResult<()> {
         let token = self
-            .token_provider
+            .auth_provider
             .token()
             .ok_or(ConsumerError::MissingTokenError)?;
         let write_request =
