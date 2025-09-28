@@ -98,6 +98,26 @@ impl NominalDatasetStreamBuilder {
         self
     }
 
+    #[cfg(feature = "logging")]
+    pub fn enable_logging(self) -> Self {
+        use tracing_subscriber::layer::SubscriberExt;
+        use tracing_subscriber::util::SubscriberInitExt;
+
+        let subscriber = tracing_subscriber::registry()
+            .with(
+                tracing_subscriber::EnvFilter::builder()
+                    .with_default_directive(tracing_subscriber::filter::LevelFilter::INFO.into())
+                    .from_env_lossy(),
+            )
+            .with(tracing_subscriber::fmt::layer());
+
+        if let Err(error) = subscriber.try_init() {
+            eprintln!("nominal streaming failed to enabled logging: {error}");
+        }
+
+        self
+    }
+
     pub fn build(self) -> NominalDatasetStream {
         let core_consumer = self.core_consumer();
         let file_consumer = self.file_consumer();
@@ -293,15 +313,12 @@ impl NominalDatasetStream {
             debug!("adding {} points to secondary buffer", new_count);
             callback(self.secondary_buffer.lock());
         } else {
-            warn!(
-                "both buffers full, picking least recently flushed buffer to append single point"
-            );
             let buf = if self.primary_buffer < self.secondary_buffer {
-                debug!("waiting for primary buffer to flush...");
+                info!("waiting for primary buffer to flush to append {new_count} points...");
                 self.primary_handle.thread().unpark();
                 &self.primary_buffer
             } else {
-                debug!("waiting for secondary buffer to flush...");
+                info!("waiting for secondary buffer to flush to append {new_count} points...");
                 self.secondary_handle.thread().unpark();
                 &self.secondary_buffer
             };
@@ -587,7 +604,7 @@ fn batch_processor(
         let write_request = WriteRequestNominal { series };
 
         if request_chan.is_full() {
-            warn!("request channel is full");
+            debug!("ready to queue request but request channel is full");
         }
         let rep = request_chan.send((write_request, point_count));
         debug!("queued request for processing");
