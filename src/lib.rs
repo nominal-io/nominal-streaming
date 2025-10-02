@@ -3,6 +3,7 @@ pub mod consumer;
 pub mod notifier;
 pub mod stream;
 mod types;
+pub mod upload;
 
 /// This includes the most common types in this crate, re-exported for your convenience.
 pub mod prelude {
@@ -17,8 +18,6 @@ pub mod prelude {
     pub use nominal_api::tonic::io::nominal::scout::api::proto::WriteRequest;
     pub use nominal_api::tonic::io::nominal::scout::api::proto::WriteRequestNominal;
 
-    pub use crate::client::PRODUCTION_STREAMING_CLIENT;
-    pub use crate::client::STAGING_STREAMING_CLIENT;
     pub use crate::consumer::NominalCoreConsumer;
     pub use crate::stream::NominalDatasetStream;
     pub use crate::stream::NominalDatasourceStream;

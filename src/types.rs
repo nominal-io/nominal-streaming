@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use conjure_object::BearerToken;
+use nominal_api::api::rids::WorkspaceRid;
 use nominal_api::tonic::google::protobuf::Timestamp;
 use nominal_api::tonic::io::nominal::scout::api::proto::points::PointsType;
 use nominal_api::tonic::io::nominal::scout::api::proto::DoublePoint;
@@ -53,6 +54,10 @@ impl ChannelDescriptor {
 
 pub trait AuthProvider: Clone + Send + Sync {
     fn token(&self) -> Option<BearerToken>;
+
+    fn workspace_rid(&self) -> Option<WorkspaceRid> {
+        None
+    }
 }
 
 pub trait IntoPoints {
