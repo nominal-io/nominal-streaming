@@ -2,8 +2,9 @@ pub mod client;
 pub mod consumer;
 pub mod notifier;
 pub mod stream;
-mod types;
 pub mod upload;
+pub mod monitor;
+mod types;
 
 /// This includes the most common types in this crate, re-exported for your convenience.
 pub mod prelude {
