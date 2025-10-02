@@ -1,4 +1,3 @@
-use std::future::Future;
 use std::io::Read;
 use std::io::Seek;
 use std::path::Path;
@@ -37,14 +36,14 @@ use tracing::info;
 use crate::client::NominalApiClients;
 use crate::types::AuthProvider;
 
-const SMALL_FILE_SIZE_LIMIT: u64 = 256 * 1024 * 1024; // 256 MB
+const SMALL_FILE_SIZE_LIMIT: u64 = 512 * 1024 * 1024; // 512 MB
 
 #[derive(Clone)]
-pub struct UploadManager {
+pub struct AvroIngestManager {
     pub upload_queue: async_channel::Receiver<PathBuf>,
 }
 
-impl UploadManager {
+impl AvroIngestManager {
     pub fn new(
         clients: NominalApiClients,
         http_client: reqwest::Client,
@@ -54,7 +53,7 @@ impl UploadManager {
         auth_provider: impl AuthProvider + 'static,
         data_source_rid: ResourceIdentifier,
     ) -> Self {
-        let uploader = Uploader::new(
+        let uploader = FileObjectStoreUploader::new(
             clients.upload,
             clients.ingest,
             http_client,
@@ -68,12 +67,12 @@ impl UploadManager {
             Self::run(upload_queue_clone, uploader, auth_provider, data_source_rid).await;
         });
 
-        UploadManager { upload_queue }
+        AvroIngestManager { upload_queue }
     }
 
     pub async fn run(
         upload_queue: async_channel::Receiver<PathBuf>,
-        uploader: Uploader,
+        uploader: FileObjectStoreUploader,
         auth_provider: impl AuthProvider + 'static,
         data_source_rid: ResourceIdentifier,
     ) {
@@ -84,44 +83,26 @@ impl UploadManager {
                 error!("Missing token for upload");
                 continue;
             };
-            let Some(workspace_rid) = auth_provider.workspace_rid() else {
-                error!("Missing workspace RID for upload");
-                continue;
-            };
             match file {
                 Ok(f) => {
-                    match uploader
-                        .upload(&token, f, file_name, workspace_rid.clone())
-                        .await
+                    match upload_and_ingest_file(
+                        uploader.clone(),
+                        &token,
+                        auth_provider.workspace_rid().map(WorkspaceRid::from),
+                        f,
+                        file_name,
+                        &file_path,
+                        data_source_rid.clone(),
+                    )
+                    .await
                     {
-                        Ok(response) => {
-                            match uploader
-                                .ingest_avro(&token, &response, data_source_rid.clone())
-                                .await
-                            {
-                                Ok(ingest_response) => {
-                                    info!(
-                                        "Successfully uploaded and ingested file {}: {:?}",
-                                        file_name, ingest_response
-                                    );
-                                    // remove file
-                                    if let Err(e) = std::fs::remove_file(&file_path) {
-                                        error!(
-                                            "Failed to remove file {}: {:?}",
-                                            file_path.display(),
-                                            e
-                                        );
-                                    } else {
-                                        info!("Removed file {}", file_path.display());
-                                    }
-                                }
-                                Err(e) => {
-                                    error!("Failed to ingest file {}: {:?}", file_name, e);
-                                }
-                            }
-                        }
+                        Ok(()) => {}
                         Err(e) => {
-                            error!("Failed to upload file {}: {:?}", file_name, e);
+                            error!(
+                                "Error uploading and ingesting file {}: {}",
+                                file_path.display(),
+                                e
+                            );
                         }
                     }
                 }
@@ -130,6 +111,47 @@ impl UploadManager {
                 }
             }
         }
+    }
+}
+
+async fn upload_and_ingest_file(
+    uploader: FileObjectStoreUploader,
+    token: &BearerToken,
+    workspace_rid: Option<WorkspaceRid>,
+    file: std::fs::File,
+    file_name: &str,
+    file_path: &PathBuf,
+    data_source_rid: ResourceIdentifier,
+) -> Result<(), String> {
+    match uploader
+        .upload(token, file, file_name, workspace_rid)
+        .await
+    {
+        Ok(response) => {
+            match uploader
+                .ingest_avro(token, &response, data_source_rid)
+                .await
+            {
+                Ok(ingest_response) => {
+                    info!(
+                        "Successfully uploaded and ingested file {}: {:?}",
+                        file_name, ingest_response
+                    );
+                    if let Err(e) = std::fs::remove_file(file_path) {
+                        Err(format!(
+                            "Failed to remove file {}: {:?}",
+                            file_path.display(),
+                            e
+                        ))
+                    } else {
+                        info!("Removed file {}", file_path.display());
+                        Ok(())
+                    }
+                }
+                Err(e) => Err(format!("Failed to ingest file {file_name}: {e:?}")),
+            }
+        }
+        Err(e) => Err(format!("Failed to upload file {file_name}: {e:?}")),
     }
 }
 
@@ -175,45 +197,36 @@ impl FileWriteBody {
 }
 
 impl AsyncWriteBody<BodyWriter> for FileWriteBody {
-    #[expect(clippy::manual_async_fn)]
-    fn write_body(
-        self: Pin<&mut Self>,
-        w: Pin<&mut BodyWriter>,
-    ) -> impl Future<Output = Result<(), Error>> + Send {
-        async move {
-            let mut file = self.file.try_clone().map_err(|e| {
-                Error::internal_safe(format!("Failed to clone file for upload: {e}"))
-            })?;
+    async fn write_body(self: Pin<&mut Self>, w: Pin<&mut BodyWriter>) -> Result<(), Error> {
+        let mut file = self
+            .file
+            .try_clone()
+            .map_err(|e| Error::internal_safe(format!("Failed to clone file for upload: {e}")))?;
 
-            let mut buffer = Vec::new();
-            file.read_to_end(&mut buffer).map_err(|e| {
-                Error::internal_safe(format!("Failed to read bytes from file: {e}"))
-            })?;
+        let mut buffer = Vec::new();
+        file.read_to_end(&mut buffer)
+            .map_err(|e| Error::internal_safe(format!("Failed to read bytes from file: {e}")))?;
 
-            w.write_bytes(buffer.into())
-                .await
-                .map_err(|e| Error::internal_safe(format!("Failed to write bytes to body: {e}")))?;
+        w.write_bytes(buffer.into())
+            .await
+            .map_err(|e| Error::internal_safe(format!("Failed to write bytes to body: {e}")))?;
 
-            Ok(())
-        }
+        Ok(())
     }
 
-    #[expect(clippy::manual_async_fn)]
-    fn reset(self: Pin<&mut Self>) -> impl Future<Output = bool> + Send {
-        async move {
-            let Ok(mut file) = self.file.try_clone() else {
-                return false;
-            };
+    async fn reset(self: Pin<&mut Self>) -> bool {
+        let Ok(mut file) = self.file.try_clone() else {
+            return false;
+        };
 
-            use std::io::SeekFrom;
+        use std::io::SeekFrom;
 
-            file.seek(SeekFrom::Start(0)).is_ok()
-        }
+        file.seek(SeekFrom::Start(0)).is_ok()
     }
 }
 
 #[derive(Clone)]
-pub struct Uploader {
+pub struct FileObjectStoreUploader {
     upload_client: UploadServiceAsyncClient<Client>,
     ingest_client: IngestServiceAsyncClient<Client>,
     http_client: reqwest::Client,
@@ -221,7 +234,7 @@ pub struct Uploader {
     opts: UploaderOpts,
 }
 
-impl Uploader {
+impl FileObjectStoreUploader {
     pub fn new(
         upload_client: UploadServiceAsyncClient<Client>,
         ingest_client: IngestServiceAsyncClient<Client>,
@@ -229,7 +242,7 @@ impl Uploader {
         handle: tokio::runtime::Handle,
         opts: UploaderOpts,
     ) -> Self {
-        Uploader {
+        FileObjectStoreUploader {
             upload_client,
             ingest_client,
             http_client,
@@ -242,12 +255,12 @@ impl Uploader {
         &self,
         token: &BearerToken,
         file_name: &str,
-        workspace_rid: ResourceIdentifier,
+        workspace_rid: Option<WorkspaceRid>,
     ) -> Result<InitiateMultipartUploadResponse, UploaderError> {
         let request = InitiateMultipartUploadRequest::builder()
             .filename(file_name)
             .filetype("application/octet-stream")
-            .workspace(Some(WorkspaceRid::from(workspace_rid)))
+            .workspace(workspace_rid)
             .build();
         let response = self
             .upload_client
@@ -403,18 +416,16 @@ impl Uploader {
         token: &BearerToken,
         file_name: &str,
         size_bytes: i64,
-        workspace_rid: ResourceIdentifier,
+        workspace_rid: Option<WorkspaceRid>,
         file: std::fs::File,
     ) -> Result<String, UploaderError> {
-        let workspace_rid = WorkspaceRid::from(workspace_rid);
-
         let s3_path = self
             .upload_client
             .upload_file(
                 token,
                 file_name,
                 SafeLong::new(size_bytes).ok(),
-                Some(&workspace_rid),
+                workspace_rid.as_ref(),
                 FileWriteBody::new(file),
             )
             .await
@@ -428,7 +439,7 @@ impl Uploader {
         token: &BearerToken,
         reader: R,
         file_name: impl Into<&str>,
-        workspace_rid: ResourceIdentifier,
+        workspace_rid: Option<WorkspaceRid>,
     ) -> Result<String, UploaderError>
     where
         R: Read + Send + 'static,
@@ -449,7 +460,7 @@ impl Uploader {
         }
 
         let initiate_response = self
-            .initiate_upload(token, file_name, workspace_rid)
+            .initiate_upload(token, file_name, workspace_rid.map(WorkspaceRid::from))
             .await?;
         let upload_id = initiate_response.upload_id();
         let key = initiate_response.key();
