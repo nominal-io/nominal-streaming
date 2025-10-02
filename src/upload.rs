@@ -179,9 +179,9 @@ pub struct UploaderOpts {
 impl Default for UploaderOpts {
     fn default() -> Self {
         UploaderOpts {
-            chunk_size: 64_000_000, // 128 MB
+            chunk_size: 512 * 1024 * 1024, // 512 MB
             max_retries: 3,
-            max_concurrent_uploads: 8,
+            max_concurrent_uploads: 1,
         }
     }
 }
