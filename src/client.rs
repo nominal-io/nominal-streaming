@@ -18,7 +18,7 @@ use conjure_runtime::Client;
 use conjure_runtime::Idempotency;
 use conjure_runtime::ResponseBody;
 use conjure_runtime::UserAgent;
-use nominal_api::api::rids::NominalDataSourceOrDatasetRid;
+use nominal_api::api::rids::{NominalDataSourceOrDatasetRid, WorkspaceRid};
 use nominal_api::ingest::api::IngestServiceAsyncClient;
 use nominal_api::upload::api::UploadServiceAsyncClient;
 use snap::write::FrameEncoder;
@@ -46,7 +46,7 @@ impl AuthProvider for BearerToken {
 #[derive(Debug, Clone)]
 pub struct TokenAndWorkspaceRid {
     pub token: BearerToken,
-    pub workspace_rid: Option<ResourceIdentifier>,
+    pub workspace_rid: Option<WorkspaceRid>,
 }
 
 impl AuthProvider for TokenAndWorkspaceRid {
@@ -54,7 +54,7 @@ impl AuthProvider for TokenAndWorkspaceRid {
         Some(self.token.clone())
     }
 
-    fn workspace_rid(&self) -> Option<ResourceIdentifier> {
+    fn workspace_rid(&self) -> Option<WorkspaceRid> {
         self.workspace_rid.clone()
     }
 }
