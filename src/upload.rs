@@ -123,10 +123,7 @@ async fn upload_and_ingest_file(
     file_path: &PathBuf,
     data_source_rid: ResourceIdentifier,
 ) -> Result<(), String> {
-    match uploader
-        .upload(token, file, file_name, workspace_rid)
-        .await
-    {
+    match uploader.upload(token, file, file_name, workspace_rid).await {
         Ok(response) => {
             match uploader
                 .ingest_avro(token, &response, data_source_rid)
