@@ -49,7 +49,6 @@ let start_time = UNIX_EPOCH.elapsed().unwrap();
 let value = i % 50;
 writer.push(start_Time, value as f64);
 }
-
 ```
 
 Here, we are enquing data onto Channel 1, with tags "name" and "batch".
@@ -112,6 +111,8 @@ async fn async_main() {
 }
 ```
 
+## Additional configuration
+
 ### Stream options
 
 Above, you saw an example using [`NominalStreamOpts::default`](https://docs.rs/nominal-streaming/latest/nominal_streaming/stream/struct.NominalStreamOpts.html).
@@ -126,33 +127,14 @@ NominalStreamOpts {
 }
 ```
 
-## Logging errors
+### Logging errors
 
-Most of the time, when things go wrong, we also want some form of
-reporting, which you can enable in `main()`:
+Most of the time, when things go wrong, we want some form of reporting. You can enable debug logging on the StreamBuilder using `.enable_logging()`:
 
 ```rust
-use tracing::level_filters::LevelFilter;
-use tracing_subscriber::EnvFilter;
-
-tracing_subscriber::registry()
-.with(
-    tracing_subscriber::fmt::layer()
-        .with_thread_ids(true)
-        .with_thread_names(true)
-        .with_line_number(true),
-)
-.with(
-    EnvFilter::builder()
-        .with_default_directive(LevelFilter::DEBUG.into())
-        .from_env_lossy()
-)
-.init();
-```
-
-Also add the necessary tracing dependencies to `Cargo.toml`:
-
-```toml
-tracing = "^0.1"
-tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
+let stream = NominalDatasetStreamBuilder::new()
+    .stream_to_core(token, dataset_rid, handle)
+    .with_file_fallback("fallback.avro")
+    .enable_logging()
+    .build();
 ```
