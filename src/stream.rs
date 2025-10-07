@@ -105,11 +105,16 @@ impl NominalDatasetStreamBuilder {
 
         let subscriber = tracing_subscriber::registry()
             .with(
+                tracing_subscriber::fmt::layer()
+                    .with_thread_ids(true)
+                    .with_thread_names(true)
+                    .with_line_number(true),
+            )
+            .with(
                 tracing_subscriber::EnvFilter::builder()
                     .with_default_directive(tracing_subscriber::filter::LevelFilter::DEBUG.into())
                     .from_env_lossy(),
-            )
-            .with(tracing_subscriber::fmt::layer());
+            );
 
         if let Err(error) = subscriber.try_init() {
             eprintln!("nominal streaming failed to enabled logging: {error}");
