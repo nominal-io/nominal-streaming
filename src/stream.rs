@@ -106,7 +106,7 @@ impl NominalDatasetStreamBuilder {
         let subscriber = tracing_subscriber::registry()
             .with(
                 tracing_subscriber::EnvFilter::builder()
-                    .with_default_directive(tracing_subscriber::filter::LevelFilter::INFO.into())
+                    .with_default_directive(tracing_subscriber::filter::LevelFilter::DEBUG.into())
                     .from_env_lossy(),
             )
             .with(tracing_subscriber::fmt::layer());
