@@ -22,11 +22,11 @@ For example, a file stream is constructed as follows:
 
 ```rust
 let stream = NominalDatasetStreamBuilder::new()
-    .stream_to_file("fallback.avro")
+    .stream_to_file("my_data.avro")
     .build();
 ```
 
-Or, a stream to Nominal Core, with a file as backup, is created as:
+Or, a stream to Nominal Core, writing failed requests to a file, is created as follows:
 
 ```rust
 let stream = NominalDatasetStreamBuilder::new()
@@ -46,8 +46,8 @@ let mut writer = stream.double_writer(&channel_descriptor);
 
 // Stream single data point
 let start_time = UNIX_EPOCH.elapsed().unwrap();
-let value = i % 50;
-writer.push(start_Time, value as f64);
+let value: f64 = 123;
+writer.push(start_time, value);
 }
 ```
 
@@ -106,7 +106,7 @@ async fn async_main() {
     for i in 0..100_000 {
         let start_time = UNIX_EPOCH.elapsed().unwrap();
         let value = i % 50;
-        writer.push(start_Time, value as f64);
+        writer.push(start_time, value as f64);
     }
 }
 ```
