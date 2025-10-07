@@ -18,22 +18,33 @@ You can view the crate documentation at https://docs.rs/nominal-streaming/latest
 ## Conceptual overview
 
 Data is sent to a [Stream](https://docs.rs/nominal-streaming/latest/nominal_streaming/stream/struct.NominalDatasetStream.html) via a Writer.
-For example, a file stream is constructed as follows:
+For example:
 
-```rust
-let stream = NominalDatasetStreamBuilder::new()
-    .stream_to_file("my_data.avro")
-    .build();
-```
+- A file stream is constructed as:
 
-Or, a stream to Nominal Core, writing failed requests to a file, is created as follows:
+  ```rust
+  let stream = NominalDatasetStreamBuilder::new()
+      .stream_to_file("my_data.avro")
+      .build();
+  ```
 
-```rust
-let stream = NominalDatasetStreamBuilder::new()
-    .stream_to_core(token, dataset_rid, handle)
-    .with_file_fallback("fallback.avro")
-    .build();
-```
+- A stream that sends data to Nominal Core, but writes failed requests to a file, is created as follows:
+
+  ```rust
+  let stream = NominalDatasetStreamBuilder::new()
+      .stream_to_core(token, dataset_rid, handle)
+      .with_file_fallback("fallback.avro")
+      .build();
+  ```
+
+- Or, you can build a stream that sends data to Nominal Core *and* to a file:
+
+  ```rust
+  let stream = NominalDatasetStreamBuilder::new()
+      .stream_to_core(token, dataset_rid, handle)
+      .stream_to_file("my_data.avro")
+      .build();
+  ```
 
 (See below for a full example, that also shows how to create the `token`, `dataset_rid`, and `handle` values above.)
 
