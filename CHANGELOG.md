@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0](https://github.com/nominal-io/nominal-streaming/compare/v0.4.1...v0.5.0) - 2025-10-09
+
+### Added
+
+- reexport integer points ([#26](https://github.com/nominal-io/nominal-streaming/pull/26))
+- uploader and upload manager ([#21](https://github.com/nominal-io/nominal-streaming/pull/21))
+
+### Fixed
+
+- default to DEBUG logging ([#25](https://github.com/nominal-io/nominal-streaming/pull/25))
+
 ## [0.4.1](https://github.com/nominal-io/nominal-streaming/compare/v0.4.0...v0.4.1) - 2025-09-26
 
 ### Added

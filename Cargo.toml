@@ -1,6 +1,6 @@
 [package]
 name = "nominal-streaming"
-version = "0.4.1"
+version = "0.5.0"
 edition = "2021"
 description = "Library for durable, low-latency streaming into Nominal Core"
 license = "MIT"
