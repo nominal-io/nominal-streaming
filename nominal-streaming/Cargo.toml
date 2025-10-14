@@ -1,0 +1,37 @@
+[package]
+name = "nominal-streaming"
+description = "Library for durable, low-latency streaming into Nominal Core"
+edition = "2021"
+license = "MIT"
+version = "0.4.1"
+
+[features]
+default = ["logging"]
+logging = ["tracing-subscriber"]
+
+
+[dependencies]
+apache-avro = { workspace = true }
+async-channel = { workspace = true }
+chrono = { workspace = true }
+conjure-error = { workspace = true }
+conjure-http = { workspace = true }
+conjure-object = { workspace = true }
+conjure-runtime = { workspace = true }
+crossbeam-channel = { workspace = true }
+derive_more = { workspace = true }
+futures = { workspace = true }
+nominal-api = { workspace = true }
+parking_lot = { workspace = true }
+prost = { workspace = true }
+reqwest = { workspace = true }
+serde_json = { workspace = true }
+snap = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, optional = true }
+url = { workspace = true }
+
+[dev-dependencies]
+test-log = { workspace = true }

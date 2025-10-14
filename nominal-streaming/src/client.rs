@@ -34,7 +34,7 @@ pub mod conjure {
     pub use conjure_runtime as runtime;
 }
 
-const PRODUCTION_API_URL: &str = "https://api.gov.nominal.io/api";
+pub const PRODUCTION_API_URL: &str = "https://api.gov.nominal.io/api";
 const STAGING_API_URL: &str = "https://api-staging.gov.nominal.io/api";
 const USER_AGENT: &str = "nominal-streaming";
 
@@ -78,36 +78,31 @@ impl Debug for NominalApiClients {
 }
 
 impl NominalApiClients {
+    pub fn from_uri(base_uri: &str) -> NominalApiClients {
+        NominalApiClients {
+            streaming: async_conjure_streaming_client(base_uri.try_into().unwrap())
+                .expect("Failed to create streaming client"),
+            upload: UploadServiceAsyncClient::new(
+                async_conjure_client("upload", base_uri.try_into().unwrap())
+                    .expect("Failed to create upload client"),
+            ),
+            ingest: IngestServiceAsyncClient::new(
+                async_conjure_client("ingest", base_uri.try_into().unwrap())
+                    .expect("Failed to create ingest client"),
+            ),
+        }
+    }
+
     pub async fn send(&self, req: WriteRequest<'_>) -> Result<Response<ResponseBody>, Error> {
         self.streaming.send(req).await
     }
 }
 
-pub static PRODUCTION_CLIENTS: LazyLock<NominalApiClients> = LazyLock::new(|| NominalApiClients {
-    streaming: async_conjure_streaming_client(PRODUCTION_API_URL.try_into().unwrap())
-        .expect("Failed to create streaming client"),
-    upload: UploadServiceAsyncClient::new(
-        async_conjure_client("upload", PRODUCTION_API_URL.try_into().unwrap())
-            .expect("Failed to create upload client"),
-    ),
-    ingest: IngestServiceAsyncClient::new(
-        async_conjure_client("ingest", PRODUCTION_API_URL.try_into().unwrap())
-            .expect("Failed to create ingest client"),
-    ),
-});
+pub static PRODUCTION_CLIENTS: LazyLock<NominalApiClients> =
+    LazyLock::new(|| NominalApiClients::from_uri(PRODUCTION_API_URL));
 
-pub static STAGING_CLIENTS: LazyLock<NominalApiClients> = LazyLock::new(|| NominalApiClients {
-    streaming: async_conjure_streaming_client(STAGING_API_URL.try_into().unwrap())
-        .expect("Failed to create streaming client"),
-    upload: UploadServiceAsyncClient::new(
-        async_conjure_client("upload", STAGING_API_URL.try_into().unwrap())
-            .expect("Failed to create upload client"),
-    ),
-    ingest: IngestServiceAsyncClient::new(
-        async_conjure_client("ingest", STAGING_API_URL.try_into().unwrap())
-            .expect("Failed to create ingest client"),
-    ),
-});
+pub static STAGING_CLIENTS: LazyLock<NominalApiClients> =
+    LazyLock::new(|| NominalApiClients::from_uri(STAGING_API_URL));
 
 fn async_conjure_streaming_client(uri: Url) -> Result<Client, Error> {
     Client::builder()

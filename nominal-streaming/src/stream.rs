@@ -28,7 +28,8 @@ use tracing::debug;
 use tracing::error;
 use tracing::info;
 
-use crate::client::PRODUCTION_CLIENTS;
+use crate::client::NominalApiClients;
+use crate::client::PRODUCTION_API_URL;
 use crate::consumer::AvroFileConsumer;
 use crate::consumer::DualWriteRequestConsumer;
 use crate::consumer::ListeningWriteRequestConsumer;
@@ -46,6 +47,7 @@ pub struct NominalStreamOpts {
     pub max_request_delay: Duration,
     pub max_buffered_requests: usize,
     pub request_dispatcher_tasks: usize,
+    pub base_api_url: String,
 }
 
 impl Default for NominalStreamOpts {
@@ -55,6 +57,7 @@ impl Default for NominalStreamOpts {
             max_request_delay: Duration::from_millis(100),
             max_buffered_requests: 4,
             request_dispatcher_tasks: 8,
+            base_api_url: PRODUCTION_API_URL.to_string(),
         }
     }
 }
@@ -83,6 +86,7 @@ impl NominalDatasetStreamBuilder {
         self.stream_to_core = Some((token, dataset, handle));
         self
     }
+
     pub fn stream_to_file(mut self, file_path: impl Into<PathBuf>) -> Self {
         self.stream_to_file = Some(file_path.into());
         self
@@ -117,7 +121,7 @@ impl NominalDatasetStreamBuilder {
             );
 
         if let Err(error) = subscriber.try_init() {
-            eprintln!("nominal streaming failed to enabled logging: {error}");
+            eprintln!("nominal streaming failed to enable logging: {error}");
         }
 
         self
@@ -153,7 +157,7 @@ impl NominalDatasetStreamBuilder {
             .as_ref()
             .map(|(token, dataset, handle)| {
                 NominalCoreConsumer::new(
-                    PRODUCTION_CLIENTS.clone(),
+                    NominalApiClients::from_uri(self.opts.base_api_url.as_str()),
                     handle.clone(),
                     token.clone(),
                     dataset.clone(),
