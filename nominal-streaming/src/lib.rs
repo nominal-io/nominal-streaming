@@ -38,6 +38,7 @@ mod tests {
 
     use nominal_api::tonic::io::nominal::scout::api::proto::IntegerPoint;
 
+    use crate::client::PRODUCTION_API_URL;
     use crate::consumer::ConsumerResult;
     use crate::consumer::WriteRequestConsumer;
     use crate::prelude::*;
@@ -66,6 +67,7 @@ mod tests {
                 max_request_delay: Duration::from_millis(100),
                 max_buffered_requests: 2,
                 request_dispatcher_tasks: 4,
+                base_api_url: PRODUCTION_API_URL.to_string(),
             },
         );
 
