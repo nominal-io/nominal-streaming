@@ -3,7 +3,7 @@ name = "nominal-streaming"
 description = "Library for durable, low-latency streaming into Nominal Core"
 edition = "2021"
 license = "MIT"
-version = "0.4.1"
+version = "0.5.0"
 
 [features]
 default = ["logging"]
