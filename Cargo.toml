@@ -7,7 +7,7 @@ resolver = "2"
 [workspace.dependencies]
 apache-avro = { version = "0.17.0", features = ["snappy"] }
 async-channel = "2.5.0"
-chrono = "0.4.41"
+chrono = "0.4.42"
 conjure-error = "4"
 conjure-http = "4"
 conjure-object = "4"
