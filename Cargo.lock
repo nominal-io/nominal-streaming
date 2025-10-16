@@ -351,7 +351,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2685c4062b8c417419ce61828ff74bac6c26bac60653e4e91a3c11edc69b377a"
 dependencies = [
  "anyhow",
- "conjure-object",
+ "conjure-object 4.15.0",
  "conjure-serde",
  "heck 0.5.0",
  "prettyplease",
@@ -369,7 +369,18 @@ version = "4.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8d400452cb72fbc09b7c99c7aca9e8e0c36e5e7082da1d48c117035342aca334"
 dependencies = [
- "conjure-object",
+ "conjure-object 4.15.0",
+ "serde",
+ "uuid",
+]
+
+[[package]]
+name = "conjure-error"
+version = "5.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b2ecef831c4a04a05d891d71b503a92e69685aea3839ffc2f268006dfc4330bd"
+dependencies = [
+ "conjure-object 5.1.0",
  "serde",
  "uuid",
 ]
@@ -381,9 +392,9 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1534da7fdea9cf543027a2aa3fd2778fe9b5c70268f5b76c5cc9cfe21f7f40ab"
 dependencies = [
  "bytes",
- "conjure-error",
+ "conjure-error 4.15.0",
  "conjure-macros",
- "conjure-object",
+ "conjure-object 4.15.0",
  "conjure-serde",
  "erased-serde",
  "form_urlencoded",
@@ -431,6 +442,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "conjure-object"
+version = "5.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c9dd332a0f127d9590e89af32719a6aec5120641600229ea3d35d6e74e5de386"
+dependencies = [
+ "base64",
+ "bytes",
+ "chrono",
+ "educe",
+ "lazy_static",
+ "ordered-float 5.0.0",
+ "regex",
+ "serde",
+ "staged-builder",
+ "uuid",
+]
+
+[[package]]
 name = "conjure-runtime"
 version = "6.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -439,9 +468,9 @@ dependencies = [
  "arc-swap",
  "base64",
  "bytes",
- "conjure-error",
+ "conjure-error 4.15.0",
  "conjure-http",
- "conjure-object",
+ "conjure-object 4.15.0",
  "conjure-runtime-config",
  "conjure-serde",
  "flate2",
@@ -1492,9 +1521,9 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7634cd8ed86053e4bc6af1d554603154e110acadbf936ac8f2b078d7007081f3"
 dependencies = [
  "conjure-codegen",
- "conjure-error",
+ "conjure-error 4.15.0",
  "conjure-http",
- "conjure-object",
+ "conjure-object 4.15.0",
  "prost",
  "tonic",
 ]
@@ -1506,9 +1535,9 @@ dependencies = [
  "apache-avro",
  "async-channel",
  "chrono",
- "conjure-error",
+ "conjure-error 5.1.0",
  "conjure-http",
- "conjure-object",
+ "conjure-object 4.15.0",
  "conjure-runtime",
  "crossbeam-channel",
  "derive_more",
@@ -3225,8 +3254,8 @@ version = "4.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "961024ed00e1d402458fded663cfbeb8087d3aabbddc8db5b97c810ceabe7422"
 dependencies = [
- "conjure-error",
- "conjure-object",
+ "conjure-error 4.15.0",
+ "conjure-object 4.15.0",
  "erased-serde",
  "log",
  "pin-project",
