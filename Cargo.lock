@@ -1487,9 +1487,9 @@ dependencies = [
 
 [[package]]
 name = "nominal-api"
-version = "0.917.0"
+version = "0.961.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "28d0340ddf1e2b8e13f6d507a8d3fd665bceb631b11f580a5f78e7ce352fcb3b"
+checksum = "7634cd8ed86053e4bc6af1d554603154e110acadbf936ac8f2b078d7007081f3"
 dependencies = [
  "conjure-codegen",
  "conjure-error",
@@ -2004,7 +2004,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.1",
 ]
 
 [[package]]
