@@ -5,21 +5,21 @@ members = [
 resolver = "2"
 
 [workspace.dependencies]
-apache-avro = { version = "0.17.0", features = ["snappy"] }
+apache-avro = { version = "0.20.0", features = ["snappy"] }
 async-channel = "2.5.0"
-chrono = "0.4.41"
+chrono = "0.4.42"
 conjure-error = "4"
-conjure-http = "4"
-conjure-object = "4"
-conjure-runtime = "6"
+conjure-http = "5"
+conjure-object = "5"
+conjure-runtime = "7"
 crossbeam-channel = "0.5.15"
 derive_more = { version = "2", features = ["from"] }
 futures = "0.3"
 nominal-api = "0.962.0"
 parking_lot = "0.12"
-prost = "0.13"
-reqwest = "0.12.22"
-serde_json = "1.0.140"
+prost = "0.14"
+reqwest = "0.12.24"
+serde_json = "1.0.145"
 snap = "1"
 test-log = { version = "0.2.18", features = ["trace"] }
 thiserror = "2"
