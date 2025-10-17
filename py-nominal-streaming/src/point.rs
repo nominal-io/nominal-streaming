@@ -6,12 +6,15 @@
 //!   - EnqueueItem: typed payload enum crossing the sync→async boundary
 //!   - constructors for single/batch points for double/int/string series
 
-use pyo3::prelude::*;
-use pyo3::types::{PyAny, PyAnyMethods, PyDateTime, PySequence};
 use std::collections::HashMap;
 
 use nominal_api::tonic::google::protobuf::Timestamp;
 use nominal_streaming::prelude::*;
+use pyo3::prelude::*;
+use pyo3::types::PyAny;
+use pyo3::types::PyAnyMethods;
+use pyo3::types::PyDateTime;
+use pyo3::types::PySequence;
 
 /// Convert a Python timestamp into google.protobuf.Timestamp.
 ///

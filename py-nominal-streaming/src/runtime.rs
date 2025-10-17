@@ -1,15 +1,20 @@
 //! Runtime machinery: dedicated Tokio runtime thread + async worker,
 //! and a thin std-thread bridge from crossbeam (sync) → tokio mpsc (async).
 
-use anyhow::{anyhow, Result};
+use std::thread::JoinHandle;
+use std::thread::{self};
+
+use anyhow::anyhow;
+use anyhow::Result;
 use crossbeam_channel;
-use std::thread::{self, JoinHandle};
 use tokio::runtime::Builder;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::mpsc;
+use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
-use crate::builder_state::{build_stream, BuilderState};
+use crate::builder_state::build_stream;
+use crate::builder_state::BuilderState;
 use crate::point::EnqueueItem;
 
 /// Struct encompassing all of the components of the runtime that the python-facing layer needs to interact with

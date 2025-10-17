@@ -1,23 +1,26 @@
 //! The Python-exposed stream class (Rust side).
 
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
+use std::sync::Arc;
+use std::thread::JoinHandle;
+
 use ::nominal_streaming::prelude::*;
 use nominal_streaming::prelude::BearerToken;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
-use std::collections::HashMap;
-use std::path::PathBuf;
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    Arc,
-};
-use std::thread::JoinHandle;
-use tracing::{info, warn};
+use tracing::info;
+use tracing::warn;
 
-use crate::builder_state::{BuilderState, Target};
+use crate::builder_state::BuilderState;
+use crate::builder_state::Target;
 use crate::nominal_stream_opts::NominalStreamOptsWrapper;
 use crate::point::*;
-use crate::runtime::{spawn_runtime_worker, StreamRuntime};
+use crate::runtime::spawn_runtime_worker;
+use crate::runtime::StreamRuntime;
 
 fn extract_single_enqueue_item(
     channel_descriptor: ChannelDescriptor,

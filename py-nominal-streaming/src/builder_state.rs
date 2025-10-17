@@ -4,11 +4,14 @@
 //!   - Exactly one primary target must be set: Core or File
 ////!   - with_file_fallback() is only valid when the primary target is Core
 
-use crate::nominal_stream_opts::NominalStreamOptsWrapper;
-use anyhow::{anyhow, Result};
+use std::path::PathBuf;
+
+use anyhow::anyhow;
+use anyhow::Result;
 use nominal_streaming::prelude::*;
 use nominal_streaming::stream::NominalDatasetStreamBuilder;
-use std::path::PathBuf;
+
+use crate::nominal_stream_opts::NominalStreamOptsWrapper;
 
 /// Primary streaming target (mutually exclusive)
 #[derive(Clone)]

@@ -1,8 +1,9 @@
+use std::fmt;
+use std::time::Duration;
+
 use nominal_streaming::stream::NominalStreamOpts;
 use pyo3::prelude::*;
 use pyo3::types::PyType;
-use std::fmt;
-use std::time::Duration;
 
 #[pyclass(name = "NominalStreamOpts")]
 #[derive(Debug, Clone)]
