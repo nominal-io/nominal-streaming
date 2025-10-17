@@ -23,7 +23,7 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 
 # Depend on the Rust core crate in the repository root
-nominal-streaming = { workspace = true }
+nominal-streaming = { workspace = true, features = ["logging"] }
 
 anyhow = "1"
 crossbeam-channel = "0.5"

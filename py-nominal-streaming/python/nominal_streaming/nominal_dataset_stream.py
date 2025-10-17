@@ -32,7 +32,6 @@ from __future__ import annotations
 
 import datetime
 import logging
-import os
 import pathlib
 import signal
 from types import TracebackType
@@ -64,20 +63,15 @@ class NominalDatasetStream:
         self._impl = _NominalDatasetStream(self._opts)
         self._old_sigint = None
 
-    def enable_logging(self, log_level: int = logging.DEBUG) -> NominalDatasetStream:
+    def enable_logging(self, log_directive: str = "debug") -> NominalDatasetStream:
         """Enable logging with the given verbosity level
 
         Args:
-            log_level: Log verbosity level to expose from Rust code. Defaults to verbose debug logging.
+            log_directive: Log verbosity level to expose from Rust code. Defaults to verbose debug logging.
+                See the following for valid values: https://docs.rs/env_logger/latest/env_logger/#enabling-logging
         """
-        name = logging.getLevelName(log_level)
-        if "Level" in name:
-            raise ValueError("Log level must be a valid logging level (e.g. logging.INFO)")
-
-        logger.info("Setting rust log verbosity to '%s'", name.lower())
-        os.environ["RUST_LOG"] = name.lower()
-
-        self._impl = self._impl.enable_logging()
+        logger.info("Setting rust log verbosity to '%s'", log_directive)
+        self._impl = self._impl.enable_logging(log_directive)
         return self
 
     def with_core_consumer(self, dataset_rid: str) -> NominalDatasetStream:

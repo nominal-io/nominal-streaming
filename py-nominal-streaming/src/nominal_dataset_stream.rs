@@ -114,7 +114,7 @@ impl _NominalDatasetStream {
     pub fn new(opts: Option<NominalStreamOptsWrapper>) -> PyResult<Self> {
         Ok(Self {
             state: BuilderState {
-                logging: false,
+                log_level: None,
                 opts,
                 target: None,
             },
@@ -124,9 +124,13 @@ impl _NominalDatasetStream {
         })
     }
 
-    #[pyo3(text_signature = "(self)")]
-    pub fn enable_logging<'py>(mut slf: PyRefMut<'py, Self>) -> PyResult<PyRefMut<'py, Self>> {
-        slf.state.logging = true;
+    #[pyo3(signature = (log_level=None), text_signature = "(self, log_level=None)")]
+    pub fn enable_logging<'py>(
+        mut slf: PyRefMut<'py, Self>,
+        log_level: Option<&str>,
+    ) -> PyResult<PyRefMut<'py, Self>> {
+        let log_level_name = log_level.unwrap_or("debug");
+        slf.state.log_level = Some(log_level_name.to_string());
         Ok(slf)
     }
 

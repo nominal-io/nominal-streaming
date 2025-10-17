@@ -237,10 +237,15 @@ class _NominalDatasetStream:
             >>> stream = _NominalDatasetStream(NominalStreamOpts.default())
         """
 
-    def enable_logging(self) -> _NominalDatasetStream:
+    def enable_logging(self, log_directive: str | None = None) -> _NominalDatasetStream:
         """Enable client-side logging for diagnostics.
 
         NOTE: must be applied before calling open()
+
+        Args:
+            log_directive: If provided, log directive (e.g. "trace" or "info") to configure logging with.
+                If not provided, searches for a `RUST_LOG` environment variable, or if not found,
+                defaults to debug level logging.
 
         Returns:
             The updated instance for fluent chaining.

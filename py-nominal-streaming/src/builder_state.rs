@@ -28,7 +28,7 @@ pub enum Target {
 
 #[derive(Clone, Default)]
 pub struct BuilderState {
-    pub logging: bool,
+    pub log_level: Option<String>,
     pub opts: Option<NominalStreamOptsWrapper>,
     pub target: Option<Target>,
 }
@@ -84,8 +84,8 @@ pub fn build_stream(
         }
     };
 
-    if state.logging {
-        builder = builder.enable_logging();
+    if let Some(ref log_level) = state.log_level {
+        builder = builder.enable_logging_with_directive(log_level);
     }
 
     if let Some(ref opts) = state.opts {

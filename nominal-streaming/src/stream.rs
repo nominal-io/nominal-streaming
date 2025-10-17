@@ -103,9 +103,17 @@ impl NominalDatasetStreamBuilder {
     }
 
     #[cfg(feature = "logging")]
-    pub fn enable_logging(self) -> Self {
+    fn init_logging(self, directive: Option<&str>) -> Self {
         use tracing_subscriber::layer::SubscriberExt;
         use tracing_subscriber::util::SubscriberInitExt;
+
+        // Build the filter, either from an explicit directive or the environment.
+        let base = tracing_subscriber::EnvFilter::builder()
+            .with_default_directive(tracing_subscriber::filter::LevelFilter::DEBUG.into());
+        let env_filter = match directive {
+            Some(d) => base.parse_lossy(d),
+            None => base.from_env_lossy(),
+        };
 
         let subscriber = tracing_subscriber::registry()
             .with(
@@ -114,17 +122,23 @@ impl NominalDatasetStreamBuilder {
                     .with_thread_names(true)
                     .with_line_number(true),
             )
-            .with(
-                tracing_subscriber::EnvFilter::builder()
-                    .with_default_directive(tracing_subscriber::filter::LevelFilter::DEBUG.into())
-                    .from_env_lossy(),
-            );
+            .with(env_filter);
 
         if let Err(error) = subscriber.try_init() {
             eprintln!("nominal streaming failed to enable logging: {error}");
         }
 
         self
+    }
+
+    #[cfg(feature = "logging")]
+    pub fn enable_logging(self) -> Self {
+        self.init_logging(None)
+    }
+
+    #[cfg(feature = "logging")]
+    pub fn enable_logging_with_directive(self, log_directive: &str) -> Self {
+        self.init_logging(Some(log_directive))
     }
 
     pub fn build(self) -> NominalDatasetStream {

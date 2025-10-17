@@ -19,7 +19,7 @@ if __name__ == "__main__":
             .with_runtime_workers(20)
             .with_max_points_per_record(100_000),
         )
-        .enable_logging(logging.INFO)
+        .enable_logging("info")
         .with_core_consumer(client.create_dataset("drake test").rid)
         # .to_file(pathlib.Path("test.avro"))
     )

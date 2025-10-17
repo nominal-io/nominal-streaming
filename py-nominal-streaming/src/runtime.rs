@@ -22,7 +22,7 @@ pub struct StreamRuntime {
     /// Tokio runtime handle to spawn / drive async work
     pub runtime_handle: tokio::runtime::Handle,
     /// Cancellation token to signal immediate teardown within workers
-    // TODO: flush through to underlying NominalDatasetStream for instantaneous exit
+    // TODO(drake): flush through to underlying NominalDatasetStream for instantaneous exit
     pub cancel_token: CancellationToken,
     /// Async queue for ingesting data into the runtime.
     /// Data from Python enters this queue, where the runtime worker then forwards the data into the underlying NominalDatasetStream
@@ -49,7 +49,7 @@ pub fn spawn_runtime_worker(state: BuilderState) -> Result<(JoinHandle<()>, Stre
             .build()
             .expect("tokio runtime failed to initialize");
 
-        // TODO: flush configuration through
+        // TODO(drake): flush configuration through
         // let async_cap = state
         //     .opts
         //     .as_ref()
