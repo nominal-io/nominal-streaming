@@ -3,7 +3,6 @@ use std::time::Duration;
 
 use nominal_streaming::stream::NominalStreamOpts;
 use pyo3::prelude::*;
-use pyo3::types::PyType;
 
 #[pyclass(name = "NominalStreamOpts")]
 #[derive(Debug, Clone)]
@@ -18,7 +17,7 @@ impl fmt::Display for NominalStreamOptsWrapper {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "NominalStreamOpts(max_points_per_batch={}, max_request_delay_secs={}, max_buffered_requests={}, num_upload_workers={}, num_runtime_workers={}, base_api_url={})",
+            "NominalStreamOpts(max_points_per_batch={}, max_request_delay_secs{}, max_buffered_requests={}, num_upload_workers={}, num_runtime_workers={}, base_api_url='{}')",
             self.inner.max_points_per_record,
             self.inner.max_request_delay.as_secs_f64(),
             self.inner.max_buffered_requests,
@@ -32,33 +31,33 @@ impl fmt::Display for NominalStreamOptsWrapper {
 #[pymethods]
 impl NominalStreamOptsWrapper {
     #[new]
+    #[pyo3(signature = (
+        *,
+        max_points_per_batch=250_000,
+        max_request_delay_secs=0.1,
+        max_buffered_requests=4,
+        num_upload_workers=8,
+        num_runtime_workers=8,
+        base_api_url="https://api.gov.nominal.io/api",
+    ))]
     fn new(
         max_points_per_batch: usize,
-        max_request_delay: Duration,
+        max_request_delay_secs: f64,
         max_buffered_requests: usize,
         num_upload_workers: usize,
-        base_api_url: String,
         num_runtime_workers: usize,
+        base_api_url: &str,
     ) -> Self {
         NominalStreamOptsWrapper {
             inner: NominalStreamOpts {
                 max_points_per_record: max_points_per_batch,
-                max_request_delay,
+                max_request_delay: Duration::from_secs_f64(max_request_delay_secs),
                 max_buffered_requests,
                 request_dispatcher_tasks: num_upload_workers,
-                base_api_url,
+                base_api_url: base_api_url.to_string(),
             },
             num_runtime_workers: num_runtime_workers,
         }
-    }
-
-    #[classmethod]
-    #[pyo3(text_signature = "()")]
-    fn default(_cls: &Bound<'_, PyType>) -> PyResult<Self> {
-        Ok(Self {
-            inner: NominalStreamOpts::default(),
-            num_runtime_workers: 8,
-        })
     }
 
     #[getter]
@@ -67,8 +66,8 @@ impl NominalStreamOptsWrapper {
     }
 
     #[getter]
-    fn max_request_delay(&self) -> PyResult<Duration> {
-        Ok(self.inner.max_request_delay)
+    fn max_request_delay_secs(&self) -> PyResult<f64> {
+        Ok(self.inner.max_request_delay.as_secs_f64())
     }
 
     #[getter]
@@ -94,11 +93,11 @@ impl NominalStreamOptsWrapper {
         Ok(slf)
     }
 
-    fn with_max_request_delay(
+    fn with_max_request_delay_secs(
         mut slf: PyRefMut<'_, Self>,
-        delay: Duration,
+        delay_secs: f64,
     ) -> PyResult<PyRefMut<'_, Self>> {
-        slf.inner.max_request_delay = delay;
+        slf.inner.max_request_delay = Duration::from_secs_f64(delay_secs);
         Ok(slf)
     }
 

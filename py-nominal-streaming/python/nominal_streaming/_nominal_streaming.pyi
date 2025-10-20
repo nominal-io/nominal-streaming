@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import pathlib
-from datetime import timedelta
 from types import TracebackType
 from typing import Sequence, Type
 
@@ -17,49 +16,24 @@ class NominalStreamOpts:
 
     def __init__(
         self,
-        max_points_per_batch: int,
-        max_request_delay: timedelta,
-        max_buffered_requests: int,
-        num_upload_workers: int,
-        base_api_url: str,
-        num_runtime_workers: int,
+        *,
+        max_points_per_batch: int = 250_000,
+        max_request_delay_secs: float = 0.1,
+        max_buffered_requests: int = 4,
+        num_upload_workers: int = 8,
+        num_runtime_workers: int = 8,
+        base_api_url: str = "https://api.gov.nominal.io/api",
     ) -> None:
         """Initialize a NominalStreamOpts instance.
 
         Args:
             max_points_per_batch: Maximum number of points per record before dispatching a request.
-            max_request_delay: Maximum delay before a request is sent, even if it results in a partial request.
+            max_request_delay_secs: Maximum delay before a request is sent, even if it results in a partial request.
             max_buffered_requests: Maximum number of buffered requests before applying backpressure.
             num_upload_workers: Number of concurrent network dispatches to perform.
                 NOTE: should be less than the number of `num_runtime_workers`
-            base_api_url: Base URL of the Nominal API endpoint to stream data to.
             num_runtime_workers: Number of runtime worker threads for concurrent processing.
-
-        Example:
-            >>> from nominal_streaming import NominalStreamOpts
-            >>> opts = NominalStreamOpts(
-            ...     max_points_per_batch=250_000,
-            ...     max_request_delay=timedelta(seconds=0.1),
-            ...     max_buffered_requests=4,
-            ...     num_upload_workers=8,
-            ...     base_api_url="https://api.gov.nominal.io/api",
-            ...     num_runtime_workers=8,
-            ... )
-            >>> print(opts)
-            NominalStreamOpts(max_points_per_batch=50000, ...)
-        """
-
-    @classmethod
-    def default(cls) -> NominalStreamOpts:
-        """Create a NominalStreamOpts instance with default parameters.
-
-        Returns:
-            NominalStreamOpts: A default configuration with typical production-safe values.
-
-        Example:
-            >>> opts = NominalStreamOpts.default()
-            >>> print(opts.num_runtime_workers)
-            8
+            base_api_url: Base URL of the Nominal API endpoint to stream data to.
         """
 
     @property
@@ -75,14 +49,14 @@ class NominalStreamOpts:
         """
 
     @property
-    def max_request_delay(self) -> timedelta:
+    def max_request_delay_secs(self) -> float:
         """Maximum delay before forcing a request flush.
 
         Returns:
-            The maximum time to wait before sending pending data.
+            The maximum time to wait before sending pending data, in seconds.
 
         Example:
-            >>> NominalStreamOpts.default().max_request_delay.total_seconds() > 0
+            >>> NominalStreamOpts.default().max_request_delay > 0
             True
         """
 
@@ -147,17 +121,17 @@ class NominalStreamOpts:
             >>> opts = NominalStreamOpts.default().with_max_points_per_batch(1000)
         """
 
-    def with_max_request_delay(self, delay: timedelta) -> NominalStreamOpts:
+    def with_max_request_delay_secs(self, delay_secs: float) -> NominalStreamOpts:
         """Set the maximum delay before forcing a request flush.
 
         Args:
-            delay: Maximum time to wait before sending pending data.
+            delay_secs: Maximum time in seconds to wait before sending pending data.
 
         Returns:
             The updated instance for fluent chaining.
 
         Example:
-            >>> opts = NominalStreamOpts.default().with_max_request_delay(timedelta(seconds=1))
+            >>> opts = NominalStreamOpts.default().with_max_request_delay_secs(1.0)
         """
 
     def with_max_buffered_requests(self, n: int) -> NominalStreamOpts:

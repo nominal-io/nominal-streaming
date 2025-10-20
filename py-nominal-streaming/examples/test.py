@@ -13,11 +13,12 @@ if __name__ == "__main__":
     stream = (
         NominalDatasetStream(
             auth_header=client._clients.auth_header.split()[-1],
-            opts=NominalStreamOpts.default()
-            .with_num_upload_workers(16)
-            .with_max_buffered_requests(4)
-            .with_num_runtime_workers(20)
-            .with_max_points_per_batch(100_000),
+            opts=NominalStreamOpts(
+                num_upload_workers=16,
+                max_buffered_requests=4,
+                num_runtime_workers=20,
+                max_points_per_batch=100_000,
+            ),
         )
         .enable_logging("info")
         .with_core_consumer(client.create_dataset("drake test").rid)

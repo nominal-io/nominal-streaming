@@ -82,31 +82,33 @@ class NominalDatasetStream:
     def create(
         cls,
         auth_header: str,
-        api_base_url: str | None = None,
         max_points_per_batch: int | None = None,
-        max_request_delay: datetime.timedelta | None = None,
+        max_request_delay_secs: float | None = None,
         max_buffered_requests: int | None = None,
         num_upload_workers: int | None = None,
         num_runtime_workers: int | None = None,
+        api_base_url: str | None = None,
     ) -> NominalDatasetStream:
         """Factory constructor to build a NominalDatasetStream using optional overrides for configuration options
 
         Args:
             auth_header: API Key or Personal Access Token for accessing the Nominal API
-            api_base_url: Overrides the default base API URL.
             max_points_per_batch: Overrides the default number of points that may be sent in a single batch
-            max_request_delay: Overrides the default maximum buffering time for data between flushes.
+            max_request_delay_secs: Overrides the default maximum buffering time for data between flushes.
                 NOTE: if the amount of data being streamed is greater than available bandwidth, data may be
                       buffered longer than the configured duration.
             max_buffered_requests: Overrides the default number of requests that may be buffered between encoding
                 threads and upload threads. Increasing this may prevent blocking threads in situations with spotty
                 internet, but increase teardown time (e.g. when pressing ctrl + c)
             num_upload_workers: Overrides the default number of upload worker threads
-                NOTE: should be set lower than the number of runtime workers.
+                NOTE: must be set as low as the number of runtime workers.
             num_runtime_workers: Overrides the default number of runtime worker threads
-                NOTE: should be set higher than the number of upload workers.
+                NOTE: must be set as high as the number of upload workers.
+            api_base_url: Overrides the default base API URL.
+
+        NOTE: see `NominalStreamOpts` for default values
         """
-        opts = NominalStreamOpts.default()
+        opts = NominalStreamOpts()
 
         if api_base_url is not None:
             opts = opts.with_api_base_url(api_base_url)
@@ -114,8 +116,8 @@ class NominalDatasetStream:
         if max_points_per_batch is not None:
             opts = opts.with_max_points_per_batch(max_points_per_batch)
 
-        if max_request_delay is not None:
-            opts = opts.with_max_request_delay(max_request_delay)
+        if max_request_delay_secs is not None:
+            opts = opts.with_max_request_delay_secs(max_request_delay_secs)
 
         if max_buffered_requests is not None:
             opts = opts.with_max_buffered_requests(max_buffered_requests)
