@@ -267,7 +267,7 @@ class NominalDatasetStream:
             value: Value to write to the specified channel.
             tags: Key-value tags associated with the data being uploaded.
         """
-        self._impl.enqueue(channel_name, _parse_timestamp(timestamp), value, {**(tags or {})})
+        self._impl.enqueue(channel_name, _parse_timestamp(timestamp), value, {**tags} if tags else None)
 
     def enqueue_batch(
         self,
@@ -290,7 +290,9 @@ class NominalDatasetStream:
             values: Values to write to the specified channel.
             tags: Key-value tags associated with the data being uploaded.
         """
-        self._impl.enqueue_batch(channel_name, [_parse_timestamp(ts) for ts in timestamps], values, {**(tags or {})})
+        self._impl.enqueue_batch(
+            channel_name, [_parse_timestamp(ts) for ts in timestamps], values, {**tags} if tags else None
+        )
 
     def enqueue_from_dict(
         self,
@@ -308,4 +310,4 @@ class NominalDatasetStream:
             channel_values: A dictionary mapping channel names to their respective values.
             tags: Key-value tags associated with the data being uploaded.
         """
-        self._impl.enqueue_from_dict(_parse_timestamp(timestamp), {**channel_values}, {**(tags or {})})
+        self._impl.enqueue_from_dict(_parse_timestamp(timestamp), {**channel_values}, {**tags} if tags else None)
