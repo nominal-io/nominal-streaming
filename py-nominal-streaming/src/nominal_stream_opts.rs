@@ -18,7 +18,7 @@ impl fmt::Display for NominalStreamOptsWrapper {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "NominalStreamOpts(max_points_per_record={}, max_request_delay_secs={}, max_buffered_requests={}, num_upload_workers={}, num_runtime_workers={}, base_api_url={})",
+            "NominalStreamOpts(max_points_per_batch={}, max_request_delay_secs={}, max_buffered_requests={}, num_upload_workers={}, num_runtime_workers={}, base_api_url={})",
             self.inner.max_points_per_record,
             self.inner.max_request_delay.as_secs_f64(),
             self.inner.max_buffered_requests,
@@ -33,7 +33,7 @@ impl fmt::Display for NominalStreamOptsWrapper {
 impl NominalStreamOptsWrapper {
     #[new]
     fn new(
-        max_points_per_record: usize,
+        max_points_per_batch: usize,
         max_request_delay: Duration,
         max_buffered_requests: usize,
         num_upload_workers: usize,
@@ -42,7 +42,7 @@ impl NominalStreamOptsWrapper {
     ) -> Self {
         NominalStreamOptsWrapper {
             inner: NominalStreamOpts {
-                max_points_per_record,
+                max_points_per_record: max_points_per_batch,
                 max_request_delay,
                 max_buffered_requests,
                 request_dispatcher_tasks: num_upload_workers,
@@ -62,7 +62,7 @@ impl NominalStreamOptsWrapper {
     }
 
     #[getter]
-    fn max_points_per_record(&self) -> PyResult<usize> {
+    fn max_points_per_batch(&self) -> PyResult<usize> {
         Ok(self.inner.max_points_per_record)
     }
 
@@ -86,7 +86,7 @@ impl NominalStreamOptsWrapper {
         Ok(self.inner.base_api_url.clone())
     }
 
-    fn with_max_points_per_record(
+    fn with_max_points_per_batch(
         mut slf: PyRefMut<'_, Self>,
         n: usize,
     ) -> PyResult<PyRefMut<'_, Self>> {

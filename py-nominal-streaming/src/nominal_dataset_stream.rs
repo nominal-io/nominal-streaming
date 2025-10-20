@@ -279,11 +279,11 @@ impl _NominalDatasetStream {
         &self,
         py: Python<'_>,
         channel_name: &str,
-        timestamp: &Bound<'_, PyAny>,
+        timestamp: i128,
         value: &Bound<'_, PyAny>,
         tags: Option<HashMap<String, String>>,
     ) -> PyResult<()> {
-        let ts = parse_timestamp(timestamp)?;
+        let ts = parse_timestamp(timestamp);
         let ch = description_with_tags(channel_name, tags);
         let item = extract_single_enqueue_item(ch, ts, value)?;
         self.enqueue_item(py, item)
@@ -294,11 +294,11 @@ impl _NominalDatasetStream {
         &self,
         py: Python<'_>,
         channel_name: &str,
-        timestamps: &Bound<'_, PyAny>,
+        timestamps: Vec<i128>,
         values: &Bound<'_, PyAny>,
         tags: Option<HashMap<String, String>>,
     ) -> PyResult<()> {
-        let tss = extract_vec_ts(timestamps)?;
+        let tss = extract_vec_ts(timestamps);
         let ch = description_with_tags(channel_name, tags);
         let item = extract_series_enqueue_item(ch, tss, values)?;
         self.enqueue_item(py, item)
@@ -308,11 +308,11 @@ impl _NominalDatasetStream {
     pub fn enqueue_from_dict(
         &self,
         py: Python<'_>,
-        timestamp: &Bound<'_, PyAny>,
+        timestamp: i128,
         channel_values: &Bound<'_, PyDict>,
         tags: Option<HashMap<String, String>>,
     ) -> PyResult<()> {
-        let ts = parse_timestamp(timestamp)?;
+        let ts = parse_timestamp(timestamp);
         let mut items: Vec<EnqueueItem> = Vec::with_capacity(channel_values.len());
 
         for (k, v) in channel_values {

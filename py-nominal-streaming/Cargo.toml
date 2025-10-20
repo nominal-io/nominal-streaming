@@ -3,7 +3,7 @@ name = "py-nominal-streaming"
 description = "Python bindings for the nominal-streaming Rust library"
 edition = "2021"
 license = "MIT"
-version = "0.4.1"
+version = "0.5.1"
 
 [lib]
 # This becomes the *module* name on the Python side unless overridden by tool.maturin.module-name
@@ -11,7 +11,7 @@ name = "_nominal_streaming"
 crate-type = ["cdylib"]
 
 [dependencies]
-# PyO3 with a stable ABI across Python 3.9+ (reduces wheel matrix)
+# PyO3 with a stable ABI across Python 3.10+.
 pyo3 = { version = "0.26", features = ["extension-module", "abi3-py310", "time"] }
 
 nominal-api = { workspace = true }

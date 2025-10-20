@@ -34,6 +34,5 @@ test-log = { version = "0.2.18", features = ["trace"] }
 # Allow workspace packages to access core package
 nominal-streaming = { path = "nominal-streaming" }
 
-
 [profile.release]
 debug = true

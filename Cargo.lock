@@ -1770,7 +1770,7 @@ dependencies = [
 
 [[package]]
 name = "py-nominal-streaming"
-version = "0.4.1"
+version = "0.5.1"
 dependencies = [
  "anyhow",
  "crossbeam-channel",

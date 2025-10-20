@@ -8,10 +8,14 @@ classifiers = [
   "License :: OSI Approved :: MIT License",
   "Operating System :: OS Independent",
 ]
+
 # Let maturin source the version from Cargo.toml
 dynamic = ["version"]
 
-dependencies = []
+dependencies = [
+  "python-dateutil>=0.0.0",
+]
+
 [dependency-groups]
 dev = [
   "ipykernel>=7.0.1",
@@ -19,6 +23,7 @@ dev = [
   "ruff>=0.14.0",
   "maturin>=1.6,<2.0",
   "nominal>=1.70.0",
+  "types-python-dateutil>=2.9.0.20250822",
 ]
 
 [project.urls]
@@ -29,18 +34,19 @@ requires = ["maturin>=1.6,<2.0"]
 build-backend = "maturin"
 
 [tool.maturin]
-# Put the compiled extension *inside* the Python package folder we add below
-module-name   = "nominal_streaming._nominal_streaming"
+# Put the compiled extension *inside* the top-level `nominal_streaming` folder
+module-name  = "nominal_streaming._nominal_streaming"
 requires-python = ">=3.10"
 profile = "release"
 strip = true
 manifest-path = "./Cargo.toml"
 
-# Not strictly required, but documents how we expect to build
-# Also skips linking against libpython.so
-features = ["pyo3/extension-module", "pyo3/abi3-py310"]
+features = [
+  "pyo3/extension-module",  # Required on unix platforms to prevent linking against libpython.so
+  "pyo3/abi3-py310"         # Sets the exact minimum python version supported within multi-version wheels
+]
 
-# Tell maturin where your pure-Python code lives.
+# Tell maturin where the python code lives.
 # All files under this directory will be included in the wheel.
 python-source = "python"
 

@@ -13,51 +13,13 @@ use nominal_streaming::prelude::*;
 use pyo3::prelude::*;
 use pyo3::types::PyAny;
 use pyo3::types::PyAnyMethods;
-use pyo3::types::PyDateTime;
 use pyo3::types::PySequence;
 
-/// Convert a Python timestamp into google.protobuf.Timestamp.
-///
-/// Accepts:
-/// - int nanoseconds since Unix epoch (UTC)
-/// - datetime.datetime (aware → converted to UTC; naive → treated as UTC)
-///
-/// NOTE: this utilizes the python runtime, and will result in the GIL being held while
-///       running. Future optimizations may involve doing preprocessing in python and
-///       only passing integral timestamps across the language barrier.
-pub fn parse_timestamp(ts_obj: &Bound<'_, PyAny>) -> PyResult<Timestamp> {
-    if let Ok(ns_total) = ts_obj.extract::<i128>() {
-        // Absolute integer nanoseconds since UTC unix epoch
-        // This is the fastest path
-        let seconds = ns_total.div_euclid(1_000_000_000) as i64;
-        let nanos = ns_total.rem_euclid(1_000_000_000) as i32;
-        return Ok(Timestamp { seconds, nanos });
-    } else if let Ok(dt) = ts_obj.downcast::<PyDateTime>() {
-        // Slower path-- process datetime.datetime
-        let py = dt.py();
-        let datetime_mod = py.import("datetime")?;
-        let timezone = datetime_mod.getattr("timezone")?;
-        let utc = timezone.getattr("utc")?;
-
-        // If aware → convert to UTC; if naive → treat as UTC
-        let tzinfo = dt.getattr("tzinfo")?;
-        let dt_utc: Bound<'_, PyAny> = if tzinfo.is_none() {
-            dt.clone().into_any() // keep as-is; treated as UTC
-        } else {
-            dt.call_method1("astimezone", (utc,))?
-        };
-
-        // seconds (float) in UTC → integer nanoseconds
-        let secs_f: f64 = dt_utc.call_method0("timestamp")?.extract()?;
-        let ns_total = (secs_f * 1_000_000_000.0).round() as i128;
-        let seconds = ns_total.div_euclid(1_000_000_000) as i64;
-        let nanos = ns_total.rem_euclid(1_000_000_000) as i32;
-        return Ok(Timestamp { seconds, nanos });
-    }
-
-    Err(pyo3::exceptions::PyTypeError::new_err(
-        "timestamp must be integral UTC nanoseconds or a UTC datetime.datetime",
-    ))
+/// Convert a integral nanosecond timestamp into google.protobuf.Timestamp.
+pub fn parse_timestamp(timestamp: i128) -> Timestamp {
+    let seconds = timestamp.div_euclid(1_000_000_000) as i64;
+    let nanos = timestamp.rem_euclid(1_000_000_000) as i32;
+    Timestamp { seconds, nanos }
 }
 
 /// Build a ChannelDescriptor from channel name and optional tags.
@@ -261,13 +223,10 @@ pub fn extract_vec_string(values: &Bound<'_, PyAny>) -> PyResult<Vec<String>> {
     Ok(out)
 }
 
-pub fn extract_vec_ts(timestamps: &Bound<'_, PyAny>) -> PyResult<Vec<Timestamp>> {
-    let seq = timestamps.downcast::<PySequence>()?;
-    let len = seq.len()? as usize;
-    let mut out = Vec::with_capacity(len);
-    for i in 0..len {
-        let o = seq.get_item(i)?;
-        out.push(parse_timestamp(&o)?);
+pub fn extract_vec_ts(timestamps: Vec<i128>) -> Vec<Timestamp> {
+    let mut out = Vec::with_capacity(timestamps.len());
+    for ts in timestamps {
+        out.push(parse_timestamp(ts));
     }
-    Ok(out)
+    out
 }

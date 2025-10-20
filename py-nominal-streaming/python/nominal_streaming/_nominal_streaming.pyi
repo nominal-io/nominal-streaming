@@ -3,9 +3,9 @@ from __future__ import annotations
 import pathlib
 from datetime import timedelta
 from types import TracebackType
-from typing import Mapping, Sequence, Type
+from typing import Sequence, Type
 
-from nominal_streaming.nominal_dataset_stream import DataType, TimestampLike
+from nominal_streaming.nominal_dataset_stream import DataType
 
 class NominalStreamOpts:
     """Configuration options for Nominal data streaming.
@@ -17,7 +17,7 @@ class NominalStreamOpts:
 
     def __init__(
         self,
-        max_points_per_record: int,
+        max_points_per_batch: int,
         max_request_delay: timedelta,
         max_buffered_requests: int,
         num_upload_workers: int,
@@ -27,7 +27,7 @@ class NominalStreamOpts:
         """Initialize a NominalStreamOpts instance.
 
         Args:
-            max_points_per_record: Maximum number of points per record before dispatching a request.
+            max_points_per_batch: Maximum number of points per record before dispatching a request.
             max_request_delay: Maximum delay before a request is sent, even if it results in a partial request.
             max_buffered_requests: Maximum number of buffered requests before applying backpressure.
             num_upload_workers: Number of concurrent network dispatches to perform.
@@ -38,7 +38,7 @@ class NominalStreamOpts:
         Example:
             >>> from nominal_streaming import NominalStreamOpts
             >>> opts = NominalStreamOpts(
-            ...     max_points_per_record=250_000,
+            ...     max_points_per_batch=250_000,
             ...     max_request_delay=timedelta(seconds=0.1),
             ...     max_buffered_requests=4,
             ...     num_upload_workers=8,
@@ -46,7 +46,7 @@ class NominalStreamOpts:
             ...     num_runtime_workers=8,
             ... )
             >>> print(opts)
-            NominalStreamOpts(max_points_per_record=50000, ...)
+            NominalStreamOpts(max_points_per_batch=50000, ...)
         """
 
     @classmethod
@@ -63,14 +63,14 @@ class NominalStreamOpts:
         """
 
     @property
-    def max_points_per_record(self) -> int:
+    def max_points_per_batch(self) -> int:
         """Maximum number of data points per record before dispatch.
 
         Returns:
             The configured upper bound on points per record.
 
         Example:
-            >>> NominalStreamOpts.default().max_points_per_record
+            >>> NominalStreamOpts.default().max_points_per_batch
             50000
         """
 
@@ -134,7 +134,7 @@ class NominalStreamOpts:
             True
         """
 
-    def with_max_points_per_record(self, n: int) -> NominalStreamOpts:
+    def with_max_points_per_batch(self, n: int) -> NominalStreamOpts:
         """Set the maximum number of points per record.
 
         Args:
@@ -144,7 +144,7 @@ class NominalStreamOpts:
             The updated instance for fluent chaining.
 
         Example:
-            >>> opts = NominalStreamOpts.default().with_max_points_per_record(1000)
+            >>> opts = NominalStreamOpts.default().with_max_points_per_batch(1000)
         """
 
     def with_max_request_delay(self, delay: timedelta) -> NominalStreamOpts:
@@ -340,9 +340,9 @@ class _NominalDatasetStream:
     def enqueue(
         self,
         channel_name: str,
-        timestamp: TimestampLike,
+        timestamp: int,
         value: DataType,
-        tags: Mapping[str, str] | None = None,
+        tags: dict[str, str] | None = None,
     ) -> None:
         """Enqueue a single point.
 
@@ -361,9 +361,9 @@ class _NominalDatasetStream:
     def enqueue_batch(
         self,
         channel_name: str,
-        timestamps: Sequence[TimestampLike],
+        timestamps: Sequence[int],
         values: Sequence[DataType],
-        tags: Mapping[str, str] | None = None,
+        tags: dict[str, str] | None = None,
     ) -> None:
         """Enqueue a series for a single channel.
 
@@ -381,9 +381,9 @@ class _NominalDatasetStream:
 
     def enqueue_from_dict(
         self,
-        timestamp: TimestampLike,
-        channel_values: Mapping[str, DataType],
-        tags: Mapping[str, str] | None = None,
+        timestamp: int,
+        channel_values: dict[str, DataType],
+        tags: dict[str, str] | None = None,
     ) -> None:
         """Enqueue a wide record: many channels at a single timestamp.
 

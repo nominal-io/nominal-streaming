@@ -9,7 +9,7 @@ from nominal_streaming import NominalStreamOpts, NominalDatasetStream
 
 # NOTE: may also use NominalStreamOpts.default() for sensible defaults that may be customized
 opts = NominalStreamOpts(
-    max_points_per_record=250_000,
+    max_points_per_batch=250_000,
     max_request_delay=timedelta(seconds=0.1),
     max_buffered_requests=4,
     num_upload_workers=8,
@@ -37,6 +37,8 @@ import signal
 from types import TracebackType
 from typing import Mapping, Sequence, Type
 
+import dateutil
+
 from nominal_streaming._nominal_streaming import (
     NominalStreamOpts,
     _NominalDatasetStream,
@@ -46,6 +48,19 @@ logger = logging.getLogger(__name__)
 
 TimestampLike = str | int | datetime.datetime
 DataType = int | float | str
+
+
+def _parse_timestamp(ts: str | int | datetime.datetime) -> int:
+    if isinstance(ts, int):
+        return ts
+    elif isinstance(ts, datetime.datetime):
+        secs = ts.astimezone(datetime.timezone.utc).timestamp()
+        return int(secs * 1e9)
+    else:
+        # TODO(drake): by involving dateutil, this chops off any nano level precision provided
+        #              in the timestamp. Update to not lose precision when converting to absolute nanos.
+        secs = dateutil.parser.parse(ts).astimezone(datetime.timezone.utc).timestamp()
+        return int(secs * 1e9)
 
 
 class NominalDatasetStream:
@@ -64,11 +79,11 @@ class NominalDatasetStream:
         self._old_sigint = None
 
     @classmethod
-    def from_settings(
+    def create(
         cls,
         auth_header: str,
         api_base_url: str | None = None,
-        max_points_per_record: int | None = None,
+        max_points_per_batch: int | None = None,
         max_request_delay: datetime.timedelta | None = None,
         max_buffered_requests: int | None = None,
         num_upload_workers: int | None = None,
@@ -79,7 +94,7 @@ class NominalDatasetStream:
         Args:
             auth_header: API Key or Personal Access Token for accessing the Nominal API
             api_base_url: Overrides the default base API URL.
-            max_points_per_record: Overrides the default number of points that may be sent in a single batch
+            max_points_per_batch: Overrides the default number of points that may be sent in a single batch
             max_request_delay: Overrides the default maximum buffering time for data between flushes.
                 NOTE: if the amount of data being streamed is greater than available bandwidth, data may be
                       buffered longer than the configured duration.
@@ -96,8 +111,8 @@ class NominalDatasetStream:
         if api_base_url is not None:
             opts = opts.with_api_base_url(api_base_url)
 
-        if max_points_per_record is not None:
-            opts = opts.with_max_points_per_record(max_points_per_record)
+        if max_points_per_batch is not None:
+            opts = opts.with_max_points_per_batch(max_points_per_batch)
 
         if max_request_delay is not None:
             opts = opts.with_max_request_delay(max_request_delay)
@@ -186,11 +201,9 @@ class NominalDatasetStream:
 
         # Map Ctrl+C → fast cancel; keep handler tiny and re-raise KeyboardInterrupt.
         def _on_sigint(signum, frame):  # type: ignore[no-untyped-def]
-            logger.debug("Starting sigint handler")
+            logger.debug("Cancelling underlying stream")
             try:
-                logger.debug("Starting cancel")
                 self._impl.cancel()
-                logger.debug("finished cancel")
             finally:
                 raise KeyboardInterrupt
 
@@ -252,7 +265,7 @@ class NominalDatasetStream:
             value: Value to write to the specified channel.
             tags: Key-value tags associated with the data being uploaded.
         """
-        self._impl.enqueue(channel_name, timestamp, value, dict(tags or {}))
+        self._impl.enqueue(channel_name, _parse_timestamp(timestamp), value, {**(tags or {})})
 
     def enqueue_batch(
         self,
@@ -275,7 +288,7 @@ class NominalDatasetStream:
             values: Values to write to the specified channel.
             tags: Key-value tags associated with the data being uploaded.
         """
-        self._impl.enqueue_batch(channel_name, timestamps, values, dict(tags or {}))
+        self._impl.enqueue_batch(channel_name, [_parse_timestamp(ts) for ts in timestamps], values, {**(tags or {})})
 
     def enqueue_from_dict(
         self,
@@ -293,4 +306,4 @@ class NominalDatasetStream:
             channel_values: A dictionary mapping channel names to their respective values.
             tags: Key-value tags associated with the data being uploaded.
         """
-        self._impl.enqueue_from_dict(timestamp, dict(channel_values), dict(tags or {}))
+        self._impl.enqueue_from_dict(_parse_timestamp(timestamp), {**channel_values}, {**(tags or {})})

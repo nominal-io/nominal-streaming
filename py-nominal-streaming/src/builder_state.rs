@@ -40,7 +40,21 @@ impl BuilderState {
                 "no streaming target configured; call with_core_consumer(...) or to_file(...)"
             )),
             _ => Ok(()),
+        }?;
+
+        if let Some(opts) = self.opts.clone() {
+            if opts.num_runtime_workers < opts.inner.request_dispatcher_tasks {
+                return Err(
+                    anyhow!(
+                        "Number of runtime workers must be at least as large as the number of request dispatcher tasks ({} < {})", 
+                        opts.num_runtime_workers,
+                        opts.inner.request_dispatcher_tasks,
+                    )
+                );
+            }
         }
+
+        Ok(())
     }
 }
 
