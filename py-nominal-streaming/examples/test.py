@@ -14,9 +14,9 @@ if __name__ == "__main__":
         NominalDatasetStream(
             auth_header=client._clients.auth_header.split()[-1],
             opts=NominalStreamOpts.default()
-            .with_request_dispatcher_tasks(16)
+            .with_num_upload_workers(16)
             .with_max_buffered_requests(4)
-            .with_runtime_workers(20)
+            .with_num_runtime_workers(20)
             .with_max_points_per_record(100_000),
         )
         .enable_logging("info")

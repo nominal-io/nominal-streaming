@@ -11,19 +11,19 @@ pub struct NominalStreamOptsWrapper {
     pub inner: NominalStreamOpts,
 
     #[pyo3(get)]
-    pub runtime_workers: usize,
+    pub num_runtime_workers: usize,
 }
 
 impl fmt::Display for NominalStreamOptsWrapper {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "NominalStreamOpts(max_points_per_record={}, max_request_delay_secs={}, max_buffered_requests={}, request_dispatcher_tasks={}, runtime_workers={}, base_api_url={})",
+            "NominalStreamOpts(max_points_per_record={}, max_request_delay_secs={}, max_buffered_requests={}, num_upload_workers={}, num_runtime_workers={}, base_api_url={})",
             self.inner.max_points_per_record,
             self.inner.max_request_delay.as_secs_f64(),
             self.inner.max_buffered_requests,
             self.inner.request_dispatcher_tasks,
-            self.runtime_workers,
+            self.num_runtime_workers,
             self.inner.base_api_url,
         )
     }
@@ -36,19 +36,19 @@ impl NominalStreamOptsWrapper {
         max_points_per_record: usize,
         max_request_delay: Duration,
         max_buffered_requests: usize,
-        request_dispatcher_tasks: usize,
+        num_upload_workers: usize,
         base_api_url: String,
-        runtime_workers: usize,
+        num_runtime_workers: usize,
     ) -> Self {
         NominalStreamOptsWrapper {
             inner: NominalStreamOpts {
                 max_points_per_record,
                 max_request_delay,
                 max_buffered_requests,
-                request_dispatcher_tasks,
+                request_dispatcher_tasks: num_upload_workers,
                 base_api_url,
             },
-            runtime_workers: runtime_workers,
+            num_runtime_workers: num_runtime_workers,
         }
     }
 
@@ -57,7 +57,7 @@ impl NominalStreamOptsWrapper {
     fn default(_cls: &Bound<'_, PyType>) -> PyResult<Self> {
         Ok(Self {
             inner: NominalStreamOpts::default(),
-            runtime_workers: 8,
+            num_runtime_workers: 8,
         })
     }
 
@@ -77,7 +77,7 @@ impl NominalStreamOptsWrapper {
     }
 
     #[getter]
-    fn request_dispatcher_tasks(&self) -> PyResult<usize> {
+    fn num_upload_workers(&self) -> PyResult<usize> {
         Ok(self.inner.request_dispatcher_tasks)
     }
 
@@ -110,7 +110,7 @@ impl NominalStreamOptsWrapper {
         Ok(slf)
     }
 
-    fn with_request_dispatcher_tasks(
+    fn with_num_upload_workers(
         mut slf: PyRefMut<'_, Self>,
         n: usize,
     ) -> PyResult<PyRefMut<'_, Self>> {
@@ -118,8 +118,11 @@ impl NominalStreamOptsWrapper {
         Ok(slf)
     }
 
-    fn with_runtime_workers(mut slf: PyRefMut<'_, Self>, n: usize) -> PyResult<PyRefMut<'_, Self>> {
-        slf.runtime_workers = n;
+    fn with_num_runtime_workers(
+        mut slf: PyRefMut<'_, Self>,
+        n: usize,
+    ) -> PyResult<PyRefMut<'_, Self>> {
+        slf.num_runtime_workers = n;
         Ok(slf)
     }
 

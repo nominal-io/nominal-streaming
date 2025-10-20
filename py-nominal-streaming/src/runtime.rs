@@ -40,7 +40,7 @@ pub fn spawn_runtime_worker(state: BuilderState) -> Result<(JoinHandle<()>, Stre
         let num_workers = state
             .opts
             .as_ref()
-            .map(|o| o.runtime_workers)
+            .map(|o| o.num_runtime_workers)
             .unwrap_or(thread::available_parallelism().unwrap().get());
         let runtime = Builder::new_multi_thread()
             .enable_all()

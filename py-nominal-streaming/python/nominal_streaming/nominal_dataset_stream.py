@@ -12,7 +12,7 @@ opts = NominalStreamOpts(
     max_points_per_record=250_000,
     max_request_delay=timedelta(seconds=0.1),
     max_buffered_requests=4,
-    request_dispatcher_tasks=8,
+    num_upload_workers=8,
     base_api_url="https://api.gov.nominal.io/api",
     runtime_workers=8,
 )
@@ -62,6 +62,56 @@ class NominalDatasetStream:
         self._opts = opts
         self._impl = _NominalDatasetStream(self._opts)
         self._old_sigint = None
+
+    @classmethod
+    def from_settings(
+        cls,
+        auth_header: str,
+        api_base_url: str | None = None,
+        max_points_per_record: int | None = None,
+        max_request_delay: datetime.timedelta | None = None,
+        max_buffered_requests: int | None = None,
+        num_upload_workers: int | None = None,
+        num_runtime_workers: int | None = None,
+    ) -> NominalDatasetStream:
+        """Factory constructor to build a NominalDatasetStream using optional overrides for configuration options
+
+        Args:
+            auth_header: API Key or Personal Access Token for accessing the Nominal API
+            api_base_url: Overrides the default base API URL.
+            max_points_per_record: Overrides the default number of points that may be sent in a single batch
+            max_request_delay: Overrides the default maximum buffering time for data between flushes.
+                NOTE: if the amount of data being streamed is greater than available bandwidth, data may be
+                      buffered longer than the configured duration.
+            max_buffered_requests: Overrides the default number of requests that may be buffered between encoding
+                threads and upload threads. Increasing this may prevent blocking threads in situations with spotty
+                internet, but increase teardown time (e.g. when pressing ctrl + c)
+            num_upload_workers: Overrides the default number of upload worker threads
+                NOTE: should be set lower than the number of runtime workers.
+            num_runtime_workers: Overrides the default number of runtime worker threads
+                NOTE: should be set higher than the number of upload workers.
+        """
+        opts = NominalStreamOpts.default()
+
+        if api_base_url is not None:
+            opts = opts.with_api_base_url(api_base_url)
+
+        if max_points_per_record is not None:
+            opts = opts.with_max_points_per_record(max_points_per_record)
+
+        if max_request_delay is not None:
+            opts = opts.with_max_request_delay(max_request_delay)
+
+        if max_buffered_requests is not None:
+            opts = opts.with_max_buffered_requests(max_buffered_requests)
+
+        if num_upload_workers is not None:
+            opts = opts.with_num_upload_workers(num_upload_workers)
+
+        if num_runtime_workers is not None:
+            opts = opts.with_num_runtime_workers(num_runtime_workers)
+
+        return cls(auth_header, opts)
 
     def enable_logging(self, log_directive: str = "debug") -> NominalDatasetStream:
         """Enable logging with the given verbosity level

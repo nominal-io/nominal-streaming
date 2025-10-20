@@ -20,9 +20,9 @@ class NominalStreamOpts:
         max_points_per_record: int,
         max_request_delay: timedelta,
         max_buffered_requests: int,
-        request_dispatcher_tasks: int,
+        num_upload_workers: int,
         base_api_url: str,
-        runtime_workers: int,
+        num_runtime_workers: int,
     ) -> None:
         """Initialize a NominalStreamOpts instance.
 
@@ -30,10 +30,10 @@ class NominalStreamOpts:
             max_points_per_record: Maximum number of points per record before dispatching a request.
             max_request_delay: Maximum delay before a request is sent, even if it results in a partial request.
             max_buffered_requests: Maximum number of buffered requests before applying backpressure.
-            request_dispatcher_tasks: Number of concurrent network dispatches to perform.
-                NOTE: should be less than the number of `runtime_workers`
+            num_upload_workers: Number of concurrent network dispatches to perform.
+                NOTE: should be less than the number of `num_runtime_workers`
             base_api_url: Base URL of the Nominal API endpoint to stream data to.
-            runtime_workers: Number of runtime worker threads for concurrent processing.
+            num_runtime_workers: Number of runtime worker threads for concurrent processing.
 
         Example:
             >>> from nominal_streaming import NominalStreamOpts
@@ -41,9 +41,9 @@ class NominalStreamOpts:
             ...     max_points_per_record=250_000,
             ...     max_request_delay=timedelta(seconds=0.1),
             ...     max_buffered_requests=4,
-            ...     request_dispatcher_tasks=8,
+            ...     num_upload_workers=8,
             ...     base_api_url="https://api.gov.nominal.io/api",
-            ...     runtime_workers=8,
+            ...     num_runtime_workers=8,
             ... )
             >>> print(opts)
             NominalStreamOpts(max_points_per_record=50000, ...)
@@ -58,7 +58,7 @@ class NominalStreamOpts:
 
         Example:
             >>> opts = NominalStreamOpts.default()
-            >>> print(opts.runtime_workers)
+            >>> print(opts.num_runtime_workers)
             8
         """
 
@@ -99,26 +99,26 @@ class NominalStreamOpts:
         """
 
     @property
-    def request_dispatcher_tasks(self) -> int:
+    def num_upload_workers(self) -> int:
         """Number of concurrent dispatcher tasks used for network transmission.
 
         Returns:
             The number of dispatcher tasks.
 
         Example:
-            >>> NominalStreamOpts.default().request_dispatcher_tasks >= 1
+            >>> NominalStreamOpts.default().num_upload_workers >= 1
             True
         """
 
     @property
-    def runtime_workers(self) -> int:
+    def num_runtime_workers(self) -> int:
         """Number of runtime worker threads for internal processing.
 
         Returns:
             The configured number of runtime workers.
 
         Example:
-            >>> NominalStreamOpts.default().runtime_workers
+            >>> NominalStreamOpts.default().num_runtime_workers
             8
         """
 
@@ -173,7 +173,7 @@ class NominalStreamOpts:
             >>> opts = NominalStreamOpts.default().with_max_buffered_requests(200)
         """
 
-    def with_request_dispatcher_tasks(self, n: int) -> NominalStreamOpts:
+    def with_num_upload_workers(self, n: int) -> NominalStreamOpts:
         """Set the number of asynchronous dispatcher tasks.
 
         Args:
@@ -183,10 +183,10 @@ class NominalStreamOpts:
             The updated instance for fluent chaining.
 
         Example:
-            >>> opts = NominalStreamOpts.default().with_request_dispatcher_tasks(8)
+            >>> opts = NominalStreamOpts.default().with_num_upload_workers(8)
         """
 
-    def with_runtime_workers(self, n: int) -> NominalStreamOpts:
+    def with_num_runtime_workers(self, n: int) -> NominalStreamOpts:
         """Set the number of runtime worker threads.
 
         Args:
@@ -196,7 +196,7 @@ class NominalStreamOpts:
             The updated instance for fluent chaining.
 
         Example:
-            >>> opts = NominalStreamOpts.default().with_runtime_workers(16)
+            >>> opts = NominalStreamOpts.default().with_num_runtime_workers(16)
         """
 
     def with_api_base_url(self, url: str) -> NominalStreamOpts:
