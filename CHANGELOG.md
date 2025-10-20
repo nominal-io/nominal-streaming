@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.2](https://github.com/nominal-io/nominal-streaming/compare/v0.5.1...v0.5.2) - 2025-10-20
+
+### Fixed
+
+- re-expose AuthProvider ([#44](https://github.com/nominal-io/nominal-streaming/pull/44))
+- keep appending to changelog at repo root ([#39](https://github.com/nominal-io/nominal-streaming/pull/39))
+
 ## [0.5.1](https://github.com/nominal-io/nominal-streaming/compare/v0.5.0...v0.5.1) - 2025-10-16
 
 ### Other
