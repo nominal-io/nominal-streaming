@@ -24,6 +24,7 @@ pub mod prelude {
     pub use crate::stream::NominalDatasetStream;
     pub use crate::stream::NominalDatasourceStream;
     pub use crate::stream::NominalStreamOpts;
+    pub use crate::types::AuthProvider;
     pub use crate::types::ChannelDescriptor;
 }
 
