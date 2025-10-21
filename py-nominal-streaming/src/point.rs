@@ -1,15 +1,11 @@
 //! Helpers for translating Python arguments into nominal_streaming types.
-//!
-//! Exposed surface (used by the pyo3 class):
-//!   - parse_timestamp(): int ns or datetime.datetime → google.protobuf.Timestamp
-//!   - description_with_tags(): &str + {k: v} → ChannelDescriptor
-//!   - EnqueueItem: typed payload enum crossing the sync→async boundary
-//!   - constructors for single/batch points for double/int/string series
 
 use std::collections::HashMap;
 
 use nominal_api::tonic::google::protobuf::Timestamp;
 use nominal_streaming::prelude::*;
+use pyo3::exceptions::PyTypeError;
+use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyAny;
 use pyo3::types::PyAnyMethods;
@@ -33,7 +29,7 @@ pub fn description_with_tags(
     )
 }
 
-/// The typed payload that crosses the sync→async boundary.
+/// The typed payload that crosses the sync => async boundary.
 #[derive(Clone, Debug)]
 pub enum EnqueueItem {
     Doubles {
@@ -48,6 +44,52 @@ pub enum EnqueueItem {
         ch: ChannelDescriptor,
         points: Vec<StringPoint>,
     },
+}
+
+/// Ensure the given lists of timestamps and values have the same length
+fn ensure_same_len<T, U>(a: &[T], b: &[U]) -> PyResult<()> {
+    if a.len() != b.len() {
+        Err(PyValueError::new_err(
+            "timestamps and values must have same length",
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+/// Make a vector of protobuf points from the given python sequences and the given lambda for constructing points
+fn make_points<P, V>(
+    timestamps: Vec<Timestamp>,
+    values: Vec<V>,
+    mut f: impl FnMut(Timestamp, V) -> P,
+) -> PyResult<Vec<P>> {
+    ensure_same_len(&timestamps, &values)?;
+    Ok(timestamps
+        .into_iter()
+        .zip(values)
+        .map(|(ts, v)| f(ts, v))
+        .collect())
+}
+
+/// Generic method to convert a pysequence into a homogenous vector of rust data
+fn extract_vec_generic<'py, T>(
+    values: &Bound<'py, PyAny>,
+    typename_for_error: &'static str,
+) -> PyResult<Vec<T>>
+where
+    T: FromPyObject<'py>,
+{
+    let seq = values.downcast::<PySequence>()?;
+    let len = seq.len()? as usize;
+    let mut out = Vec::with_capacity(len);
+    for i in 0..len {
+        let item = seq.get_item(i)?;
+        let value: T = item
+            .extract()
+            .map_err(|_| PyTypeError::new_err(format!("Values must be {}", typename_for_error)))?;
+        out.push(value);
+    }
+    Ok(out)
 }
 
 // ---- Single-point constructors ----------------------------------------------
@@ -87,66 +129,33 @@ pub fn series_doubles(
     tss: Vec<Timestamp>,
     vals: Vec<f64>,
 ) -> PyResult<EnqueueItem> {
-    if tss.len() != vals.len() {
-        return Err(pyo3::exceptions::PyValueError::new_err(
-            "timestamps and values must have same length",
-        ));
-    }
-    Ok(EnqueueItem::Doubles {
-        ch,
-        points: tss
-            .into_iter()
-            .zip(vals.into_iter())
-            .map(|(ts, v)| DoublePoint {
-                timestamp: Some(ts),
-                value: v,
-            })
-            .collect(),
-    })
+    let points = make_points(tss, vals, |ts, v| DoublePoint {
+        timestamp: Some(ts),
+        value: v,
+    })?;
+    Ok(EnqueueItem::Doubles { ch, points })
 }
 pub fn series_ints(
     ch: ChannelDescriptor,
     tss: Vec<Timestamp>,
     vals: Vec<i64>,
 ) -> PyResult<EnqueueItem> {
-    if tss.len() != vals.len() {
-        return Err(pyo3::exceptions::PyValueError::new_err(
-            "timestamps and values must have same length",
-        ));
-    }
-    Ok(EnqueueItem::Ints {
-        ch,
-        points: tss
-            .into_iter()
-            .zip(vals.into_iter())
-            .map(|(ts, v)| IntegerPoint {
-                timestamp: Some(ts),
-                value: v,
-            })
-            .collect(),
-    })
+    let points = make_points(tss, vals, |ts, v| IntegerPoint {
+        timestamp: Some(ts),
+        value: v,
+    })?;
+    Ok(EnqueueItem::Ints { ch, points })
 }
 pub fn series_strings(
     ch: ChannelDescriptor,
     tss: Vec<Timestamp>,
     vals: Vec<String>,
 ) -> PyResult<EnqueueItem> {
-    if tss.len() != vals.len() {
-        return Err(pyo3::exceptions::PyValueError::new_err(
-            "timestamps and values must have same length",
-        ));
-    }
-    Ok(EnqueueItem::Strings {
-        ch,
-        points: tss
-            .into_iter()
-            .zip(vals.into_iter())
-            .map(|(ts, v)| StringPoint {
-                timestamp: Some(ts),
-                value: v,
-            })
-            .collect(),
-    })
+    let points = make_points(tss, vals, |ts, v| StringPoint {
+        timestamp: Some(ts),
+        value: v,
+    })?;
+    Ok(EnqueueItem::Strings { ch, points })
 }
 
 // ---- Python collection helpers ----------------------------------------------
@@ -182,51 +191,17 @@ pub fn classify_values(values: &Bound<'_, PyAny>) -> PyResult<ValueKind> {
 }
 
 pub fn extract_vec_f64(values: &Bound<'_, PyAny>) -> PyResult<Vec<f64>> {
-    let seq = values.downcast::<PySequence>()?;
-    let len = seq.len()? as usize;
-    let mut out = Vec::with_capacity(len);
-    for i in 0..len {
-        let item = seq.get_item(i)?;
-        let v: f64 = item
-            .extract()
-            .map_err(|_| pyo3::exceptions::PyTypeError::new_err("values must be floats"))?;
-        out.push(v);
-    }
-    Ok(out)
+    extract_vec_generic(values, "floats")
 }
 
 pub fn extract_vec_i64(values: &Bound<'_, PyAny>) -> PyResult<Vec<i64>> {
-    let seq = values.downcast::<PySequence>()?;
-    let len = seq.len()? as usize;
-    let mut out = Vec::with_capacity(len);
-    for i in 0..len {
-        let item = seq.get_item(i)?;
-        let v: i64 = item
-            .extract()
-            .map_err(|_| pyo3::exceptions::PyTypeError::new_err("values must be ints"))?;
-        out.push(v);
-    }
-    Ok(out)
+    extract_vec_generic(values, "ints")
 }
 
 pub fn extract_vec_string(values: &Bound<'_, PyAny>) -> PyResult<Vec<String>> {
-    let seq = values.downcast::<PySequence>()?;
-    let len = seq.len()? as usize;
-    let mut out = Vec::with_capacity(len);
-    for i in 0..len {
-        let item = seq.get_item(i)?;
-        let v: String = item
-            .extract()
-            .map_err(|_| pyo3::exceptions::PyTypeError::new_err("values must be strings"))?;
-        out.push(v);
-    }
-    Ok(out)
+    extract_vec_generic(values, "strings")
 }
 
 pub fn extract_vec_ts(timestamps: Vec<i128>) -> Vec<Timestamp> {
-    let mut out = Vec::with_capacity(timestamps.len());
-    for ts in timestamps {
-        out.push(parse_timestamp(ts));
-    }
-    out
+    timestamps.into_iter().map(parse_timestamp).collect()
 }

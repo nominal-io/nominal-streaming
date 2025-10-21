@@ -71,12 +71,25 @@ pub struct _NominalDatasetStream {
 }
 
 impl _NominalDatasetStream {
-    fn enqueue_item(&self, py: Python<'_>, item: EnqueueItem) -> PyResult<()> {
-        let runtime = self
-            .runtime
+    /// Borrow the active runtime or raise a python error if it hasn't started
+    #[inline]
+    fn runtime(&self) -> PyResult<&StreamRuntime> {
+        self.runtime
             .as_ref()
-            .ok_or_else(|| PyRuntimeError::new_err("Can't enqueue-- runtime not started..."))?;
+            .ok_or_else(|| PyRuntimeError::new_err("runtime not started"))
+    }
 
+    /// Extract nominal api token from env or overridden by argument
+    #[inline]
+    fn token_from_env_or_arg(token: Option<&str>) -> PyResult<String> {
+        token
+            .map(str::to_owned)
+            .or_else(|| std::env::var("NOMINAL_TOKEN").ok())
+            .ok_or_else(|| PyRuntimeError::new_err("NOMINAL_TOKEN not set and no token provided"))
+    }
+
+    fn send_one(&self, py: Python<'_>, item: EnqueueItem) -> PyResult<()> {
+        let runtime = self.runtime()?;
         py.detach(|| {
             runtime.runtime_handle.block_on(async move {
                 tokio::select! {
@@ -88,12 +101,8 @@ impl _NominalDatasetStream {
         .map_err(|_| PyRuntimeError::new_err("cancelled or closed"))
     }
 
-    fn enqueue_items(&self, py: Python<'_>, items: Vec<EnqueueItem>) -> PyResult<()> {
-        let runtime = self
-            .runtime
-            .as_ref()
-            .ok_or_else(|| PyRuntimeError::new_err("Can't enqueue-- runtime not started..."))?;
-
+    fn send_many(&self, py: Python<'_>, items: Vec<EnqueueItem>) -> PyResult<()> {
+        let runtime = self.runtime()?;
         py.detach(|| {
             runtime.runtime_handle.block_on(async move {
                 for item in items {
@@ -131,8 +140,7 @@ impl _NominalDatasetStream {
         mut slf: PyRefMut<'py, Self>,
         log_level: Option<&str>,
     ) -> PyResult<PyRefMut<'py, Self>> {
-        let log_level_name = log_level.unwrap_or("debug");
-        slf.builder.log_level = Some(log_level_name.to_string());
+        slf.builder.log_level = Some(log_level.unwrap_or("debug").to_string());
         Ok(slf)
     }
 
@@ -142,7 +150,6 @@ impl _NominalDatasetStream {
         opts: NominalStreamOptsWrapper,
     ) -> PyResult<PyRefMut<'py, Self>> {
         slf.builder.opts = Some(opts);
-        // slf.opts = Some(opts);
         Ok(slf)
     }
 
@@ -152,13 +159,7 @@ impl _NominalDatasetStream {
         dataset_rid: &str,
         token: Option<&str>,
     ) -> PyResult<PyRefMut<'py, Self>> {
-        let tok = token
-            .map(str::to_owned)
-            .or_else(|| std::env::var("NOMINAL_TOKEN").ok())
-            .ok_or_else(|| {
-                PyRuntimeError::new_err("NOMINAL_TOKEN not set and no token provided")
-            })?;
-
+        let tok = Self::token_from_env_or_arg(token)?;
         let bearer = BearerToken::new(&tok).map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
         let rid = ResourceIdentifier::new(dataset_rid)
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
@@ -189,6 +190,7 @@ impl _NominalDatasetStream {
         if self.is_open.swap(true, Ordering::SeqCst) {
             return Ok(());
         }
+
         self.builder
             .validate()
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
@@ -262,8 +264,7 @@ impl _NominalDatasetStream {
     ) -> PyResult<()> {
         let ts = parse_timestamp(timestamp);
         let ch = description_with_tags(channel_name, tags);
-        let item = extract_single_enqueue_item(ch, ts, value)?;
-        self.enqueue_item(py, item)
+        self.send_one(py, extract_single_enqueue_item(ch, ts, value)?)
     }
 
     #[pyo3(signature = (channel_name, timestamps, values, tags=None), text_signature = "(self, channel_name, timestamps, values, tags=None)")]
@@ -277,8 +278,7 @@ impl _NominalDatasetStream {
     ) -> PyResult<()> {
         let tss = extract_vec_ts(timestamps);
         let ch = description_with_tags(channel_name, tags);
-        let item = extract_series_enqueue_item(ch, tss, values)?;
-        self.enqueue_item(py, item)
+        self.send_one(py, extract_series_enqueue_item(ch, tss, values)?)
     }
 
     #[pyo3(signature = (timestamp, channel_values, tags=None), text_signature = "(self, timestamp, channel_values, tags=None)")]
@@ -295,11 +295,10 @@ impl _NominalDatasetStream {
         for (k, v) in channel_values {
             let ch_name: String = k.extract()?;
             let ch = description_with_tags(ch_name.as_str(), tags.clone()); // same tags for all entries
-            let item = extract_single_enqueue_item(ch, ts, &v)?;
-            items.push(item);
+            items.push(extract_single_enqueue_item(ch, ts, &v)?);
         }
 
-        self.enqueue_items(py, items)
+        self.send_many(py, items)
     }
 
     fn __enter__<'py>(mut slf: PyRefMut<'py, Self>) -> PyResult<PyRefMut<'py, Self>> {
