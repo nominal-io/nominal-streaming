@@ -4,7 +4,7 @@
 //!   - _NominalDatasetStream      (the Rust-backed stream; the Python layer provides
 //!                                 a friendlier `NominalDatasetStream` name and SIGINT wiring)
 
-mod builder_state;
+mod lazy_dataset_stream_builder;
 mod nominal_dataset_stream;
 mod nominal_stream_opts;
 mod point;

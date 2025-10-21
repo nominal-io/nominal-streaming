@@ -15,8 +15,10 @@ use pyo3::types::PyDict;
 use tracing::info;
 use tracing::warn;
 
-use crate::builder_state::BuilderState;
-use crate::builder_state::Target;
+use crate::lazy_dataset_stream_builder::CoreTarget;
+use crate::lazy_dataset_stream_builder::FileTarget;
+use crate::lazy_dataset_stream_builder::LazyDatasetStreamBuilder;
+use crate::lazy_dataset_stream_builder::StreamTargets;
 use crate::nominal_stream_opts::NominalStreamOptsWrapper;
 use crate::point::*;
 use crate::runtime::spawn_runtime_worker;
@@ -62,7 +64,7 @@ fn extract_series_enqueue_item(
 /// - Passing data from python, converting it to standard rust types, and pushing into streaming code.
 #[pyclass(name = "_NominalDatasetStream")]
 pub struct _NominalDatasetStream {
-    state: BuilderState,
+    builder: LazyDatasetStreamBuilder,
     runtime_task: Option<JoinHandle<()>>,
     runtime: Option<StreamRuntime>,
     is_open: Arc<AtomicBool>,
@@ -113,14 +115,14 @@ impl _NominalDatasetStream {
     #[pyo3(text_signature = "(/, opts=None)")]
     pub fn new(opts: Option<NominalStreamOptsWrapper>) -> PyResult<Self> {
         Ok(Self {
-            state: BuilderState {
+            builder: LazyDatasetStreamBuilder {
                 log_level: None,
                 opts,
-                target: None,
+                targets: StreamTargets::default(),
             },
             runtime_task: None,
-            is_open: Arc::new(AtomicBool::new(false)),
             runtime: None,
+            is_open: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -130,7 +132,7 @@ impl _NominalDatasetStream {
         log_level: Option<&str>,
     ) -> PyResult<PyRefMut<'py, Self>> {
         let log_level_name = log_level.unwrap_or("debug");
-        slf.state.log_level = Some(log_level_name.to_string());
+        slf.builder.log_level = Some(log_level_name.to_string());
         Ok(slf)
     }
 
@@ -139,7 +141,8 @@ impl _NominalDatasetStream {
         mut slf: PyRefMut<'py, Self>,
         opts: NominalStreamOptsWrapper,
     ) -> PyResult<PyRefMut<'py, Self>> {
-        slf.state.opts = Some(opts);
+        slf.builder.opts = Some(opts);
+        // slf.opts = Some(opts);
         Ok(slf)
     }
 
@@ -149,12 +152,6 @@ impl _NominalDatasetStream {
         dataset_rid: &str,
         token: Option<&str>,
     ) -> PyResult<PyRefMut<'py, Self>> {
-        if matches!(slf.state.target, Some(Target::File { .. })) {
-            return Err(PyRuntimeError::new_err(
-                "cannot set both with_core_consumer() and to_file()",
-            ));
-        }
-
         let tok = token
             .map(str::to_owned)
             .or_else(|| std::env::var("NOMINAL_TOKEN").ok())
@@ -165,11 +162,7 @@ impl _NominalDatasetStream {
         let bearer = BearerToken::new(&tok).map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
         let rid = ResourceIdentifier::new(dataset_rid)
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
-        slf.state.target = Some(Target::Core {
-            token: bearer,
-            rid,
-            file_fallback: None,
-        });
+        slf.builder.targets.core_target = Some(CoreTarget { token: bearer, rid });
         Ok(slf)
     }
 
@@ -178,12 +171,7 @@ impl _NominalDatasetStream {
         mut slf: PyRefMut<'py, Self>,
         path: PathBuf,
     ) -> PyResult<PyRefMut<'py, Self>> {
-        if matches!(slf.state.target, Some(Target::Core { .. })) {
-            return Err(PyRuntimeError::new_err(
-                "cannot set both with_core_consumer and to_file",
-            ));
-        }
-        slf.state.target = Some(Target::File { path: path.into() });
+        slf.builder.targets.file_target = Some(FileTarget { path: path.into() });
         Ok(slf)
     }
 
@@ -192,19 +180,8 @@ impl _NominalDatasetStream {
         mut slf: PyRefMut<'py, Self>,
         path: PathBuf,
     ) -> PyResult<PyRefMut<'py, Self>> {
-        match slf.state.target.clone() {
-            Some(Target::Core { token, rid, .. }) => {
-                slf.state.target = Some(Target::Core {
-                    token,
-                    rid,
-                    file_fallback: Some(path.into()),
-                });
-                return Ok(slf);
-            }
-            _ => Err(PyRuntimeError::new_err(
-                "with_file_fallback() requires with_core_consumer() to be set",
-            )),
-        }
+        slf.builder.targets.file_fallback = Some(path);
+        Ok(slf)
     }
 
     #[pyo3(text_signature = "(self)")]
@@ -212,11 +189,11 @@ impl _NominalDatasetStream {
         if self.is_open.swap(true, Ordering::SeqCst) {
             return Ok(());
         }
-        self.state
+        self.builder
             .validate()
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
 
-        let (runtime_task, runtime) = spawn_runtime_worker(self.state.clone())
+        let (runtime_task, runtime) = spawn_runtime_worker(self.builder.clone())
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
 
         self.runtime_task = Some(runtime_task);

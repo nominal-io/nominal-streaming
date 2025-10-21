@@ -13,8 +13,7 @@ use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
-use crate::builder_state::build_stream;
-use crate::builder_state::BuilderState;
+use crate::lazy_dataset_stream_builder::LazyDatasetStreamBuilder;
 use crate::point::EnqueueItem;
 
 /// Struct encompassing all of the components of the runtime that the python-facing layer needs to interact with
@@ -33,11 +32,13 @@ pub struct StreamRuntime {
 
 /// Create a background thread that manages a tokio runtime and in a tight loop pulls
 /// incoming data from a queue and forwards into the underlying rust streaming client
-pub fn spawn_runtime_worker(state: BuilderState) -> Result<(JoinHandle<()>, StreamRuntime)> {
+pub fn spawn_runtime_worker(
+    builder: LazyDatasetStreamBuilder,
+) -> Result<(JoinHandle<()>, StreamRuntime)> {
     let (rt_info_tx, rt_info_rx) = crossbeam_channel::bounded::<StreamRuntime>(1);
 
     let join = thread::spawn(move || {
-        let num_workers = state
+        let num_workers = builder
             .opts
             .as_ref()
             .map(|o| o.num_runtime_workers)
@@ -50,7 +51,7 @@ pub fn spawn_runtime_worker(state: BuilderState) -> Result<(JoinHandle<()>, Stre
             .expect("tokio runtime failed to initialize");
 
         // TODO(drake): flush configuration through
-        // let async_cap = state
+        // let async_cap = builder
         //     .opts
         //     .as_ref()
         //     .map(|o| o.async_buffer_cap())
@@ -74,7 +75,7 @@ pub fn spawn_runtime_worker(state: BuilderState) -> Result<(JoinHandle<()>, Stre
             let cancel_child = cancel_token.child_token();
 
             // Attempt to build the stream using the *cloned* handle.
-            let maybe_stream = build_stream(&state, runtime_handle.clone());
+            let maybe_stream = builder.build(runtime_handle.clone());
 
             // Spawn the ingest/forwarder task on this runtime.
             let worker = tokio::spawn(async move {
