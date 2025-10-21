@@ -1,4 +1,4 @@
-name: build and test
+name: Build and Test Rust
 
 on:
   push:
@@ -22,9 +22,13 @@ jobs:
         run: echo "::add-matcher::.github/rust.json"
       - name: Install protoc
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
-      - name: Build
-        run: cargo build
-      - name: Check format
-        run: cargo +nightly fmt --all --check
-      - name: Run Tests
-        run: cargo test --workspace
+      - name: Install just
+        uses: extractions/setup-just@v3
+      - name: Install rust dependencies
+        run: just rust::install
+      - name: Build rust crates
+        run: just rust::build
+      - name: Check rust format
+        run: just rust::check
+      - name: Run rust Tests
+        run: just rust::test

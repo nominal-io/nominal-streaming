@@ -28,3 +28,8 @@ fix:
 clean:
     @echo "Running 'clean' for Rust code"
     cargo clean
+
+# Run rust tests
+test:
+    @echo "Running 'test' for Rust code"
+    cargo test --workspace

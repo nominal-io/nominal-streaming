@@ -3,3 +3,13 @@
 [workspace]
 # set the path of all the crates to the changelog to the root of the repository
 changelog_path = "./CHANGELOG.md"
+
+[[package]]
+name = "nominal-streaming"
+version_group = "streaming_packages"
+publish = true
+
+[[package]]
+name = "py-nominal-streaming
+version_group = "streaming_packages"
+publish = false
