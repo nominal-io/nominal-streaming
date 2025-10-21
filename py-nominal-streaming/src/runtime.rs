@@ -1,6 +1,3 @@
-//! Runtime machinery: dedicated Tokio runtime thread + async worker,
-//! and a thin std-thread bridge from crossbeam (sync) → tokio mpsc (async).
-
 use std::thread::JoinHandle;
 use std::thread::{self};
 
@@ -11,6 +8,7 @@ use tokio::runtime::Builder;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
+use tracing::error;
 use tracing::info;
 
 use crate::lazy_dataset_stream_builder::LazyDatasetStreamBuilder;
@@ -37,12 +35,21 @@ pub fn spawn_runtime_worker(
 ) -> Result<(JoinHandle<()>, StreamRuntime)> {
     let (rt_info_tx, rt_info_rx) = crossbeam_channel::bounded::<StreamRuntime>(1);
 
+    let num_workers = builder
+        .opts
+        .as_ref()
+        .map(|o| o.num_runtime_workers)
+        .unwrap_or_else(|| thread::available_parallelism().unwrap().get());
+
+    // TODO(drake): flush configuration through
+    // let async_cap = builder
+    //     .opts
+    //     .as_ref()
+    //     .map(|o| o.async_buffer_cap())
+    //     .unwrap_or(4);
+    let async_cap = 4;
+
     let join = thread::spawn(move || {
-        let num_workers = builder
-            .opts
-            .as_ref()
-            .map(|o| o.num_runtime_workers)
-            .unwrap_or(thread::available_parallelism().unwrap().get());
         let runtime = Builder::new_multi_thread()
             .enable_all()
             .thread_name("nominal-stream-runtime")
@@ -50,15 +57,7 @@ pub fn spawn_runtime_worker(
             .build()
             .expect("tokio runtime failed to initialize");
 
-        // TODO(drake): flush configuration through
-        // let async_cap = builder
-        //     .opts
-        //     .as_ref()
-        //     .map(|o| o.async_buffer_cap())
-        //     .unwrap_or(4);
-        let async_cap = 4;
-
-        // IMPORTANT: clone the handle *before* entering block_on
+        // Clone the handle before block_on so we don't capture Runtime
         let runtime_handle = runtime.handle().clone();
         let cancel_token = CancellationToken::new();
 
@@ -77,49 +76,43 @@ pub fn spawn_runtime_worker(
             // Attempt to build the stream using the *cloned* handle.
             let maybe_stream = builder.build(runtime_handle.clone());
 
-            // Spawn the ingest/forwarder task on this runtime.
-            let worker = tokio::spawn(async move {
-                if let Ok(stream) = maybe_stream {
-                    loop {
-                        tokio::select! {
-                            _ = cancel_child.cancelled() => {
-                                info!("Cancellation token received! Stopping runtime...");
-                                break
+            // Pass runtime parts back to creator
+            let _ = rt_info_tx.send(StreamRuntime { runtime_handle, cancel_token: cancel_child.clone(), ingest_tx, runtime_exited_rx });
+
+            // Build the underlying stream using a cloned handle
+            let stream = match maybe_stream {
+                Ok(s) => s,
+                Err(e) => {
+                    let _ = runtime_exited_tx.send(());
+                    error!("Failed to start underlying stream: {e}");
+                    return;
+                }
+            };
+
+            // Forwarding loop
+            loop {
+                tokio::select! {
+                    _ = cancel_child.cancelled() => {
+                        info!("Cancellation token received! Stopping runtime...");
+                        break;
+                    },
+                    maybe_item = ingest_rx.recv() => {
+                        match maybe_item {
+                            Some(EnqueueItem::Doubles { ch, points }) => { stream.enqueue(&ch, points); }
+                            Some(EnqueueItem::Ints    { ch, points }) => { stream.enqueue(&ch, points); }
+                            Some(EnqueueItem::Strings { ch, points }) => { stream.enqueue(&ch, points); }
+                            None => {
+                                info!("Empty enqueue item received! Stopping runtime...");
+                                break;
                             },
-                            maybe_item = ingest_rx.recv() => {
-                                match maybe_item {
-                                    Some(EnqueueItem::Doubles { ch, points }) => { stream.enqueue(&ch, points); }
-                                    Some(EnqueueItem::Ints    { ch, points }) => { stream.enqueue(&ch, points); }
-                                    Some(EnqueueItem::Strings { ch, points }) => { stream.enqueue(&ch, points); }
-                                    None => {
-                                        info!("Empty enqueue item received! Stopping runtime...");
-                                        break;
-                                    },
-                                }
-                            }
                         }
                     }
-                    info!("Done forwarding points from python! Awaiting underlying stream teardown...");
                 }
+            }
 
-                // TODO (drake): consider adding error handling around send() call
-                info!("Signalling runtime exit");
-                let _ = runtime_exited_tx.send(());
-                Ok::<(), anyhow::Error>(())
-            });
-
-            // Send runtime parts back to the creator. Use `handle.clone()` here,
-            // NOT `rt.handle()`, so the future doesn't capture `rt`.
-            rt_info_tx
-                .send(StreamRuntime {
-                    runtime_handle: runtime_handle,
-                    cancel_token: cancel_token,
-                    ingest_tx: ingest_tx,
-                    runtime_exited_rx: runtime_exited_rx,
-                })
-                .ok();
-
-            let _ = worker.await;
+            // TODO (drake): consider adding error handling around send() call
+            info!("Worker loop exited; signalling runtime exit.");
+            let _ = runtime_exited_tx.send(());
         });
     });
 
