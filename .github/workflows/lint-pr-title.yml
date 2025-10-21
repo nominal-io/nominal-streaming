@@ -1,4 +1,4 @@
-name: lint.yml
+name: Lint PR Title
 on:
   pull_request:
     types: ["opened", "reopened", "edited", "synchronize"]
@@ -11,7 +11,7 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v5
       - name: Install Dependencies
-        run: npm install -g @commitlint/cli @commitlint/config-conventional
+        run: npm install -g @commitlint/cli@20 @commitlint/config-conventional@20
       - name: Lint PR name
         env:
           # Store in an environment to guard against script injection
