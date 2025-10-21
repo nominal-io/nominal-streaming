@@ -5,7 +5,7 @@ use anyhow::Result;
 use nominal_streaming::prelude::*;
 use nominal_streaming::stream::NominalDatasetStreamBuilder;
 
-use crate::nominal_stream_opts::NominalStreamOptsWrapper;
+use crate::nominal_stream_opts::PyNominalStreamOpts;
 
 #[derive(Clone)]
 pub struct CoreTarget {
@@ -30,7 +30,7 @@ pub struct StreamTargets {
 #[derive(Clone, Default)]
 pub struct LazyDatasetStreamBuilder {
     pub log_level: Option<String>,
-    pub opts: Option<NominalStreamOptsWrapper>,
+    pub opts: Option<PyNominalStreamOpts>,
     pub targets: StreamTargets,
 }
 
@@ -86,6 +86,7 @@ impl LazyDatasetStreamBuilder {
             builder = builder.with_options(opts.inner.clone());
         }
 
-        Ok(builder.build())
+        std::panic::catch_unwind(|| builder.build())
+            .map_err(|_| anyhow!("Failed to build underlying stream"))
     }
 }

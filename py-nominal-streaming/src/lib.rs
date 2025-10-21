@@ -1,7 +1,7 @@
 //! Python extension entrypoint for `_nominal_streaming`.
 //! Exposes:
-//!   - NominalStreamOptsWrapper   (your existing options/builder wrapper)
-//!   - _NominalDatasetStream      (the Rust-backed stream; the Python layer provides
+//!   - PyNominalStreamOpts   (your existing options/builder wrapper)
+//!   - PyNominalDatasetStream      (the Rust-backed stream; the Python layer provides
 //!                                 a friendlier `NominalDatasetStream` name and SIGINT wiring)
 
 mod lazy_dataset_stream_builder;
@@ -14,7 +14,7 @@ use pyo3::prelude::*;
 
 #[pymodule(name = "_nominal_streaming")]
 fn nominal_streaming(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add_class::<nominal_stream_opts::NominalStreamOptsWrapper>()?;
-    m.add_class::<nominal_dataset_stream::_NominalDatasetStream>()?;
+    m.add_class::<nominal_stream_opts::PyNominalStreamOpts>()?;
+    m.add_class::<nominal_dataset_stream::PyNominalDatasetStream>()?;
     Ok(())
 }

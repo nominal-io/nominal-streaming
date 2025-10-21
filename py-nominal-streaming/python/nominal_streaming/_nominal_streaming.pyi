@@ -192,7 +192,7 @@ class NominalStreamOpts:
     def __str__(self) -> str:
         """Return a human-readable summary of this configuration."""
 
-class _NominalDatasetStream:
+class PyNominalDatasetStream:
     """High-throughput client for enqueueing dataset points to Nominal.
 
     This is the Python-facing streaming client. It supports a fluent builder
@@ -208,10 +208,10 @@ class _NominalDatasetStream:
 
         Example:
             >>> from nominal_streaming import NominalStreamOpts
-            >>> stream = _NominalDatasetStream(NominalStreamOpts.default())
+            >>> stream = PyNominalDatasetStream(NominalStreamOpts())
         """
 
-    def enable_logging(self, log_directive: str | None = None) -> _NominalDatasetStream:
+    def enable_logging(self, log_directive: str | None = None) -> PyNominalDatasetStream:
         """Enable client-side logging for diagnostics.
 
         NOTE: must be applied before calling open()
@@ -225,7 +225,7 @@ class _NominalDatasetStream:
             The updated instance for fluent chaining.
         """
 
-    def with_options(self, opts: NominalStreamOpts) -> _NominalDatasetStream:
+    def with_options(self, opts: NominalStreamOpts) -> PyNominalDatasetStream:
         """Attach or replace stream options.
 
         NOTE: must be applied before calling open()
@@ -241,7 +241,7 @@ class _NominalDatasetStream:
         self,
         dataset_rid: str,
         token: str | None = None,
-    ) -> _NominalDatasetStream:
+    ) -> PyNominalDatasetStream:
         """Send data to a Dataset in Nominal.
 
         NOTE: Must be applied before calling open()
@@ -259,7 +259,7 @@ class _NominalDatasetStream:
             RuntimeError: If called after `to_file`.
         """
 
-    def to_file(self, path: pathlib.Path) -> _NominalDatasetStream:
+    def to_file(self, path: pathlib.Path) -> PyNominalDatasetStream:
         """Write points to a local file (newline-delimited records).
 
         Mutually exclusive with `with_core_consumer`.
@@ -274,7 +274,7 @@ class _NominalDatasetStream:
             RuntimeError: If already configured for core consumption.
         """
 
-    def with_file_fallback(self, path: pathlib.Path) -> _NominalDatasetStream:
+    def with_file_fallback(self, path: pathlib.Path) -> PyNominalDatasetStream:
         """If sending to core fails, fall back to writing to `path`.
 
         NOTE: Requires that `with_core_consumer` has been configured.
@@ -371,7 +371,7 @@ class _NominalDatasetStream:
             TypeError: If any value is not an `int`, `float`, or `str`.
         """
 
-    def __enter__(self) -> _NominalDatasetStream: ...
+    def __enter__(self) -> PyNominalDatasetStream: ...
     def __exit__(
         self, exc_type: Type[BaseException] | None, exc_value: BaseException | None, traceback: TracebackType | None
     ) -> None: ...

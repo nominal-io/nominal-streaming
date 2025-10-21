@@ -41,7 +41,7 @@ import dateutil
 
 from nominal_streaming._nominal_streaming import (
     NominalStreamOpts,
-    _NominalDatasetStream,
+    PyNominalDatasetStream,
 )
 
 logger = logging.getLogger(__name__)
@@ -75,7 +75,7 @@ class NominalDatasetStream:
         """
         self._auth_header = auth_header
         self._opts = opts
-        self._impl = _NominalDatasetStream(self._opts)
+        self._impl = PyNominalDatasetStream(self._opts)
         self._old_sigint = None
 
     @classmethod

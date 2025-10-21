@@ -1,3 +1,5 @@
+//! Helpers for managing tokio runtime under the hood for the lifespan of a stream used by python.
+
 use std::thread::JoinHandle;
 use std::thread::{self};
 

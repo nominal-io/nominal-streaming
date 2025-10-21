@@ -12,7 +12,7 @@ use pyo3::types::PyAnyMethods;
 use pyo3::types::PySequence;
 
 /// Convert a integral nanosecond timestamp into google.protobuf.Timestamp.
-pub fn parse_timestamp(timestamp: i128) -> Timestamp {
+pub fn parse_timestamp(timestamp: u64) -> Timestamp {
     let seconds = timestamp.div_euclid(1_000_000_000) as i64;
     let nanos = timestamp.rem_euclid(1_000_000_000) as i32;
     Timestamp { seconds, nanos }
@@ -202,6 +202,6 @@ pub fn extract_vec_string(values: &Bound<'_, PyAny>) -> PyResult<Vec<String>> {
     extract_vec_generic(values, "strings")
 }
 
-pub fn extract_vec_ts(timestamps: Vec<i128>) -> Vec<Timestamp> {
+pub fn extract_vec_ts(timestamps: Vec<u64>) -> Vec<Timestamp> {
     timestamps.into_iter().map(parse_timestamp).collect()
 }

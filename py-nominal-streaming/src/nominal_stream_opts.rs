@@ -1,19 +1,21 @@
+//! The Python-exposed stream configuration class (Rust side).
+
 use std::fmt;
 use std::time::Duration;
 
 use nominal_streaming::stream::NominalStreamOpts;
 use pyo3::prelude::*;
 
-#[pyclass(name = "NominalStreamOpts")]
+#[pyclass]
 #[derive(Debug, Clone)]
-pub struct NominalStreamOptsWrapper {
+pub struct PyNominalStreamOpts {
     pub inner: NominalStreamOpts,
 
     #[pyo3(get)]
     pub num_runtime_workers: usize,
 }
 
-impl fmt::Display for NominalStreamOptsWrapper {
+impl fmt::Display for PyNominalStreamOpts {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
@@ -29,7 +31,7 @@ impl fmt::Display for NominalStreamOptsWrapper {
 }
 
 #[pymethods]
-impl NominalStreamOptsWrapper {
+impl PyNominalStreamOpts {
     #[new]
     #[pyo3(signature = (
         *,
@@ -48,7 +50,7 @@ impl NominalStreamOptsWrapper {
         num_runtime_workers: usize,
         base_api_url: &str,
     ) -> Self {
-        NominalStreamOptsWrapper {
+        PyNominalStreamOpts {
             inner: NominalStreamOpts {
                 max_points_per_record: max_points_per_batch,
                 max_request_delay: Duration::from_secs_f64(max_request_delay_secs),

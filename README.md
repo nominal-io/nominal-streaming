@@ -188,4 +188,4 @@ To run common workflows manually, either `cd` into the `py-nominal-streaming` di
   uv run maturin build  # Places the `whl` file in the `target/wheels` directory
   ```
 
-If updating any public-facing bindings from the rust side (e.g. updating `_NominalDatasetStream` or `NominalStreamOptsWrapper`), ensure that you make the appropriate changes to [the python bindings](py-nominal-streaming/python/nominal_streaming/_nominal_streaming.pyi).
+If updating any public-facing bindings from the rust side (e.g. updating `PyNominalDatasetStream` or `PyNominalStreamOpts`), ensure that you make the appropriate changes to [the python bindings](py-nominal-streaming/python/nominal_streaming/_nominal_streaming.pyi).

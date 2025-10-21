@@ -19,7 +19,7 @@ use crate::lazy_dataset_stream_builder::CoreTarget;
 use crate::lazy_dataset_stream_builder::FileTarget;
 use crate::lazy_dataset_stream_builder::LazyDatasetStreamBuilder;
 use crate::lazy_dataset_stream_builder::StreamTargets;
-use crate::nominal_stream_opts::NominalStreamOptsWrapper;
+use crate::nominal_stream_opts::PyNominalStreamOpts;
 use crate::point::*;
 use crate::runtime::spawn_runtime_worker;
 use crate::runtime::StreamRuntime;
@@ -59,18 +59,18 @@ fn extract_series_enqueue_item(
     }
 }
 
-/// The _NominalDatasetStream is a thin layer bound to python that handles two main concerns:
+/// The PyNominalDatasetStream is a thin layer bound to python that handles two main concerns:
 /// - Configuring and managing a tokio runtime for running streaming code
 /// - Passing data from python, converting it to standard rust types, and pushing into streaming code.
-#[pyclass(name = "_NominalDatasetStream")]
-pub struct _NominalDatasetStream {
+#[pyclass]
+pub struct PyNominalDatasetStream {
     builder: LazyDatasetStreamBuilder,
     runtime_task: Option<JoinHandle<()>>,
     runtime: Option<StreamRuntime>,
     is_open: Arc<AtomicBool>,
 }
 
-impl _NominalDatasetStream {
+impl PyNominalDatasetStream {
     /// Borrow the active runtime or raise a python error if it hasn't started
     #[inline]
     fn runtime(&self) -> PyResult<&StreamRuntime> {
@@ -119,10 +119,10 @@ impl _NominalDatasetStream {
 }
 
 #[pymethods]
-impl _NominalDatasetStream {
+impl PyNominalDatasetStream {
     #[new]
     #[pyo3(text_signature = "(/, opts=None)")]
-    pub fn new(opts: Option<NominalStreamOptsWrapper>) -> PyResult<Self> {
+    pub fn new(opts: Option<PyNominalStreamOpts>) -> PyResult<Self> {
         Ok(Self {
             builder: LazyDatasetStreamBuilder {
                 log_level: None,
@@ -147,7 +147,7 @@ impl _NominalDatasetStream {
     #[pyo3(text_signature = "(self, opts)")]
     pub fn with_options<'py>(
         mut slf: PyRefMut<'py, Self>,
-        opts: NominalStreamOptsWrapper,
+        opts: PyNominalStreamOpts,
     ) -> PyResult<PyRefMut<'py, Self>> {
         slf.builder.opts = Some(opts);
         Ok(slf)
@@ -258,7 +258,7 @@ impl _NominalDatasetStream {
         &self,
         py: Python<'_>,
         channel_name: &str,
-        timestamp: i128,
+        timestamp: u64,
         value: &Bound<'_, PyAny>,
         tags: Option<HashMap<String, String>>,
     ) -> PyResult<()> {
@@ -272,7 +272,7 @@ impl _NominalDatasetStream {
         &self,
         py: Python<'_>,
         channel_name: &str,
-        timestamps: Vec<i128>,
+        timestamps: Vec<u64>,
         values: &Bound<'_, PyAny>,
         tags: Option<HashMap<String, String>>,
     ) -> PyResult<()> {
@@ -285,7 +285,7 @@ impl _NominalDatasetStream {
     pub fn enqueue_from_dict(
         &self,
         py: Python<'_>,
-        timestamp: i128,
+        timestamp: u64,
         channel_values: &Bound<'_, PyDict>,
         tags: Option<HashMap<String, String>>,
     ) -> PyResult<()> {
