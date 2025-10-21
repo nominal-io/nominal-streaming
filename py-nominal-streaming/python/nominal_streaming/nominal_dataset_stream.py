@@ -82,17 +82,18 @@ class NominalDatasetStream:
     def create(
         cls,
         auth_header: str,
-        max_points_per_batch: int | None = None,
-        max_request_delay_secs: float | None = None,
-        max_buffered_requests: int | None = None,
-        num_upload_workers: int | None = None,
-        num_runtime_workers: int | None = None,
-        api_base_url: str | None = None,
+        base_api_url: str,
+        max_points_per_batch: int = 250_000,
+        max_request_delay_secs: float = 0.1,
+        max_buffered_requests: int = 4,
+        num_upload_workers: int = 8,
+        num_runtime_workers: int = 8,
     ) -> NominalDatasetStream:
         """Factory constructor to build a NominalDatasetStream using optional overrides for configuration options
 
         Args:
             auth_header: API Key or Personal Access Token for accessing the Nominal API
+            base_api_url: Base API URL for hitting the Nominal API with.
             max_points_per_batch: Overrides the default number of points that may be sent in a single batch
             max_request_delay_secs: Overrides the default maximum buffering time for data between flushes.
                 NOTE: if the amount of data being streamed is greater than available bandwidth, data may be
@@ -104,30 +105,16 @@ class NominalDatasetStream:
                 NOTE: must be set as low as the number of runtime workers.
             num_runtime_workers: Overrides the default number of runtime worker threads
                 NOTE: must be set as high as the number of upload workers.
-            api_base_url: Overrides the default base API URL.
 
-        NOTE: see `NominalStreamOpts` for default values
         """
-        opts = NominalStreamOpts()
-
-        if api_base_url is not None:
-            opts = opts.with_api_base_url(api_base_url)
-
-        if max_points_per_batch is not None:
-            opts = opts.with_max_points_per_batch(max_points_per_batch)
-
-        if max_request_delay_secs is not None:
-            opts = opts.with_max_request_delay_secs(max_request_delay_secs)
-
-        if max_buffered_requests is not None:
-            opts = opts.with_max_buffered_requests(max_buffered_requests)
-
-        if num_upload_workers is not None:
-            opts = opts.with_num_upload_workers(num_upload_workers)
-
-        if num_runtime_workers is not None:
-            opts = opts.with_num_runtime_workers(num_runtime_workers)
-
+        opts = NominalStreamOpts(
+            max_points_per_batch=max_points_per_batch,
+            max_request_delay_secs=max_request_delay_secs,
+            max_buffered_requests=max_buffered_requests,
+            num_upload_workers=num_upload_workers,
+            num_runtime_workers=num_runtime_workers,
+            base_api_url=base_api_url,
+        )
         return cls(auth_header, opts)
 
     def enable_logging(self, log_directive: str = "debug") -> NominalDatasetStream:
