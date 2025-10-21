@@ -10,6 +10,6 @@ version_group = "streaming_packages"
 publish = true
 
 [[package]]
-name = "py-nominal-streaming
+name = "py-nominal-streaming"
 version_group = "streaming_packages"
 publish = false
