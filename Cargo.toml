@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "nominal-streaming",
+    "py-nominal-streaming",
 ]
 resolver = "2"
 
@@ -21,12 +22,17 @@ prost = "0.13"
 reqwest = "0.12.22"
 serde_json = "1.0.140"
 snap = "1"
-test-log = { version = "0.2.18", features = ["trace"] }
 thiserror = "2"
-tokio = { version = "1", features = ["full", "tracing", "io-util"] }
+tokio = { version = "1", features = ["full", "tracing", "io-util" ] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 url = "2.5.4"
+
+# Test dependencies
+test-log = { version = "0.2.18", features = ["trace"] }
+
+# Allow workspace packages to access core package
+nominal-streaming = { path = "nominal-streaming" }
 
 [profile.release]
 debug = true

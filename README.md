@@ -149,3 +149,43 @@ let stream = NominalDatasetStreamBuilder::new()
     .enable_logging()
     .build();
 ```
+
+## Contributing
+
+### Justfile Setup
+
+Developer workflows are run with [`just`](https://github.com/casey/just).
+You can use `just -l` to list commands, or view the `justfile` for the specific commands.
+
+Some common commands are as follows:
+
+- `just install`: Installs relevant dependencies for rust and python bindings.
+  - `just rust::install` or `just python::install` for language specific versions.
+- `just build`: Builds rust crate and python bindings wheel.
+  - `just rust::build` or `just python::build` for language specific versions
+  - `just dev`: Builds rust crate and builds / installs python bindings in developer mode instead.
+- `just check`: Validate linting and formatting across rust and python bindings.
+  - `just rust::check` or `just python::check` for language specific versions.
+- `just fix`: Automatically format across rust and python bindings.
+  - `just rust::fix` or `just python::fix` for language specific versions.
+
+### Working with Python bindings
+
+Working with the rust => python bindings is done using `uv` and `maturin`.
+
+To run common workflows manually, either `cd` into the `py-nominal-streaming` directory or use `--directory` to specify the working directory in all `uv` commands (the following details will assume you did the former).
+
+- Build and run in developer mode:
+  
+  ```shell
+  uv run maturin develop    # Build bindings / dependent rust code
+  uv run python             # Run python interpreter with bindings loaded 
+  ```
+
+- Build wheel file for distributing / installing:
+
+  ```shell
+  uv run maturin build  # Places the `whl` file in the `target/wheels` directory
+  ```
+
+If updating any public-facing bindings from the rust side (e.g. updating `PyNominalDatasetStream` or `PyNominalStreamOpts`), ensure that you make the appropriate changes to [the python bindings](py-nominal-streaming/python/nominal_streaming/_nominal_streaming.pyi).

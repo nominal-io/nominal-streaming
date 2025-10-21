@@ -1,1 +1,10 @@
 /target
+
+# Python generated files
+*.pyc
+*.pyd
+__pycache__
+.venv/
+.mypy_cache/
+.ruff_cache/
+dist/
