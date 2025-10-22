@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.6](https://github.com/nominal-io/nominal-streaming/compare/v0.5.5...v0.5.6) - 2025-10-22
+
+### Added
+
+- add python bindings for existing streaming pipelines ([#28](https://github.com/nominal-io/nominal-streaming/pull/28))
+
+### Fixed
+
+- return readme documentation to crate, update readme in python package ([#55](https://github.com/nominal-io/nominal-streaming/pull/55))
+- reorganize UV workspace structure, update name of PyNominalStreamOpts ([#54](https://github.com/nominal-io/nominal-streaming/pull/54))
+
+### Other
+
+- release v0.5.5 ([#58](https://github.com/nominal-io/nominal-streaming/pull/58))
+- release v0.5.4 ([#53](https://github.com/nominal-io/nominal-streaming/pull/53))
+- release v0.5.3 ([#48](https://github.com/nominal-io/nominal-streaming/pull/48))
+
 ## [0.5.5](https://github.com/nominal-io/nominal-streaming/compare/nominal-streaming-v0.5.4...nominal-streaming-v0.5.5) - 2025-10-22
 
 ### Fixed
