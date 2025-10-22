@@ -1,9 +1,8 @@
 import logging
-import pathlib
 import time
 
 from nominal.core import NominalClient
-from nominal_streaming import NominalDatasetStream, NominalStreamOpts
+from nominal_streaming import NominalDatasetStream, PyNominalStreamOpts
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.DEBUG)
@@ -13,7 +12,7 @@ if __name__ == "__main__":
     stream = (
         NominalDatasetStream(
             auth_header=client._clients.auth_header.split()[-1],
-            opts=NominalStreamOpts(
+            opts=PyNominalStreamOpts(
                 num_upload_workers=16,
                 max_buffered_requests=4,
                 num_runtime_workers=20,
