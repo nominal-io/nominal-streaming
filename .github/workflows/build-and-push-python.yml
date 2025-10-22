@@ -79,22 +79,6 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install protoc (linux)
-        if: ${{ matrix.os == 'linux' || matrix.os == 'musllinux' }}
-        run: |
-          sudo apt-get update 
-          sudo apt-get install -y protobuf-compiler
-      - name: Install protoc (windows)
-        if: ${{ matrix.os == 'windows' }}
-        run: |
-          choco install protoc --yes
-
-      - name: Install protoc (macos)
-        if: ${{ matrix.os == 'macos' }}
-        run: |
-          brew update
-          brew install protobuf
-
       - name: Install Python (Windows)
         if: ${{ matrix.os == 'windows' }}
         uses: actions/setup-python@v5

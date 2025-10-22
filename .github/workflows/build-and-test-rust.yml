@@ -13,15 +13,16 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - name: Set rustup toolchain
-        run: |
-          rustup default stable
-          rustup toolchain install nightly --component rustfmt --profile minimal
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+      - name: Setup Rust Toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          components: rustfmt
+          toolchain: nightly
+          rustflags: ""
       - name: Install Rust Problem Matcher
         run: echo "::add-matcher::.github/rust.json"
-      - name: Install protoc
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
       - name: Install just
         uses: extractions/setup-just@v3
       - name: Install rust dependencies
