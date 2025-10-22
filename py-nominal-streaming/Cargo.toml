@@ -3,7 +3,7 @@ name = "py-nominal-streaming"
 description = "Python bindings for the nominal-streaming Rust library"
 edition = "2021"
 license = "MIT"
-version = "0.5.3"
+version = "0.5.4"
 
 [lib]
 # This becomes the *module* name on the Python side unless overridden by tool.maturin.module-name
