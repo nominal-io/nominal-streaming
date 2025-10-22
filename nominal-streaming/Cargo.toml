@@ -4,6 +4,7 @@ description = "Library for durable, low-latency streaming into Nominal Core"
 edition = "2021"
 license = "MIT"
 version = "0.5.4"
+readme = "../README.md"
 
 [features]
 default = ["logging"]

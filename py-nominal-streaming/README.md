@@ -1,49 +1,58 @@
-# nominal-streaming python bindings
+# nominal-streaming Python Bindings
 
-The py-nominal-streaming crate contains pyo3 and maturin bindings to allow users to stream data performantly from python.
+`nominal-streaming` is a thin python wrapper around the existing [nominal-streaming rust crate](https://crates.io/crates/nominal-streaming).
+Usage semantics remain largely the same, but with some slight alterations to allow for a more pythonic interface.
 
-To build, you may run `uv build --package nominal-streaming` from the repository root.
-Alternatively, you may run `uv run maturin develop -m py-nominal-streaming/Cargo.toml` to build in developer (hot reload) mode, or `uv run maturin build -m py-nominal-streaming/Cargo.toml` to build a wheel with maturin directly.
+The library aims to balance three concerns:
 
-## Working with Python bindings
+1. Data should exist in-memory only for a limited, configurable amount of time before it's sent to Core.
+1. Writes should fall back to disk if there are network failures.
+1. Backpressure should be applied to incoming requests when network throughput is saturated.
 
-Working with the rust => python bindings is done using `uv` and `maturin` and exposed to developers using `justfile`s.
+This library streams data to Nominal Core, to a file, or to Nominal Core with a file as backup (recommended to protect against network failures).
+It also provides configuration to manage the tradeoff between above listed concerns.
 
-The most common workflows are as follews:
+> [!WARNING]
+> This library is still under active development and may make breaking changes.
 
-```shell
-# Install dependencies and initialize workspace
-just install
+## Simple usage example: streaming from memory to Nominal Core with file fallback
 
-# Build python bindings in developer mode
-just python::dev
+```python
+import pathlib
+import time
 
-# (Optional) check codestyle / formatting
-just python::check
+from nominal.core import NominalClient
+from nominal_streaming import NominalDatasetStream, PyNominalStreamOpts
 
-# (Optional) fix codestyle / formatting
-just python::fix
+if __name__ == "__main__":
+    num_points = 100_000
+    stream = (
+        NominalDatasetStream(
+            auth_header="<api key>", 
+            opts=PyNominalStreamOpts(),
+        )
+        .enable_logging("info") # can set debug, warn, etc.
+        .with_core_consumer("<dataset rid>")
+        .with_file_fallback(pathlib.Path("local_fallback.avro"))
+    )
 
-# Run test script
-uv run py-nominal-streaming/examples/test.py
+    with stream:
+        # Stream 100_000 live readings (made up values)
+        for idx in range(num_points):
+            time_ns = int(time.time() * 1e9)
+            value = (idx % 50) + 0.5
+            stream.enqueue("channel_name", time_ns, value, tags={"tag_key": "tag_value"})
+        
+        # Stream 100_000 points in one batch
+        start_time = int(time.time() * 1e9)
+        timestamp_offsets = int(1e9 / 1600)
+        timestamps = [start_time + timestamp_offsets * idx for idx in range(num_points)]
+        values = [(idx % 50) + 0.5 for idx in range(num_points)]
+        stream.enqueue_batch(
+            "channel_name", 
+            timestamps, 
+            values, 
+            tags={"tag_key": "tag_value"}
+        )
 
-# Build wheel file for installing in other environments
-just python::build
 ```
-
-To run common workflows manually, either `cd` into the `py-nominal-streaming` directory or use `--directory` to specify the working directory in all `uv` commands (the following details will assume you did the former).
-
-- Build and run in developer mode:
-  
-  ```shell
-  uv run maturin develop    # Build bindings / dependent rust code
-  uv run python             # Run python interpreter with bindings loaded 
-  ```
-
-- Build wheel file for distributing / installing:
-
-  ```shell
-  uv run maturin build  # Places the `whl` file in the `target/wheels` directory
-  ```
-
-If updating any public-facing bindings from the rust side (e.g. updating `PyNominalDatasetStream` or `PyNominalStreamOpts`), ensure that you make the appropriate changes to [the python bindings](py-nominal-streaming/python/nominal_streaming/_nominal_streaming.pyi).

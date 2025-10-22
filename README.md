@@ -149,22 +149,3 @@ let stream = NominalDatasetStreamBuilder::new()
     .enable_logging()
     .build();
 ```
-
-## Contributing
-
-### Justfile Setup
-
-Developer workflows are run with [`just`](https://github.com/casey/just).
-You can use `just -l` to list commands, or view the `justfile` for the specific commands.
-
-Some common commands are as follows:
-
-- `just install`: Installs relevant dependencies for rust and python bindings.
-  - `just rust::install` or `just python::install` for language specific versions.
-- `just build`: Builds rust crate and python bindings wheel.
-  - `just rust::build` or `just python::build` for language specific versions
-  - `just dev`: Builds rust crate and builds / installs python bindings in developer mode instead.
-- `just check`: Validate linting and formatting across rust and python bindings.
-  - `just rust::check` or `just python::check` for language specific versions.
-- `just fix`: Automatically format across rust and python bindings.
-  - `just rust::fix` or `just python::fix` for language specific versions.
