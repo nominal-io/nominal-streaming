@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.3](https://github.com/nominal-io/nominal-streaming/compare/nominal-streaming-v0.5.2...nominal-streaming-v0.5.3) - 2025-10-21
+
+### Added
+
+- add python bindings for existing streaming pipelines ([#28](https://github.com/nominal-io/nominal-streaming/pull/28))
+
 ## [0.5.2](https://github.com/nominal-io/nominal-streaming/compare/v0.5.1...v0.5.2) - 2025-10-20
 
 ### Fixed
