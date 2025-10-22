@@ -42,10 +42,10 @@ jobs:
         uses: extractions/setup-just@v3
       - name: Install dependencies
         run: |
-          just install
+          just python::install
       - name: Build bindings and install in dev mode
         run: |
-          just dev
+          just python::dev
       - name: Check format
         run: |
           just python::check-format
