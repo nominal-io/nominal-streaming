@@ -6,7 +6,7 @@ from typing import Sequence, Type
 
 from nominal_streaming.nominal_dataset_stream import DataType
 
-class NominalStreamOpts:
+class PyNominalStreamOpts:
     """Configuration options for Nominal data streaming.
 
     This class configures how data points are batched, buffered, and dispatched
@@ -24,7 +24,7 @@ class NominalStreamOpts:
         num_runtime_workers: int = 8,
         base_api_url: str = "https://api.gov.nominal.io/api",
     ) -> None:
-        """Initialize a NominalStreamOpts instance.
+        """Initialize a PyNominalStreamOpts instance.
 
         Args:
             max_points_per_batch: Maximum number of points per record before dispatching a request.
@@ -44,7 +44,7 @@ class NominalStreamOpts:
             The configured upper bound on points per record.
 
         Example:
-            >>> NominalStreamOpts.default().max_points_per_batch
+            >>> PyNominalStreamOpts.default().max_points_per_batch
             50000
         """
 
@@ -56,7 +56,7 @@ class NominalStreamOpts:
             The maximum time to wait before sending pending data, in seconds.
 
         Example:
-            >>> NominalStreamOpts.default().max_request_delay > 0
+            >>> PyNominalStreamOpts.default().max_request_delay > 0
             True
         """
 
@@ -68,7 +68,7 @@ class NominalStreamOpts:
             The maximum number of buffered requests before backpressure is applied.
 
         Example:
-            >>> NominalStreamOpts.default().max_buffered_requests >= 0
+            >>> PyNominalStreamOpts.default().max_buffered_requests >= 0
             True
         """
 
@@ -80,7 +80,7 @@ class NominalStreamOpts:
             The number of dispatcher tasks.
 
         Example:
-            >>> NominalStreamOpts.default().num_upload_workers >= 1
+            >>> PyNominalStreamOpts.default().num_upload_workers >= 1
             True
         """
 
@@ -92,7 +92,7 @@ class NominalStreamOpts:
             The configured number of runtime workers.
 
         Example:
-            >>> NominalStreamOpts.default().num_runtime_workers
+            >>> PyNominalStreamOpts.default().num_runtime_workers
             8
         """
 
@@ -104,11 +104,11 @@ class NominalStreamOpts:
             The fully-qualified base API URL used for streaming requests.
 
         Example:
-            >>> isinstance(NominalStreamOpts.default().base_api_url, str)
+            >>> isinstance(PyNominalStreamOpts.default().base_api_url, str)
             True
         """
 
-    def with_max_points_per_batch(self, n: int) -> NominalStreamOpts:
+    def with_max_points_per_batch(self, n: int) -> PyNominalStreamOpts:
         """Set the maximum number of points per record.
 
         Args:
@@ -118,10 +118,10 @@ class NominalStreamOpts:
             The updated instance for fluent chaining.
 
         Example:
-            >>> opts = NominalStreamOpts.default().with_max_points_per_batch(1000)
+            >>> opts = PyNominalStreamOpts.default().with_max_points_per_batch(1000)
         """
 
-    def with_max_request_delay_secs(self, delay_secs: float) -> NominalStreamOpts:
+    def with_max_request_delay_secs(self, delay_secs: float) -> PyNominalStreamOpts:
         """Set the maximum delay before forcing a request flush.
 
         Args:
@@ -131,10 +131,10 @@ class NominalStreamOpts:
             The updated instance for fluent chaining.
 
         Example:
-            >>> opts = NominalStreamOpts.default().with_max_request_delay_secs(1.0)
+            >>> opts = PyNominalStreamOpts.default().with_max_request_delay_secs(1.0)
         """
 
-    def with_max_buffered_requests(self, n: int) -> NominalStreamOpts:
+    def with_max_buffered_requests(self, n: int) -> PyNominalStreamOpts:
         """Set the maximum number of requests that can be buffered concurrently.
 
         Args:
@@ -144,10 +144,10 @@ class NominalStreamOpts:
             The updated instance for fluent chaining.
 
         Example:
-            >>> opts = NominalStreamOpts.default().with_max_buffered_requests(200)
+            >>> opts = PyNominalStreamOpts.default().with_max_buffered_requests(200)
         """
 
-    def with_num_upload_workers(self, n: int) -> NominalStreamOpts:
+    def with_num_upload_workers(self, n: int) -> PyNominalStreamOpts:
         """Set the number of asynchronous dispatcher tasks.
 
         Args:
@@ -157,10 +157,10 @@ class NominalStreamOpts:
             The updated instance for fluent chaining.
 
         Example:
-            >>> opts = NominalStreamOpts.default().with_num_upload_workers(8)
+            >>> opts = PyNominalStreamOpts.default().with_num_upload_workers(8)
         """
 
-    def with_num_runtime_workers(self, n: int) -> NominalStreamOpts:
+    def with_num_runtime_workers(self, n: int) -> PyNominalStreamOpts:
         """Set the number of runtime worker threads.
 
         Args:
@@ -170,10 +170,10 @@ class NominalStreamOpts:
             The updated instance for fluent chaining.
 
         Example:
-            >>> opts = NominalStreamOpts.default().with_num_runtime_workers(16)
+            >>> opts = PyNominalStreamOpts.default().with_num_runtime_workers(16)
         """
 
-    def with_api_base_url(self, url: str) -> NominalStreamOpts:
+    def with_api_base_url(self, url: str) -> PyNominalStreamOpts:
         """Set the base URL for the Nominal API.
 
         Args:
@@ -183,7 +183,7 @@ class NominalStreamOpts:
             The updated instance for fluent chaining.
 
         Example:
-            >>> opts = NominalStreamOpts.default().with_api_base_url("https://staging.nominal.io")
+            >>> opts = PyNominalStreamOpts.default().with_api_base_url("https://staging.nominal.io")
         """
 
     def __repr__(self) -> str:
@@ -200,15 +200,15 @@ class PyNominalDatasetStream:
     multiple enqueue modes (single point, long series, and wide records).
     """
 
-    def __init__(self, /, opts: NominalStreamOpts | None = None) -> None:
+    def __init__(self, /, opts: PyNominalStreamOpts | None = None) -> None:
         """Create a new stream builder.
 
         Args:
             opts: Optional stream options. If omitted, sensible defaults are used.
 
         Example:
-            >>> from nominal_streaming import NominalStreamOpts
-            >>> stream = PyNominalDatasetStream(NominalStreamOpts())
+            >>> from nominal_streaming import PyNominalStreamOpts
+            >>> stream = PyNominalDatasetStream(PyNominalStreamOpts())
         """
 
     def enable_logging(self, log_directive: str | None = None) -> PyNominalDatasetStream:
@@ -225,7 +225,7 @@ class PyNominalDatasetStream:
             The updated instance for fluent chaining.
         """
 
-    def with_options(self, opts: NominalStreamOpts) -> PyNominalDatasetStream:
+    def with_options(self, opts: PyNominalStreamOpts) -> PyNominalDatasetStream:
         """Attach or replace stream options.
 
         NOTE: must be applied before calling open()

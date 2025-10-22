@@ -5,10 +5,10 @@ Example:
 import pathlib
 from datetime import datetime, timedelta, timezone
 
-from nominal_streaming import NominalStreamOpts, NominalDatasetStream
+from nominal_streaming import PyNominalStreamOpts, NominalDatasetStream
 
-# NOTE: may also use NominalStreamOpts.default() for sensible defaults that may be customized
-opts = NominalStreamOpts(
+# NOTE: may also use PyNominalStreamOpts() for sensible defaults that may be customized
+opts = PyNominalStreamOpts(
     max_points_per_batch=250_000,
     max_request_delay=timedelta(seconds=0.1),
     max_buffered_requests=4,
@@ -40,8 +40,8 @@ from typing import Mapping, Sequence, Type
 import dateutil
 
 from nominal_streaming._nominal_streaming import (
-    NominalStreamOpts,
     PyNominalDatasetStream,
+    PyNominalStreamOpts,
 )
 
 logger = logging.getLogger(__name__)
@@ -66,7 +66,7 @@ def _parse_timestamp(ts: str | int | datetime.datetime) -> int:
 class NominalDatasetStream:
     """Top-level python wrapper for the Rust streaming client to Nominal."""
 
-    def __init__(self, auth_header: str, opts: NominalStreamOpts):
+    def __init__(self, auth_header: str, opts: PyNominalStreamOpts):
         """Initializer for dataset stream.
 
         Args:
@@ -107,7 +107,7 @@ class NominalDatasetStream:
                 NOTE: must be set as high as the number of upload workers.
 
         """
-        opts = NominalStreamOpts(
+        opts = PyNominalStreamOpts(
             max_points_per_batch=max_points_per_batch,
             max_request_delay_secs=max_request_delay_secs,
             max_buffered_requests=max_buffered_requests,
