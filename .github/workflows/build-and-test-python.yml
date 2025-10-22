@@ -12,17 +12,13 @@ env:
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@v4
       - name: Install uv
         uses: astral-sh/setup-uv@v7
         with:
           version: "0.8.x"
-          enable-cache: false
+          enable-cache: true
           cache-dependency-glob: "uv.lock"
           python-version: ${{ matrix.python-version }}
       - name: Check uv lockfile metadata
@@ -31,18 +27,13 @@ jobs:
             echo "::error::`uv lock --check` has failed, ensure you have the latest `uv` version installed with `uv self update` and run `uv sync`"
             exit 1
           fi
-      - name: Set rustup toolchain
-        run: |
-          rustup default stable
-          rustup toolchain install nightly --component rustfmt --profile minimal
-      - name: Install protoc
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
-
+      - name: Setup Rust Toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: nightly
+          rustflags: ""
       - name: Install just
         uses: extractions/setup-just@v3
-      - name: Install dependencies
-        run: |
-          just python::install
       - name: Build bindings and install in dev mode
         run: |
           just python::dev
@@ -54,4 +45,4 @@ jobs:
           just python::check-imports
       - name: Static type check
         run: |
-          just python::check-types
+          just python::check-types-all

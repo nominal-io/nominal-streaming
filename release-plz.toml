@@ -4,15 +4,25 @@
 # set the path of all the crates to the changelog to the root of the repository
 changelog_path = "./CHANGELOG.md"
 
+# Turn off tags & releases for every package by default
+git_release_enable = false
+git_tag_enable = false
+
 [[package]]
 name = "nominal-streaming"
 version_group = "streaming_packages"
 publish = true
+
+# Drive versions using the primary package
+git_tag_name = "v{{ version }}"
+git_tag_enable = true
 git_release_enable = true
+
+# Include commits from the python bindings in the changelog
+changelog_include = ["py-nominal-streaming"]
 
 [[package]]
 name = "py-nominal-streaming"
 version_group = "streaming_packages"
 publish = false
 changelog_update = false
-git_release_enable = false
