@@ -16,6 +16,7 @@ publish = true
 # Drive versions using the primary package
 git_tag_name = "v{{ version }}"
 git_tag_enable = true
+git_release_name = "v{{ version }}"
 git_release_enable = true
 
 # Include commits from the python bindings in the changelog
