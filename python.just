@@ -17,7 +17,7 @@ build:
 # Build python code + rust bindings into local dev mode
 dev:
     @echo "Running 'dev' for py-nominal-streaming"
-    uv --directory py-nominal-streaming run maturin develop
+    uv run maturin develop --manifest-path py-nominal-streaming/Cargo.toml
 
 # Start python repl with package prepared
 repl: dev
