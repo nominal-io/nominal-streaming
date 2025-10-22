@@ -8,8 +8,11 @@ changelog_path = "./CHANGELOG.md"
 name = "nominal-streaming"
 version_group = "streaming_packages"
 publish = true
+git_release_enable = true
 
 [[package]]
 name = "py-nominal-streaming"
 version_group = "streaming_packages"
 publish = false
+changelog_update = false
+git_release_enable = false
