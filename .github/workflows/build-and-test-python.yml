@@ -34,9 +34,6 @@ jobs:
           rustflags: ""
       - name: Install just
         uses: extractions/setup-just@v3
-      - name: Install dependencies
-        run: |
-          just python::install
       - name: Build bindings and install in dev mode
         run: |
           just python::dev
