@@ -32,7 +32,6 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.NOMBOT_CLASSIC_PERSONAL_ACCESS_TOKEN }}
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-          RELEASE_PLZ_LOG: DEBUG
 
   release-plz-pr:
     name: Release-plz PR
@@ -63,4 +62,3 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.NOMBOT_CLASSIC_PERSONAL_ACCESS_TOKEN }}
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-          RELEASE_PLZ_LOG: DEBUG
