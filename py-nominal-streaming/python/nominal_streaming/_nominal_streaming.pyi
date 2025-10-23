@@ -4,6 +4,8 @@ import pathlib
 from types import TracebackType
 from typing import Sequence, Type
 
+from typing_extensions import Self
+
 from nominal_streaming.nominal_dataset_stream import DataType
 
 class PyNominalStreamOpts:
@@ -108,7 +110,7 @@ class PyNominalStreamOpts:
             True
         """
 
-    def with_max_points_per_batch(self, n: int) -> PyNominalStreamOpts:
+    def with_max_points_per_batch(self, n: int) -> Self:
         """Set the maximum number of points per record.
 
         Args:
@@ -121,7 +123,7 @@ class PyNominalStreamOpts:
             >>> opts = PyNominalStreamOpts.default().with_max_points_per_batch(1000)
         """
 
-    def with_max_request_delay_secs(self, delay_secs: float) -> PyNominalStreamOpts:
+    def with_max_request_delay_secs(self, delay_secs: float) -> Self:
         """Set the maximum delay before forcing a request flush.
 
         Args:
@@ -134,7 +136,7 @@ class PyNominalStreamOpts:
             >>> opts = PyNominalStreamOpts.default().with_max_request_delay_secs(1.0)
         """
 
-    def with_max_buffered_requests(self, n: int) -> PyNominalStreamOpts:
+    def with_max_buffered_requests(self, n: int) -> Self:
         """Set the maximum number of requests that can be buffered concurrently.
 
         Args:
@@ -147,7 +149,7 @@ class PyNominalStreamOpts:
             >>> opts = PyNominalStreamOpts.default().with_max_buffered_requests(200)
         """
 
-    def with_num_upload_workers(self, n: int) -> PyNominalStreamOpts:
+    def with_num_upload_workers(self, n: int) -> Self:
         """Set the number of asynchronous dispatcher tasks.
 
         Args:
@@ -160,7 +162,7 @@ class PyNominalStreamOpts:
             >>> opts = PyNominalStreamOpts.default().with_num_upload_workers(8)
         """
 
-    def with_num_runtime_workers(self, n: int) -> PyNominalStreamOpts:
+    def with_num_runtime_workers(self, n: int) -> Self:
         """Set the number of runtime worker threads.
 
         Args:
@@ -173,7 +175,7 @@ class PyNominalStreamOpts:
             >>> opts = PyNominalStreamOpts.default().with_num_runtime_workers(16)
         """
 
-    def with_api_base_url(self, url: str) -> PyNominalStreamOpts:
+    def with_api_base_url(self, url: str) -> Self:
         """Set the base URL for the Nominal API.
 
         Args:
@@ -211,7 +213,7 @@ class PyNominalDatasetStream:
             >>> stream = PyNominalDatasetStream(PyNominalStreamOpts())
         """
 
-    def enable_logging(self, log_directive: str | None = None) -> PyNominalDatasetStream:
+    def enable_logging(self, log_directive: str | None = None) -> Self:
         """Enable client-side logging for diagnostics.
 
         NOTE: must be applied before calling open()
@@ -225,7 +227,7 @@ class PyNominalDatasetStream:
             The updated instance for fluent chaining.
         """
 
-    def with_options(self, opts: PyNominalStreamOpts) -> PyNominalDatasetStream:
+    def with_options(self, opts: PyNominalStreamOpts) -> Self:
         """Attach or replace stream options.
 
         NOTE: must be applied before calling open()
@@ -241,7 +243,7 @@ class PyNominalDatasetStream:
         self,
         dataset_rid: str,
         token: str | None = None,
-    ) -> PyNominalDatasetStream:
+    ) -> Self:
         """Send data to a Dataset in Nominal.
 
         NOTE: Must be applied before calling open()
@@ -259,7 +261,7 @@ class PyNominalDatasetStream:
             RuntimeError: If called after `to_file`.
         """
 
-    def to_file(self, path: pathlib.Path) -> PyNominalDatasetStream:
+    def to_file(self, path: pathlib.Path) -> Self:
         """Write points to a local file (newline-delimited records).
 
         Mutually exclusive with `with_core_consumer`.
@@ -274,7 +276,7 @@ class PyNominalDatasetStream:
             RuntimeError: If already configured for core consumption.
         """
 
-    def with_file_fallback(self, path: pathlib.Path) -> PyNominalDatasetStream:
+    def with_file_fallback(self, path: pathlib.Path) -> Self:
         """If sending to core fails, fall back to writing to `path`.
 
         NOTE: Requires that `with_core_consumer` has been configured.
@@ -371,7 +373,7 @@ class PyNominalDatasetStream:
             TypeError: If any value is not an `int`, `float`, or `str`.
         """
 
-    def __enter__(self) -> PyNominalDatasetStream: ...
+    def __enter__(self) -> Self: ...
     def __exit__(
         self, exc_type: Type[BaseException] | None, exc_value: BaseException | None, traceback: TracebackType | None
     ) -> None: ...
