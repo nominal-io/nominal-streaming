@@ -24,3 +24,4 @@ name = "py-nominal-streaming"
 version_group = "streaming_packages"
 publish = false
 changelog_update = false
+semver_check = false
