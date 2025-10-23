@@ -15,9 +15,6 @@ name = "nominal-streaming"
 version_group = "streaming_packages"
 publish = true
 
-# Include changes from python bindings in primary changelog
-changelog_include = ["py-nominal-streaming"] 
-
 # Drive versions using the primary package
 git_tag_enable = true
 git_release_enable = true
