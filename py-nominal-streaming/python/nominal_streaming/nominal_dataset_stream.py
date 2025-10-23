@@ -38,6 +38,7 @@ from types import TracebackType
 from typing import Mapping, Sequence, Type
 
 import dateutil
+from typing_extensions import Self
 
 from nominal_streaming._nominal_streaming import (
     PyNominalDatasetStream,
@@ -88,7 +89,7 @@ class NominalDatasetStream:
         max_buffered_requests: int = 4,
         num_upload_workers: int = 8,
         num_runtime_workers: int = 8,
-    ) -> NominalDatasetStream:
+    ) -> Self:
         """Factory constructor to build a NominalDatasetStream using optional overrides for configuration options
 
         Args:
@@ -117,7 +118,7 @@ class NominalDatasetStream:
         )
         return cls(auth_header, opts)
 
-    def enable_logging(self, log_directive: str = "debug") -> NominalDatasetStream:
+    def enable_logging(self, log_directive: str = "debug") -> Self:
         """Enable logging with the given verbosity level
 
         Args:
@@ -128,7 +129,7 @@ class NominalDatasetStream:
         self._impl = self._impl.enable_logging(log_directive)
         return self
 
-    def with_core_consumer(self, dataset_rid: str) -> NominalDatasetStream:
+    def with_core_consumer(self, dataset_rid: str) -> Self:
         """Enables streaming to a Dataset in Core
 
         Args:
@@ -137,7 +138,7 @@ class NominalDatasetStream:
         self._impl = self._impl.with_core_consumer(dataset_rid, self._auth_header)
         return self
 
-    def to_file(self, path: pathlib.Path) -> NominalDatasetStream:
+    def to_file(self, path: pathlib.Path) -> Self:
         """Target streaming towards a local `.avro` file
 
         The written file will contain snappy-compressed avro data. This can be read as follows:
@@ -156,7 +157,7 @@ class NominalDatasetStream:
         self._impl = self._impl.to_file(path)
         return self
 
-    def with_file_fallback(self, path: pathlib.Path) -> NominalDatasetStream:
+    def with_file_fallback(self, path: pathlib.Path) -> Self:
         """Setup file fallback for streaming to core
 
         The written file will contain snappy-compressed avro data for any batches of data that were unable to make
@@ -176,7 +177,7 @@ class NominalDatasetStream:
         self._impl = self._impl.with_file_fallback(path)
         return self
 
-    def open(self) -> NominalDatasetStream:
+    def open(self) -> Self:
         """Create the stream as a context manager.
 
         NOTE: installs a sigint handler to enable more graceful shutdown.
@@ -201,7 +202,7 @@ class NominalDatasetStream:
         signal.signal(signal.SIGINT, _on_sigint)
         return self
 
-    def __enter__(self) -> NominalDatasetStream:
+    def __enter__(self) -> Self:
         """Create the stream as a context manager.
 
         NOTE: installs a sigint handler to enable more graceful shutdown.

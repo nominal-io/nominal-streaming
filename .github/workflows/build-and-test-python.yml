@@ -23,7 +23,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - name: Check uv lockfile metadata
         run: |
-          if ! uv --directory py-nominal-streaming lock --check; then 
+          if ! uv lock --check; then 
             echo "::error::`uv lock --check` has failed, ensure you have the latest `uv` version installed with `uv self update` and run `uv sync`"
             exit 1
           fi
