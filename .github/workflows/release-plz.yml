@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - main
-      - deidukas/ignore-python-changelog-in-main-changelog
 
 jobs:
   release-plz-release:
