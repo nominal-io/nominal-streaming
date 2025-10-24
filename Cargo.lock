@@ -318,7 +318,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2685c4062b8c417419ce61828ff74bac6c26bac60653e4e91a3c11edc69b377a"
 dependencies = [
  "anyhow",
- "conjure-object",
+ "conjure-object 4.15.0",
  "conjure-serde",
  "heck 0.5.0",
  "prettyplease",
@@ -336,7 +336,7 @@ version = "4.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8d400452cb72fbc09b7c99c7aca9e8e0c36e5e7082da1d48c117035342aca334"
 dependencies = [
- "conjure-object",
+ "conjure-object 4.15.0",
  "serde",
  "uuid",
 ]
@@ -350,7 +350,7 @@ dependencies = [
  "bytes",
  "conjure-error",
  "conjure-macros",
- "conjure-object",
+ "conjure-object 4.15.0",
  "conjure-serde",
  "erased-serde",
  "form_urlencoded",
@@ -398,6 +398,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "conjure-object"
+version = "5.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "968d6f1e2d0fd605030f054632b4f724a333fe9dce55184f7509297f45d26320"
+dependencies = [
+ "base64",
+ "bytes",
+ "chrono",
+ "educe",
+ "lazy_static",
+ "ordered-float 5.1.0",
+ "regex",
+ "serde",
+ "staged-builder",
+ "uuid",
+]
+
+[[package]]
 name = "conjure-runtime"
 version = "6.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -408,7 +426,7 @@ dependencies = [
  "bytes",
  "conjure-error",
  "conjure-http",
- "conjure-object",
+ "conjure-object 4.15.0",
  "conjure-runtime-config",
  "conjure-serde",
  "flate2",
@@ -1470,7 +1488,7 @@ dependencies = [
  "conjure-codegen",
  "conjure-error",
  "conjure-http",
- "conjure-object",
+ "conjure-object 4.15.0",
  "prost",
  "tonic",
 ]
@@ -1484,7 +1502,7 @@ dependencies = [
  "chrono",
  "conjure-error",
  "conjure-http",
- "conjure-object",
+ "conjure-object 5.2.0",
  "conjure-runtime",
  "crossbeam-channel",
  "derive_more",
@@ -3367,7 +3385,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "961024ed00e1d402458fded663cfbeb8087d3aabbddc8db5b97c810ceabe7422"
 dependencies = [
  "conjure-error",
- "conjure-object",
+ "conjure-object 4.15.0",
  "erased-serde",
  "log",
  "pin-project",
