@@ -8,3 +8,6 @@ updates:
       external-deps:
         exclude-patterns: ["nominal-api"]
         applies-to: version-updates
+        update-types:
+          - "minor"
+          - "patch"

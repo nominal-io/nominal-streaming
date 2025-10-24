@@ -3,6 +3,7 @@ on: pull_request
 
 jobs:
   dependabot:
+    permissions: write-all
     runs-on: ubuntu-latest
     if: github.event.pull_request.user.login == 'dependabot[bot]' && github.repository == 'nominal-io/nominal-streaming'
     steps:
