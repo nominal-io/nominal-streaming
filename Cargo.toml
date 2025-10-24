@@ -12,7 +12,7 @@ chrono = "0.4.41"
 conjure-error = "4"
 conjure-http = "4"
 conjure-object = "4"
-conjure-runtime = "6"
+conjure-runtime = "7"
 crossbeam-channel = "0.5.15"
 derive_more = { version = "2", features = ["from"] }
 futures = "0.3"
