@@ -318,8 +318,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2685c4062b8c417419ce61828ff74bac6c26bac60653e4e91a3c11edc69b377a"
 dependencies = [
  "anyhow",
- "conjure-object",
- "conjure-serde",
+ "conjure-object 4.15.0",
+ "conjure-serde 4.15.0",
  "heck 0.5.0",
  "prettyplease",
  "proc-macro2",
@@ -336,7 +336,18 @@ version = "4.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8d400452cb72fbc09b7c99c7aca9e8e0c36e5e7082da1d48c117035342aca334"
 dependencies = [
- "conjure-object",
+ "conjure-object 4.15.0",
+ "serde",
+ "uuid",
+]
+
+[[package]]
+name = "conjure-error"
+version = "5.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "869ab972af618e3ed2c1d40d5f1daf3e446f48a47787bb176b757d2bd2df02b7"
+dependencies = [
+ "conjure-object 5.2.0",
  "serde",
  "uuid",
 ]
@@ -348,10 +359,33 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1534da7fdea9cf543027a2aa3fd2778fe9b5c70268f5b76c5cc9cfe21f7f40ab"
 dependencies = [
  "bytes",
- "conjure-error",
- "conjure-macros",
- "conjure-object",
- "conjure-serde",
+ "conjure-error 4.15.0",
+ "conjure-macros 4.15.0",
+ "conjure-object 4.15.0",
+ "conjure-serde 4.15.0",
+ "erased-serde",
+ "form_urlencoded",
+ "futures-core",
+ "futures-util",
+ "http",
+ "mediatype",
+ "once_cell",
+ "percent-encoding",
+ "pin-utils",
+ "serde",
+]
+
+[[package]]
+name = "conjure-http"
+version = "5.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "63c0ae7caa632f4ca5cdd4a308fa2682bb4262e7997284c62382da4b7448aeca"
+dependencies = [
+ "bytes",
+ "conjure-error 5.2.0",
+ "conjure-macros 5.2.0",
+ "conjure-object 5.2.0",
+ "conjure-serde 5.2.0",
  "erased-serde",
  "form_urlencoded",
  "futures-core",
@@ -369,6 +403,21 @@ name = "conjure-macros"
 version = "4.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e395671cd5fec1952b76c4e0454cc928a418e9bd0c4d1f982101231a42b5869e"
+dependencies = [
+ "heck 0.5.0",
+ "http",
+ "percent-encoding",
+ "proc-macro2",
+ "quote",
+ "structmeta",
+ "syn",
+]
+
+[[package]]
+name = "conjure-macros"
+version = "5.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "43e6fec9b42e23e3338ef46d80cb8a00915a24a175c4ed8b2bec808ede879042"
 dependencies = [
  "heck 0.5.0",
  "http",
@@ -398,6 +447,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "conjure-object"
+version = "5.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "968d6f1e2d0fd605030f054632b4f724a333fe9dce55184f7509297f45d26320"
+dependencies = [
+ "base64",
+ "bytes",
+ "chrono",
+ "educe",
+ "lazy_static",
+ "ordered-float 5.1.0",
+ "regex",
+ "serde",
+ "staged-builder",
+ "uuid",
+]
+
+[[package]]
 name = "conjure-runtime"
 version = "6.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -406,11 +473,11 @@ dependencies = [
  "arc-swap",
  "base64",
  "bytes",
- "conjure-error",
- "conjure-http",
- "conjure-object",
+ "conjure-error 4.15.0",
+ "conjure-http 4.15.0",
+ "conjure-object 4.15.0",
  "conjure-runtime-config",
- "conjure-serde",
+ "conjure-serde 4.15.0",
  "flate2",
  "futures",
  "http",
@@ -465,7 +532,19 @@ checksum = "f64ba7853b4e6022085e971409c9dd2ceb9933bf51c003e223a4da9b9af79124"
 dependencies = [
  "base64",
  "serde",
- "serde-smile",
+ "serde-smile 0.2.2",
+ "serde_json",
+]
+
+[[package]]
+name = "conjure-serde"
+version = "5.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c5bcfe06a134eae0629d168e73ea88fd598ae88e9224c6a47a63bfafdee71de6"
+dependencies = [
+ "base64",
+ "serde",
+ "serde-smile 0.3.1",
  "serde_json",
 ]
 
@@ -1468,9 +1547,9 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9b4d32cc03008448a6a57ca2768d3f1fb7aa2c0b4cd11e1d3ecc226cd12718a3"
 dependencies = [
  "conjure-codegen",
- "conjure-error",
- "conjure-http",
- "conjure-object",
+ "conjure-error 4.15.0",
+ "conjure-http 4.15.0",
+ "conjure-object 4.15.0",
  "prost",
  "tonic",
 ]
@@ -1482,9 +1561,9 @@ dependencies = [
  "apache-avro",
  "async-channel",
  "chrono",
- "conjure-error",
- "conjure-http",
- "conjure-object",
+ "conjure-error 4.15.0",
+ "conjure-http 5.2.0",
+ "conjure-object 4.15.0",
  "conjure-runtime",
  "crossbeam-channel",
  "derive_more",
@@ -2184,6 +2263,19 @@ name = "serde-smile"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a20d059ecdf2585e7d7a1780b55b4a77683e79670cb9b23861d519ea48283e29"
+dependencies = [
+ "indexmap",
+ "itoa",
+ "memchr",
+ "serde",
+ "serde_bytes",
+]
+
+[[package]]
+name = "serde-smile"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c26ffb558e2886c4c03799123e3236309644275c626e058d8657132598ab22de"
 dependencies = [
  "indexmap",
  "itoa",
@@ -3366,8 +3458,8 @@ version = "4.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "961024ed00e1d402458fded663cfbeb8087d3aabbddc8db5b97c810ceabe7422"
 dependencies = [
- "conjure-error",
- "conjure-object",
+ "conjure-error 4.15.0",
+ "conjure-object 4.15.0",
  "erased-serde",
  "log",
  "pin-project",
