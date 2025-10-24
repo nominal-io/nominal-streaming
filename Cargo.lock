@@ -1470,7 +1470,7 @@ dependencies = [
 
 [[package]]
 name = "nominal-streaming"
-version = "0.5.8"
+version = "0.5.9"
 dependencies = [
  "apache-avro",
  "async-channel",
@@ -1773,7 +1773,7 @@ dependencies = [
 
 [[package]]
 name = "py-nominal-streaming"
-version = "0.5.8"
+version = "0.5.9"
 dependencies = [
  "anyhow",
  "crossbeam-channel",
