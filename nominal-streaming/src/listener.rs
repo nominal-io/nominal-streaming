@@ -1,5 +1,7 @@
+use std::collections::HashMap;
 use std::error::Error;
 use std::fmt::Debug;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 use parking_lot::Mutex;
@@ -7,6 +9,9 @@ use tracing::error;
 
 pub trait NominalStreamListener: Send + Sync + Debug {
     fn on_error(&self, message: &str, error: &dyn Error);
+
+    #[expect(unused_variables)]
+    fn on_file_written(&self, path: &Path, num_points: u64) {}
 }
 
 #[derive(Debug, Default, Clone)]
@@ -20,8 +25,7 @@ impl NominalStreamListener for LoggingListener {
 
 #[derive(Debug, Clone)]
 pub struct FileSummary {
-    pub total_records: u64,
-    pub path: std::path::PathBuf,
+    pub total_points: u64,
     pub last_write_time: Instant,
 }
 
@@ -35,7 +39,7 @@ pub struct StreamHealthSnapshot {
 #[derive(Debug)]
 pub struct HealthReporter {
     health: Arc<Mutex<StreamHealthSnapshot>>,
-    file_inventory: Arc<Mutex<Vec<FileSummary>>>,
+    file_inventory: Arc<Mutex<HashMap<PathBuf, FileSummary>>>,
 }
 
 impl HealthReporter {
@@ -46,7 +50,7 @@ impl HealthReporter {
                 last_enqueue_time: Instant::now(),
                 last_failed_time: Instant::now(),
             })),
-            file_inventory: Arc::new(Mutex::new(Vec::new())),
+            file_inventory: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -55,7 +59,7 @@ impl HealthReporter {
     }
 
     pub fn file_inventory(&self) -> Vec<FileSummary> {
-        self.file_inventory.lock().clone()
+        self.file_inventory.lock().values().cloned().collect()
     }
 }
 
@@ -64,5 +68,22 @@ impl NominalStreamListener for HealthReporter {
         let mut health = self.health.lock();
         health.total_failed += 1;
         health.last_failed_time = Instant::now();
+    }
+
+    fn on_file_written(&self, path: &Path, num_points: u64) {
+        let mut inventory = self.file_inventory.lock();
+        let now = Instant::now();
+        let path_buf = path.to_path_buf();
+
+        inventory
+            .entry(path_buf.clone())
+            .and_modify(|summary| {
+                summary.total_points += num_points;
+                summary.last_write_time = now;
+            })
+            .or_insert(FileSummary {
+                total_points: num_points,
+                last_write_time: now,
+            });
     }
 }

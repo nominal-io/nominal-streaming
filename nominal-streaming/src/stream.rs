@@ -237,7 +237,6 @@ pub struct NominalDatasetStream {
     secondary_buffer: Arc<SeriesBuffer>,
     primary_handle: thread::JoinHandle<()>,
     secondary_handle: thread::JoinHandle<()>,
-    health: Arc<HealthReporter>
 }
 
 impl NominalDatasetStream {
@@ -312,7 +311,6 @@ impl NominalDatasetStream {
             secondary_buffer,
             primary_handle,
             secondary_handle,
-            health: Arc::new(HealthReporter::new()),
         }
     }
 
