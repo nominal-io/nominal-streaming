@@ -36,7 +36,7 @@ use crate::consumer::ListeningWriteRequestConsumer;
 use crate::consumer::NominalCoreConsumer;
 use crate::consumer::RequestConsumerWithFallback;
 use crate::consumer::WriteRequestConsumer;
-use crate::listener::LoggingListener;
+use crate::listener::{HealthReporter, LoggingListener};
 use crate::types::ChannelDescriptor;
 use crate::types::IntoPoints;
 use crate::types::IntoTimestamp;
@@ -67,6 +67,7 @@ pub struct NominalDatasetStreamBuilder {
     stream_to_core: Option<(BearerToken, ResourceIdentifier, tokio::runtime::Handle)>,
     stream_to_file: Option<PathBuf>,
     file_fallback: Option<PathBuf>,
+    health: Option<Arc<HealthReporter>>,
     listeners: Vec<Arc<dyn crate::listener::NominalStreamListener>>,
     opts: NominalStreamOpts,
 }
@@ -111,6 +112,11 @@ impl NominalDatasetStreamBuilder {
         listeners: Vec<Arc<dyn crate::listener::NominalStreamListener>>,
     ) -> Self {
         self.listeners = listeners;
+        self
+    }
+
+    pub fn with_health_reporter(mut self, health: Arc<HealthReporter>) -> Self {
+        self.health = Some(health);
         self
     }
 
@@ -211,8 +217,11 @@ impl NominalDatasetStreamBuilder {
     fn into_stream<C: WriteRequestConsumer + 'static>(self, consumer: C) -> NominalDatasetStream {
         let mut listeners = self.listeners;
         listeners.push(Arc::new(LoggingListener));
-        let logging_consumer = ListeningWriteRequestConsumer::new(consumer, listeners);
-        NominalDatasetStream::new_with_consumer(logging_consumer, self.opts)
+        if let Some(health) = self.health {
+            listeners.push(health);
+        }
+        let listening_consumer = ListeningWriteRequestConsumer::new(consumer, listeners);
+        NominalDatasetStream::new_with_consumer(listening_consumer, self.opts)
     }
 }
 
@@ -228,6 +237,7 @@ pub struct NominalDatasetStream {
     secondary_buffer: Arc<SeriesBuffer>,
     primary_handle: thread::JoinHandle<()>,
     secondary_handle: thread::JoinHandle<()>,
+    health: Arc<HealthReporter>
 }
 
 impl NominalDatasetStream {
@@ -302,6 +312,7 @@ impl NominalDatasetStream {
             secondary_buffer,
             primary_handle,
             secondary_handle,
+            health: Arc::new(HealthReporter::new()),
         }
     }
 

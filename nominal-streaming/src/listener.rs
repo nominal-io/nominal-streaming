@@ -30,12 +30,12 @@ pub struct StreamHealthSnapshot {
     pub total_failed: u64,
     pub last_enqueue_time: Instant,
     pub last_failed_time: Instant,
-    pub files: Vec<FileSummary>,
 }
 
 #[derive(Debug)]
 pub struct HealthReporter {
     health: Arc<Mutex<StreamHealthSnapshot>>,
+    file_inventory: Arc<Mutex<Vec<FileSummary>>>,
 }
 
 impl HealthReporter {
@@ -45,13 +45,17 @@ impl HealthReporter {
                 total_failed: 0,
                 last_enqueue_time: Instant::now(),
                 last_failed_time: Instant::now(),
-                files: vec![],
             })),
+            file_inventory: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
     pub fn health_snapshot(&self) -> StreamHealthSnapshot {
         self.health.lock().clone()
+    }
+
+    pub fn file_inventory(&self) -> Vec<FileSummary> {
+        self.file_inventory.lock().clone()
     }
 }
 
