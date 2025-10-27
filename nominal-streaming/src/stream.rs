@@ -63,9 +63,8 @@ impl Default for NominalStreamOpts {
     }
 }
 
-#[derive(Debug, Default)]
-pub struct NominalDatasetStreamBuilder {
-    stream_to_core: Option<(BearerToken, ResourceIdentifier, tokio::runtime::Handle)>,
+pub struct NominalDatasetStreamBuilder<A = BearerToken> {
+    stream_to_core: Option<(A, ResourceIdentifier, tokio::runtime::Handle)>,
     stream_to_file: Option<PathBuf>,
     file_fallback: Option<PathBuf>,
     health: Option<Arc<HealthReporter>>,
@@ -73,21 +72,52 @@ pub struct NominalDatasetStreamBuilder {
     opts: NominalStreamOpts,
 }
 
-impl NominalDatasetStreamBuilder {
-    pub fn new() -> NominalDatasetStreamBuilder {
-        NominalDatasetStreamBuilder {
-            ..Default::default()
+impl<A> Debug for NominalDatasetStreamBuilder<A> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NominalDatasetStreamBuilder")
+            .field("stream_to_core", &self.stream_to_core.is_some())
+            .field("stream_to_file", &self.stream_to_file)
+            .field("file_fallback", &self.file_fallback)
+            .field("health", &self.health.is_some())
+            .field("listeners", &self.listeners.len())
+            .finish()
+    }
+}
+
+impl Default for NominalDatasetStreamBuilder<BearerToken> {
+    fn default() -> Self {
+        Self {
+            stream_to_core: None,
+            stream_to_file: None,
+            file_fallback: None,
+            health: None,
+            listeners: Vec::new(),
+            opts: NominalStreamOpts::default(),
         }
     }
+}
 
-    pub fn stream_to_core(
-        mut self,
-        token: BearerToken,
+impl NominalDatasetStreamBuilder<BearerToken> {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl<A> NominalDatasetStreamBuilder<A> {
+    pub fn stream_to_core<AuthP: crate::types::AuthProvider + 'static>(
+        self,
+        auth_provider: AuthP,
         dataset: ResourceIdentifier,
         handle: tokio::runtime::Handle,
-    ) -> Self {
-        self.stream_to_core = Some((token, dataset, handle));
-        self
+    ) -> NominalDatasetStreamBuilder<AuthP> {
+        NominalDatasetStreamBuilder {
+            stream_to_core: Some((auth_provider, dataset, handle)),
+            stream_to_file: self.stream_to_file,
+            file_fallback: self.file_fallback,
+            health: self.health,
+            listeners: self.listeners,
+            opts: self.opts,
+        }
     }
 
     pub fn stream_to_file(mut self, file_path: impl Into<PathBuf>) -> Self {
@@ -165,7 +195,10 @@ impl NominalDatasetStreamBuilder {
         self.init_logging(Some(log_directive))
     }
 
-    pub fn build(self) -> NominalDatasetStream {
+    pub fn build(self) -> NominalDatasetStream
+    where
+        A: crate::types::AuthProvider + 'static,
+    {
         let core_consumer = self.core_consumer();
         let file_consumer = self.file_consumer();
         let fallback_consumer = self.fallback_consumer();
@@ -190,14 +223,17 @@ impl NominalDatasetStreamBuilder {
         }
     }
 
-    fn core_consumer(&self) -> Option<NominalCoreConsumer<BearerToken>> {
+    fn core_consumer(&self) -> Option<NominalCoreConsumer<A>>
+    where
+        A: crate::types::AuthProvider + Clone + 'static,
+    {
         self.stream_to_core
             .as_ref()
-            .map(|(token, dataset, handle)| {
+            .map(|(auth_provider, dataset, handle)| {
                 NominalCoreConsumer::new(
                     NominalApiClients::from_uri(self.opts.base_api_url.as_str()),
                     handle.clone(),
-                    token.clone(),
+                    auth_provider.clone(),
                     dataset.clone(),
                 )
             })
