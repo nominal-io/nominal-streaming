@@ -36,7 +36,7 @@ use crate::consumer::ListeningWriteRequestConsumer;
 use crate::consumer::NominalCoreConsumer;
 use crate::consumer::RequestConsumerWithFallback;
 use crate::consumer::WriteRequestConsumer;
-use crate::notifier::LoggingListener;
+use crate::listener::LoggingListener;
 use crate::types::ChannelDescriptor;
 use crate::types::IntoPoints;
 use crate::types::IntoTimestamp;
@@ -67,6 +67,7 @@ pub struct NominalDatasetStreamBuilder {
     stream_to_core: Option<(BearerToken, ResourceIdentifier, tokio::runtime::Handle)>,
     stream_to_file: Option<PathBuf>,
     file_fallback: Option<PathBuf>,
+    listeners: Vec<Arc<dyn crate::listener::NominalStreamListener>>,
     opts: NominalStreamOpts,
 }
 
@@ -94,6 +95,22 @@ impl NominalDatasetStreamBuilder {
 
     pub fn with_file_fallback(mut self, file_path: impl Into<PathBuf>) -> Self {
         self.file_fallback = Some(file_path.into());
+        self
+    }
+
+    pub fn add_listener(
+        mut self,
+        listener: Arc<dyn crate::listener::NominalStreamListener>,
+    ) -> Self {
+        self.listeners.push(listener);
+        self
+    }
+
+    pub fn with_listeners(
+        mut self,
+        listeners: Vec<Arc<dyn crate::listener::NominalStreamListener>>,
+    ) -> Self {
+        self.listeners = listeners;
         self
     }
 
@@ -192,8 +209,9 @@ impl NominalDatasetStreamBuilder {
     }
 
     fn into_stream<C: WriteRequestConsumer + 'static>(self, consumer: C) -> NominalDatasetStream {
-        let logging_consumer =
-            ListeningWriteRequestConsumer::new(consumer, vec![Arc::new(LoggingListener)]);
+        let mut listeners = self.listeners;
+        listeners.push(Arc::new(LoggingListener));
+        let logging_consumer = ListeningWriteRequestConsumer::new(consumer, listeners);
         NominalDatasetStream::new_with_consumer(logging_consumer, self.opts)
     }
 }

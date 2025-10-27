@@ -21,7 +21,7 @@ use tracing::warn;
 
 use crate::client::NominalApiClients;
 use crate::client::{self};
-use crate::notifier::NominalStreamListener;
+use crate::listener::NominalStreamListener;
 use crate::types::AuthProvider;
 
 #[derive(Debug, thiserror::Error)]

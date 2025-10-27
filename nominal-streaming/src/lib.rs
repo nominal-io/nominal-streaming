@@ -1,6 +1,6 @@
 pub mod client;
 pub mod consumer;
-pub mod notifier;
+pub mod listener;
 pub mod stream;
 mod types;
 pub mod upload;
