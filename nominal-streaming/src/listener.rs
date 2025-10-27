@@ -11,9 +11,6 @@ use tracing::error;
 
 pub trait NominalStreamListener: Send + Sync + Debug {
     fn on_error(&self, message: &str, error: &dyn Error);
-
-    // #[expect(unused_variables)]
-    // fn on_file_written(&self, path: &Path, num_points: u64) {}
 }
 
 #[derive(Debug, Default, Clone)]
@@ -24,13 +21,6 @@ impl NominalStreamListener for LoggingListener {
         error!("{}: {}", message, error);
     }
 }
-
-// #[derive(Debug, Clone)]
-// pub struct FileSummary {
-//     pub total_points: u64,
-//     pub creation_time: Instant,
-//     pub last_write_time: Instant,
-// }
 
 #[derive(Debug, Clone)]
 pub struct StreamHealthSnapshot {
@@ -58,10 +48,6 @@ impl HealthReporter {
     pub fn health_snapshot(&self) -> StreamHealthSnapshot {
         self.health.lock().clone()
     }
-    //
-    // pub fn file_inventory(&self) -> Vec<FileSummary> {
-    //     self.file_inventory.lock().values().cloned().collect()
-    // }
 }
 
 impl NominalStreamListener for HealthReporter {
@@ -70,22 +56,4 @@ impl NominalStreamListener for HealthReporter {
         health.total_failed += 1;
         health.last_failed_time = Instant::now();
     }
-    //
-    // fn on_file_written(&self, path: &Path, num_points: u64) {
-    //     let mut inventory = self.file_inventory.lock();
-    //     let now = Instant::now();
-    //     let path_buf = path.to_path_buf();
-    //
-    //     inventory
-    //         .entry(path_buf.clone())
-    //         .and_modify(|summary| {
-    //             summary.total_points += num_points;
-    //             summary.last_write_time = now;
-    //         })
-    //         .or_insert(FileSummary {
-    //             total_points: num_points,
-    //             creation_time: now,
-    //             last_write_time: now,
-    //         });
-    // }
 }
