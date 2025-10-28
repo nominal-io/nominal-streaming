@@ -377,7 +377,7 @@ where
                 let message = format!("Failed to consume request of {len} series");
 
                 for listener in &self.listeners {
-                    listener.on_error(&message, &e);
+                    listener.emit_error(&message, &e);
                 }
 
                 Err(e)

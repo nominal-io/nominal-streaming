@@ -10,7 +10,7 @@ use parking_lot::Mutex;
 use tracing::error;
 
 pub trait NominalStreamListener: Send + Sync + Debug {
-    fn on_error(&self, message: &str, error: &dyn Error);
+    fn emit_error(&self, message: &str, error: &dyn Error);
 
     fn on_points_failed(&self, num_points: usize) {}
 
@@ -21,7 +21,7 @@ pub trait NominalStreamListener: Send + Sync + Debug {
 pub struct LoggingListener;
 
 impl NominalStreamListener for LoggingListener {
-    fn on_error(&self, message: &str, error: &dyn Error) {
+    fn emit_error(&self, message: &str, error: &dyn Error) {
         error!("{}: {}", message, error);
     }
 }
