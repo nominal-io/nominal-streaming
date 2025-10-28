@@ -36,7 +36,6 @@ use crate::consumer::ListeningWriteRequestConsumer;
 use crate::consumer::NominalCoreConsumer;
 use crate::consumer::RequestConsumerWithFallback;
 use crate::consumer::WriteRequestConsumer;
-use crate::listener::HealthReporter;
 use crate::listener::LoggingListener;
 use crate::types::ChannelDescriptor;
 use crate::types::IntoPoints;
@@ -67,7 +66,6 @@ pub struct NominalDatasetStreamBuilder<A = BearerToken> {
     stream_to_core: Option<(A, ResourceIdentifier, tokio::runtime::Handle)>,
     stream_to_file: Option<PathBuf>,
     file_fallback: Option<PathBuf>,
-    health: Option<Arc<HealthReporter>>,
     listeners: Vec<Arc<dyn crate::listener::NominalStreamListener>>,
     opts: NominalStreamOpts,
 }
@@ -78,7 +76,6 @@ impl<A> Debug for NominalDatasetStreamBuilder<A> {
             .field("stream_to_core", &self.stream_to_core.is_some())
             .field("stream_to_file", &self.stream_to_file)
             .field("file_fallback", &self.file_fallback)
-            .field("health", &self.health.is_some())
             .field("listeners", &self.listeners.len())
             .finish()
     }
@@ -90,7 +87,6 @@ impl Default for NominalDatasetStreamBuilder<BearerToken> {
             stream_to_core: None,
             stream_to_file: None,
             file_fallback: None,
-            health: None,
             listeners: Vec::new(),
             opts: NominalStreamOpts::default(),
         }
@@ -114,7 +110,6 @@ impl<A> NominalDatasetStreamBuilder<A> {
             stream_to_core: Some((auth_provider, dataset, handle)),
             stream_to_file: self.stream_to_file,
             file_fallback: self.file_fallback,
-            health: self.health,
             listeners: self.listeners,
             opts: self.opts,
         }
@@ -143,11 +138,6 @@ impl<A> NominalDatasetStreamBuilder<A> {
         listeners: Vec<Arc<dyn crate::listener::NominalStreamListener>>,
     ) -> Self {
         self.listeners = listeners;
-        self
-    }
-
-    pub fn with_health_reporter(mut self, health: Arc<HealthReporter>) -> Self {
-        self.health = Some(health);
         self
     }
 
@@ -254,9 +244,6 @@ impl<A> NominalDatasetStreamBuilder<A> {
     fn into_stream<C: WriteRequestConsumer + 'static>(self, consumer: C) -> NominalDatasetStream {
         let mut listeners = self.listeners;
         listeners.push(Arc::new(LoggingListener));
-        if let Some(health) = self.health {
-            listeners.push(health);
-        }
         let listening_consumer = ListeningWriteRequestConsumer::new(consumer, listeners);
         NominalDatasetStream::new_with_consumer(listening_consumer, self.opts)
     }
