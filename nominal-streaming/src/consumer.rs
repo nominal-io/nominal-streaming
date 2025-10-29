@@ -371,13 +371,39 @@ where
 {
     fn consume(&self, request: &WriteRequestNominal) -> ConsumerResult<()> {
         let len = request.series.len();
+        let num_points = request
+            .series
+            .iter()
+            .map(|s| {
+                s.points
+                    .as_ref()
+                    .map(|p| {
+                        p.points_type
+                            .as_ref()
+                            .map(|t| match t {
+                                PointsType::DoublePoints(dp) => dp.points.len(),
+                                PointsType::StringPoints(sp) => sp.points.len(),
+                                PointsType::IntegerPoints(ip) => ip.points.len(),
+                            })
+                            .unwrap_or(0)
+                    })
+                    .unwrap_or(0)
+            })
+            .sum();
+
         match self.consumer.consume(request) {
-            Ok(_) => Ok(()),
+            Ok(_) => {
+                for listener in &self.listeners {
+                    listener.on_points_succeeded(num_points);
+                }
+                Ok(())
+            }
             Err(e) => {
                 let message = format!("Failed to consume request of {len} series");
 
                 for listener in &self.listeners {
                     listener.emit_error(&message, &e);
+                    listener.on_points_failed(num_points);
                 }
 
                 Err(e)
