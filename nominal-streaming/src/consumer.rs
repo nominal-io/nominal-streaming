@@ -21,7 +21,7 @@ use tracing::warn;
 
 use crate::client::NominalApiClients;
 use crate::client::{self};
-use crate::notifier::NominalStreamListener;
+use crate::listener::NominalStreamListener;
 use crate::types::AuthProvider;
 
 #[derive(Debug, thiserror::Error)]
@@ -370,16 +370,13 @@ where
     C: WriteRequestConsumer + Send + Sync,
 {
     fn consume(&self, request: &WriteRequestNominal) -> ConsumerResult<()> {
-        let len = request.series.len();
         match self.consumer.consume(request) {
-            Ok(_) => Ok(()),
+            Ok(_) => {
+                self.listeners.on_success(request);
+                Ok(())
+            }
             Err(e) => {
-                let message = format!("Failed to consume request of {len} series");
-
-                for listener in &self.listeners {
-                    listener.on_error(&message, &e);
-                }
-
+                self.listeners.on_error(&e, request);
                 Err(e)
             }
         }

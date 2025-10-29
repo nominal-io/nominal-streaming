@@ -36,7 +36,7 @@ use crate::consumer::ListeningWriteRequestConsumer;
 use crate::consumer::NominalCoreConsumer;
 use crate::consumer::RequestConsumerWithFallback;
 use crate::consumer::WriteRequestConsumer;
-use crate::notifier::LoggingListener;
+use crate::listener::LoggingListener;
 use crate::types::ChannelDescriptor;
 use crate::types::IntoPoints;
 use crate::types::IntoTimestamp;
@@ -62,29 +62,57 @@ impl Default for NominalStreamOpts {
     }
 }
 
-#[derive(Debug, Default)]
 pub struct NominalDatasetStreamBuilder {
     stream_to_core: Option<(BearerToken, ResourceIdentifier, tokio::runtime::Handle)>,
     stream_to_file: Option<PathBuf>,
     file_fallback: Option<PathBuf>,
+    listeners: Vec<Arc<dyn crate::listener::NominalStreamListener>>,
     opts: NominalStreamOpts,
 }
 
-impl NominalDatasetStreamBuilder {
-    pub fn new() -> NominalDatasetStreamBuilder {
-        NominalDatasetStreamBuilder {
-            ..Default::default()
+impl Debug for NominalDatasetStreamBuilder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NominalDatasetStreamBuilder")
+            .field("stream_to_core", &self.stream_to_core.is_some())
+            .field("stream_to_file", &self.stream_to_file)
+            .field("file_fallback", &self.file_fallback)
+            .field("listeners", &self.listeners.len())
+            .finish()
+    }
+}
+
+impl Default for NominalDatasetStreamBuilder {
+    fn default() -> Self {
+        Self {
+            stream_to_core: None,
+            stream_to_file: None,
+            file_fallback: None,
+            listeners: Vec::new(),
+            opts: NominalStreamOpts::default(),
         }
     }
+}
 
+impl NominalDatasetStreamBuilder {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl NominalDatasetStreamBuilder {
     pub fn stream_to_core(
-        mut self,
-        token: BearerToken,
+        self,
+        bearer_token: BearerToken,
         dataset: ResourceIdentifier,
         handle: tokio::runtime::Handle,
-    ) -> Self {
-        self.stream_to_core = Some((token, dataset, handle));
-        self
+    ) -> NominalDatasetStreamBuilder {
+        NominalDatasetStreamBuilder {
+            stream_to_core: Some((bearer_token, dataset, handle)),
+            stream_to_file: self.stream_to_file,
+            file_fallback: self.file_fallback,
+            listeners: self.listeners,
+            opts: self.opts,
+        }
     }
 
     pub fn stream_to_file(mut self, file_path: impl Into<PathBuf>) -> Self {
@@ -94,6 +122,22 @@ impl NominalDatasetStreamBuilder {
 
     pub fn with_file_fallback(mut self, file_path: impl Into<PathBuf>) -> Self {
         self.file_fallback = Some(file_path.into());
+        self
+    }
+
+    pub fn add_listener(
+        mut self,
+        listener: Arc<dyn crate::listener::NominalStreamListener>,
+    ) -> Self {
+        self.listeners.push(listener);
+        self
+    }
+
+    pub fn with_listeners(
+        mut self,
+        listeners: Vec<Arc<dyn crate::listener::NominalStreamListener>>,
+    ) -> Self {
+        self.listeners = listeners;
         self
     }
 
@@ -169,11 +213,11 @@ impl NominalDatasetStreamBuilder {
     fn core_consumer(&self) -> Option<NominalCoreConsumer<BearerToken>> {
         self.stream_to_core
             .as_ref()
-            .map(|(token, dataset, handle)| {
+            .map(|(auth_provider, dataset, handle)| {
                 NominalCoreConsumer::new(
                     NominalApiClients::from_uri(self.opts.base_api_url.as_str()),
                     handle.clone(),
-                    token.clone(),
+                    auth_provider.clone(),
                     dataset.clone(),
                 )
             })
@@ -192,9 +236,10 @@ impl NominalDatasetStreamBuilder {
     }
 
     fn into_stream<C: WriteRequestConsumer + 'static>(self, consumer: C) -> NominalDatasetStream {
-        let logging_consumer =
-            ListeningWriteRequestConsumer::new(consumer, vec![Arc::new(LoggingListener)]);
-        NominalDatasetStream::new_with_consumer(logging_consumer, self.opts)
+        let mut listeners = self.listeners;
+        listeners.push(Arc::new(LoggingListener));
+        let listening_consumer = ListeningWriteRequestConsumer::new(consumer, listeners);
+        NominalDatasetStream::new_with_consumer(listening_consumer, self.opts)
     }
 }
 
