@@ -6,7 +6,7 @@ members = [
 resolver = "2"
 
 [workspace.dependencies]
-apache-avro = { version = "0.17.0", features = ["snappy"] }
+apache-avro = { version = "0.20.0", features = ["snappy"] }
 async-channel = "2.5.0"
 chrono = "0.4.41"
 conjure-error = "4"
