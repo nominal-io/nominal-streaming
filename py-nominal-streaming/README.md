@@ -15,7 +15,7 @@ It also provides configuration to manage the tradeoff between above listed conce
 > [!WARNING]
 > This library is still under active development and may make breaking changes.
 
-## Simple usage example: streaming from memory to Nominal Core with file fallback
+## Usage example: streaming from memory to Nominal Core with file fallback
 
 ```python
 import pathlib
@@ -28,7 +28,7 @@ if __name__ == "__main__":
     num_points = 100_000
     stream = (
         NominalDatasetStream(
-            auth_header="<api key>", 
+            auth_header="<api key>",
             opts=PyNominalStreamOpts(),
         )
         .enable_logging("info") # can set debug, warn, etc.
@@ -42,17 +42,16 @@ if __name__ == "__main__":
             time_ns = int(time.time() * 1e9)
             value = (idx % 50) + 0.5
             stream.enqueue("channel_name", time_ns, value, tags={"tag_key": "tag_value"})
-        
+
         # Stream 100_000 points in one batch
         start_time = int(time.time() * 1e9)
         timestamp_offsets = int(1e9 / 1600)
         timestamps = [start_time + timestamp_offsets * idx for idx in range(num_points)]
         values = [(idx % 50) + 0.5 for idx in range(num_points)]
         stream.enqueue_batch(
-            "channel_name", 
-            timestamps, 
-            values, 
+            "channel_name",
+            timestamps,
+            values,
             tags={"tag_key": "tag_value"}
         )
-
 ```
