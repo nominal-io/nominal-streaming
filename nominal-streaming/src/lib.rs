@@ -22,6 +22,8 @@ For example:
 - A file stream is constructed as:
 
   ```rust
+  use nominal_streaming::stream::NominalDatasetStreamBuilder;
+
   let stream = NominalDatasetStreamBuilder::new()
       .stream_to_file("my_data.avro")
       .build();
@@ -29,7 +31,7 @@ For example:
 
 - A stream that sends data to Nominal Core, but writes failed requests to a file, is created as follows:
 
-  ```rust
+  ```rust,ignore
   let stream = NominalDatasetStreamBuilder::new()
       .stream_to_core(token, dataset_rid, handle)
       .with_file_fallback("fallback.avro")
@@ -38,7 +40,7 @@ For example:
 
 - Or, you can build a stream that sends data to Nominal Core *and* to a file:
 
-  ```rust
+  ```rust,ignore
   let stream = NominalDatasetStreamBuilder::new()
       .stream_to_core(token, dataset_rid, handle)
       .stream_to_file("my_data.avro")
@@ -49,7 +51,7 @@ For example:
 
 Once we have a Stream, we can construct a Writer and send values to it:
 
-```rust
+```rust,ignore
 let channel_descriptor = ChannelDescriptor::with_tags(
     "channel_1", [("experiment_id", "123")]
 );
@@ -72,8 +74,10 @@ If the upload fails (say because of network errors), we'd like to instead send t
 
 Note that we set up the async [Tokio runtime](https://tokio.rs/), since that is required by the underlying [`NominalCoreConsumer`](https://docs.rs/nominal-streaming/latest/nominal_streaming/consumer/struct.NominalCoreConsumer.html).
 
-```rust
+```rust,no_run
 use nominal_streaming::prelude::*;
+use nominal_streaming::stream::NominalDatasetStreamBuilder;
+
 use std::time::UNIX_EPOCH;
 
 
@@ -129,7 +133,7 @@ async fn async_main() {
 Above, you saw an example using [`NominalStreamOpts::default`](https://docs.rs/nominal-streaming/latest/nominal_streaming/stream/struct.NominalStreamOpts.html).
 The following stream options can be set using `.with_options(...)` on the StreamBuilder:
 
-```rust
+```text
 NominalStreamOpts {
   max_points_per_record: usize,
   max_request_delay: Duration,
@@ -142,7 +146,7 @@ NominalStreamOpts {
 
 Most of the time, when things go wrong, we want some form of reporting. You can enable debug logging on the StreamBuilder by using `.enable_logging()`:
 
-```rust
+```rust,ignore
 let stream = NominalDatasetStreamBuilder::new()
     .stream_to_core(token, dataset_rid, handle)
     .with_file_fallback("fallback.avro")
