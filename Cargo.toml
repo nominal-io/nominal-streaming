@@ -16,7 +16,7 @@ conjure-runtime = "6"
 crossbeam-channel = "0.5.15"
 derive_more = { version = "2", features = ["from"] }
 futures = "0.3"
-nominal-api = "0.979.1"
+nominal-api = "0.1012.0"
 parking_lot = "0.12"
 prost = "0.13"
 reqwest = "0.12.22"
