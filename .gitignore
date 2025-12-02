@@ -1,4 +1,6 @@
 /target
+# cargo lockfiles should not be commited for library crates
+**/Cargo.lock
 
 # Python generated files
 *.pyc
