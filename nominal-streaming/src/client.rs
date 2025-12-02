@@ -12,13 +12,13 @@ use conjure_http::private::Request;
 use conjure_http::private::Response;
 use conjure_object::BearerToken;
 use conjure_object::ResourceIdentifier;
-use conjure_runtime::Agent;
-use conjure_runtime::BodyWriter;
-use conjure_runtime::Client;
-use conjure_runtime_rustls_platform_verifier::Client as PlatformVerifierClient;
-use conjure_runtime::Idempotency;
+use conjure_runtime_rustls_platform_verifier::conjure_runtime::Agent;
+use conjure_runtime_rustls_platform_verifier::conjure_runtime::BodyWriter;
+use conjure_runtime_rustls_platform_verifier::conjure_runtime::Client;
+use conjure_runtime_rustls_platform_verifier::conjure_runtime::Idempotency;
+use conjure_runtime_rustls_platform_verifier::conjure_runtime::UserAgent;
+use conjure_runtime_rustls_platform_verifier::PlatformVerifierClient;
 use conjure_runtime_rustls_platform_verifier::ResponseBody;
-use conjure_runtime::UserAgent;
 use nominal_api::api::rids::NominalDataSourceOrDatasetRid;
 use nominal_api::api::rids::WorkspaceRid;
 use nominal_api::ingest::api::IngestServiceAsyncClient;
@@ -32,7 +32,7 @@ pub mod conjure {
     pub use conjure_error as error;
     pub use conjure_http as http;
     pub use conjure_object as object;
-    pub use conjure_runtime as runtime;
+    pub use conjure_runtime_rustls_platform_verifier::conjure_runtime as runtime;
 }
 
 pub const PRODUCTION_API_URL: &str = "https://api.gov.nominal.io/api";

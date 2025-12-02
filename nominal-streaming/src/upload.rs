@@ -11,8 +11,8 @@ use conjure_http::private::Stream;
 use conjure_object::BearerToken;
 use conjure_object::ResourceIdentifier;
 use conjure_object::SafeLong;
-use conjure_runtime::BodyWriter;
-use conjure_runtime_rustls_platform_verifier::Client;
+use conjure_runtime_rustls_platform_verifier::conjure_runtime::BodyWriter;
+use conjure_runtime_rustls_platform_verifier::PlatformVerifierClient;
 use futures::StreamExt;
 use nominal_api::api::rids::WorkspaceRid;
 use nominal_api::ingest::api::AvroStreamOpts;
@@ -224,8 +224,8 @@ impl AsyncWriteBody<BodyWriter> for FileWriteBody {
 
 #[derive(Clone)]
 pub struct FileObjectStoreUploader {
-    upload_client: UploadServiceAsyncClient<Client>,
-    ingest_client: IngestServiceAsyncClient<Client>,
+    upload_client: UploadServiceAsyncClient<PlatformVerifierClient>,
+    ingest_client: IngestServiceAsyncClient<PlatformVerifierClient>,
     http_client: reqwest::Client,
     handle: tokio::runtime::Handle,
     opts: UploaderOpts,
@@ -233,8 +233,8 @@ pub struct FileObjectStoreUploader {
 
 impl FileObjectStoreUploader {
     pub fn new(
-        upload_client: UploadServiceAsyncClient<Client>,
-        ingest_client: IngestServiceAsyncClient<Client>,
+        upload_client: UploadServiceAsyncClient<PlatformVerifierClient>,
+        ingest_client: IngestServiceAsyncClient<PlatformVerifierClient>,
         http_client: reqwest::Client,
         handle: tokio::runtime::Handle,
         opts: UploaderOpts,
@@ -271,7 +271,7 @@ impl FileObjectStoreUploader {
 
     #[expect(clippy::too_many_arguments)]
     async fn upload_part(
-        client: UploadServiceAsyncClient<Client>,
+        client: UploadServiceAsyncClient<PlatformVerifierClient>,
         http_client: reqwest::Client,
         token: BearerToken,
         upload_id: String,
@@ -308,7 +308,7 @@ impl FileObjectStoreUploader {
     }
 
     async fn try_upload_part(
-        client: UploadServiceAsyncClient<Client>,
+        client: UploadServiceAsyncClient<PlatformVerifierClient>,
         http_client: reqwest::Client,
         token: &BearerToken,
         upload_id: &str,

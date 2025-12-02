@@ -450,9 +450,21 @@ dependencies = [
 ]
 
 [[package]]
-name = "conjure-runtime"
+name = "conjure-runtime-config"
 version = "6.2.0"
-source = "git+https://github.com/joseph-gio/conjure-runtime-rustls-platform-verifier#2082c900640c2173f4b1cac999adb38463d9a016"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "370b9934f3110e869e1595433b80f8e948b79249585aa5072b36b85a1c66a82a"
+dependencies = [
+ "humantime-serde",
+ "serde",
+ "staged-builder",
+ "url",
+]
+
+[[package]]
+name = "conjure-runtime-raw"
+version = "6.2.0"
+source = "git+https://github.com/joseph-gio/conjure-runtime-rustls-platform-verifier#09456eb62d25c01ca3902df9c289b92ab251bcaa"
 dependencies = [
  "arc-swap",
  "base64",
@@ -460,7 +472,7 @@ dependencies = [
  "conjure-error",
  "conjure-http",
  "conjure-object",
- "conjure-runtime 6.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "conjure-runtime",
  "conjure-runtime-config",
  "conjure-serde",
  "flate2",
@@ -498,25 +510,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "conjure-runtime-config"
-version = "6.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "370b9934f3110e869e1595433b80f8e948b79249585aa5072b36b85a1c66a82a"
-dependencies = [
- "humantime-serde",
- "serde",
- "staged-builder",
- "url",
-]
-
-[[package]]
 name = "conjure-runtime-rustls-platform-verifier"
 version = "0.1.0"
-source = "git+https://github.com/joseph-gio/conjure-runtime-rustls-platform-verifier#2082c900640c2173f4b1cac999adb38463d9a016"
+source = "git+https://github.com/joseph-gio/conjure-runtime-rustls-platform-verifier#09456eb62d25c01ca3902df9c289b92ab251bcaa"
 dependencies = [
  "conjure-error",
- "conjure-runtime 6.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "conjure-runtime 6.2.0 (git+https://github.com/joseph-gio/conjure-runtime-rustls-platform-verifier)",
+ "conjure-runtime",
+ "conjure-runtime-raw",
  "hyper-rustls",
  "hyper-util",
  "rustls",
@@ -1175,7 +1175,7 @@ dependencies = [
  "libc",
  "percent-encoding",
  "pin-project-lite",
- "socket2 0.6.1",
+ "socket2 0.5.10",
  "system-configuration",
  "tokio",
  "tower-service",
@@ -1586,7 +1586,6 @@ dependencies = [
  "conjure-error",
  "conjure-http",
  "conjure-object",
- "conjure-runtime 6.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "conjure-runtime-rustls-platform-verifier",
  "crossbeam-channel",
  "derive_more",
