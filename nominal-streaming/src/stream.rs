@@ -13,6 +13,7 @@ use std::time::UNIX_EPOCH;
 
 use conjure_object::BearerToken;
 use conjure_object::ResourceIdentifier;
+use nominal_api::tonic::io::nominal::scout::api::proto::array_points::ArrayType;
 use nominal_api::tonic::io::nominal::scout::api::proto::points::PointsType;
 use nominal_api::tonic::io::nominal::scout::api::proto::Channel;
 use nominal_api::tonic::io::nominal::scout::api::proto::DoublePoint;
@@ -751,5 +752,11 @@ fn points_len(points_type: &PointsType) -> usize {
         PointsType::DoublePoints(points) => points.points.len(),
         PointsType::StringPoints(points) => points.points.len(),
         PointsType::IntegerPoints(points) => points.points.len(),
+        // is this correct?
+        PointsType::ArrayPoints(points) => match &points.array_type {
+            Some(ArrayType::DoubleArrayPoints(points)) => points.points.len(),
+            Some(ArrayType::StringArrayPoints(points)) => points.points.len(),
+            None => 0,
+        },
     }
 }

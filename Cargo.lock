@@ -452,7 +452,7 @@ dependencies = [
 [[package]]
 name = "conjure-runtime"
 version = "6.2.0"
-source = "git+https://github.com/joseph-gio/conjure-runtime-rustls-platform-verifier#e7947c070e3c5cdfd50b942f4cb3b6cdef9dcccc"
+source = "git+https://github.com/joseph-gio/conjure-runtime-rustls-platform-verifier#2082c900640c2173f4b1cac999adb38463d9a016"
 dependencies = [
  "arc-swap",
  "base64",
@@ -512,7 +512,7 @@ dependencies = [
 [[package]]
 name = "conjure-runtime-rustls-platform-verifier"
 version = "0.1.0"
-source = "git+https://github.com/joseph-gio/conjure-runtime-rustls-platform-verifier#e7947c070e3c5cdfd50b942f4cb3b6cdef9dcccc"
+source = "git+https://github.com/joseph-gio/conjure-runtime-rustls-platform-verifier#2082c900640c2173f4b1cac999adb38463d9a016"
 dependencies = [
  "conjure-error",
  "conjure-runtime 6.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -1564,9 +1564,9 @@ dependencies = [
 
 [[package]]
 name = "nominal-api"
-version = "0.979.1"
+version = "0.987.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "107acd13f6797526f7957485b7fba6f27530032e212ff954d82c6a42c7360196"
+checksum = "19da27fdb146d3ed412bdb5acf6db483bb90dd9505035f2651024b692f3f236e"
 dependencies = [
  "conjure-codegen",
  "conjure-error",
@@ -2240,7 +2240,7 @@ dependencies = [
  "security-framework 3.5.1",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3274,7 +3274,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
