@@ -12,7 +12,7 @@ use conjure_object::BearerToken;
 use conjure_object::ResourceIdentifier;
 use conjure_object::SafeLong;
 use conjure_runtime::BodyWriter;
-use conjure_runtime::Client;
+use conjure_runtime_rustls_platform_verifier::Client;
 use futures::StreamExt;
 use nominal_api::api::rids::WorkspaceRid;
 use nominal_api::ingest::api::AvroStreamOpts;
