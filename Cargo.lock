@@ -463,8 +463,9 @@ dependencies = [
 
 [[package]]
 name = "conjure-runtime-raw"
-version = "6.2.0"
-source = "git+https://github.com/joseph-gio/conjure-runtime-rustls-platform-verifier#09456eb62d25c01ca3902df9c289b92ab251bcaa"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8658db9cc5c9a7daaa69b5e481caf373ba217ab8359694953c368349e39ac0d9"
 dependencies = [
  "arc-swap",
  "base64",
@@ -512,7 +513,8 @@ dependencies = [
 [[package]]
 name = "conjure-runtime-rustls-platform-verifier"
 version = "0.1.0"
-source = "git+https://github.com/joseph-gio/conjure-runtime-rustls-platform-verifier#09456eb62d25c01ca3902df9c289b92ab251bcaa"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "72f11dd6bb8116ad6d7dedef447ab3bdc892c87ee0462075bfc6278a2d1482b2"
 dependencies = [
  "conjure-error",
  "conjure-runtime",
