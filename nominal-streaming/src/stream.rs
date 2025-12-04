@@ -15,6 +15,7 @@ use conjure_object::BearerToken;
 use conjure_object::ResourceIdentifier;
 use nominal_api::tonic::io::nominal::scout::api::proto::array_points::ArrayType;
 use nominal_api::tonic::io::nominal::scout::api::proto::points::PointsType;
+use nominal_api::tonic::io::nominal::scout::api::proto::ArrayPoints;
 use nominal_api::tonic::io::nominal::scout::api::proto::Channel;
 use nominal_api::tonic::io::nominal::scout::api::proto::DoublePoint;
 use nominal_api::tonic::io::nominal::scout::api::proto::IntegerPoint;
@@ -63,6 +64,7 @@ impl Default for NominalStreamOpts {
     }
 }
 
+#[derive(Default)]
 pub struct NominalDatasetStreamBuilder {
     stream_to_core: Option<(BearerToken, ResourceIdentifier, tokio::runtime::Handle)>,
     stream_to_file: Option<PathBuf>,
@@ -79,18 +81,6 @@ impl Debug for NominalDatasetStreamBuilder {
             .field("file_fallback", &self.file_fallback)
             .field("listeners", &self.listeners.len())
             .finish()
-    }
-}
-
-impl Default for NominalDatasetStreamBuilder {
-    fn default() -> Self {
-        Self {
-            stream_to_core: None,
-            stream_to_file: None,
-            file_fallback: None,
-            listeners: Vec::new(),
-            opts: NominalStreamOpts::default(),
-        }
     }
 }
 
@@ -535,7 +525,79 @@ impl SeriesBufferGuard<'_> {
                 (PointsType::IntegerPoints(existing), PointsType::IntegerPoints(new)) => {
                     existing.points.extend(new.points)
                 }
-                (_, _) => {
+                (
+                    PointsType::ArrayPoints(ArrayPoints {
+                        array_type: Some(ArrayType::DoubleArrayPoints(existing)),
+                    }),
+                    PointsType::ArrayPoints(ArrayPoints {
+                        array_type: Some(ArrayType::DoubleArrayPoints(new)),
+                    }),
+                ) => existing.points.extend(new.points),
+                (
+                    PointsType::ArrayPoints(ArrayPoints {
+                        array_type: Some(ArrayType::StringArrayPoints(existing)),
+                    }),
+                    PointsType::ArrayPoints(ArrayPoints {
+                        array_type: Some(ArrayType::StringArrayPoints(new)),
+                    }),
+                ) => existing.points.extend(new.points),
+                (
+                    PointsType::ArrayPoints(ArrayPoints { array_type: None }),
+                    PointsType::ArrayPoints(ArrayPoints { array_type: None }),
+                ) => {}
+                // this is hideous, but exhaustive matching is good to avoid future errors
+                (
+                    PointsType::DoublePoints(_),
+                    PointsType::IntegerPoints(_)
+                    | PointsType::StringPoints(_)
+                    | PointsType::ArrayPoints(_),
+                )
+                | (
+                    PointsType::StringPoints(_),
+                    PointsType::DoublePoints(_)
+                    | PointsType::IntegerPoints(_)
+                    | PointsType::ArrayPoints(_),
+                )
+                | (
+                    PointsType::IntegerPoints(_),
+                    PointsType::DoublePoints(_)
+                    | PointsType::StringPoints(_)
+                    | PointsType::ArrayPoints(_),
+                )
+                | (
+                    PointsType::ArrayPoints(_),
+                    PointsType::DoublePoints(_)
+                    | PointsType::StringPoints(_)
+                    | PointsType::IntegerPoints(_),
+                )
+                | (
+                    PointsType::ArrayPoints(ArrayPoints {
+                        array_type: Some(_),
+                    }),
+                    PointsType::ArrayPoints(ArrayPoints { array_type: None }),
+                )
+                | (
+                    PointsType::ArrayPoints(ArrayPoints { array_type: None }),
+                    PointsType::ArrayPoints(ArrayPoints {
+                        array_type: Some(_),
+                    }),
+                )
+                | (
+                    PointsType::ArrayPoints(ArrayPoints {
+                        array_type: Some(ArrayType::DoubleArrayPoints(_)),
+                    }),
+                    PointsType::ArrayPoints(ArrayPoints {
+                        array_type: Some(ArrayType::StringArrayPoints(_)),
+                    }),
+                )
+                | (
+                    PointsType::ArrayPoints(ArrayPoints {
+                        array_type: Some(ArrayType::StringArrayPoints(_)),
+                    }),
+                    PointsType::ArrayPoints(ArrayPoints {
+                        array_type: Some(ArrayType::DoubleArrayPoints(_)),
+                    }),
+                ) => {
                     // todo: improve error
                     panic!("mismatched types");
                 }
