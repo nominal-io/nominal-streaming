@@ -34,6 +34,13 @@ jobs:
             manylinux: auto
             env: {}
 
+          - label: linux-aarch
+            os: linux
+            runner: ubuntu-22.04
+            target: aarch64
+            manylinux: auto
+            env: {}
+
           # --- musllinux ---
           - label: musllinux-x86_64
             os: musllinux
