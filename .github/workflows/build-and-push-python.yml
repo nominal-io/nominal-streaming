@@ -20,20 +20,19 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # --- manylinux (auto) ---
-          - label: linux-x86_64
-            os: linux
-            runner: ubuntu-22.04
-            target: x86_64
-            manylinux: auto
-            env: {}
-          - label: linux-armv7
-            os: linux
-            runner: ubuntu-22.04
-            target: armv7
-            manylinux: auto
-            env: {}
-
+          # # --- manylinux (auto) ---
+          # - label: linux-x86_64
+          #   os: linux
+          #   runner: ubuntu-22.04
+          #   target: x86_64
+          #   manylinux: auto
+          #   env: {}
+          # - label: linux-armv7
+          #   os: linux
+          #   runner: ubuntu-22.04
+          #   target: armv7
+          #   manylinux: auto
+          #   env: {}
           - label: linux-aarch
             os: linux
             runner: ubuntu-22.04
@@ -41,47 +40,47 @@ jobs:
             manylinux: auto
             env: {}
 
-          # --- musllinux ---
-          - label: musllinux-x86_64
-            os: musllinux
-            runner: ubuntu-22.04
-            target: x86_64
-            manylinux: musllinux_1_2
-            env:
-              OPENSSL_DIR: /usr
-          - label: musllinux-aarch64
-            os: musllinux
-            runner: ubuntu-22.04
-            target: aarch64
-            manylinux: musllinux_1_2
-            env:
-              OPENSSL_DIR: /usr
-          - label: musllinux-armv7
-            os: musllinux
-            runner: ubuntu-22.04
-            target: armv7
-            manylinux: musllinux_1_2
-            env:
-              OPENSSL_DIR: /usr
+          # # --- musllinux ---
+          # - label: musllinux-x86_64
+          #   os: musllinux
+          #   runner: ubuntu-22.04
+          #   target: x86_64
+          #   manylinux: musllinux_1_2
+          #   env:
+          #     OPENSSL_DIR: /usr
+          # - label: musllinux-aarch64
+          #   os: musllinux
+          #   runner: ubuntu-22.04
+          #   target: aarch64
+          #   manylinux: musllinux_1_2
+          #   env:
+          #     OPENSSL_DIR: /usr
+          # - label: musllinux-armv7
+          #   os: musllinux
+          #   runner: ubuntu-22.04
+          #   target: armv7
+          #   manylinux: musllinux_1_2
+          #   env:
+          #     OPENSSL_DIR: /usr
 
-          # --- Windows ---
-          - label: windows-x64
-            os: windows
-            runner: windows-latest
-            target: x64
-            manylinux: "" # ignored
-            python_arch: x64
-            env:
-              CARGO_FEATURE_VENDORED: "1"
-              OPENSSL_SYS_VENDORED: "1"
+          # # --- Windows ---
+          # - label: windows-x64
+          #   os: windows
+          #   runner: windows-latest
+          #   target: x64
+          #   manylinux: "" # ignored
+          #   python_arch: x64
+          #   env:
+          #     CARGO_FEATURE_VENDORED: "1"
+          #     OPENSSL_SYS_VENDORED: "1"
 
-          # --- macOS ---
-          - label: macos-aarch64
-            os: macos
-            runner: macos-14
-            target: aarch64
-            manylinux: "" # ignored
-            env: {}
+          # # --- macOS ---
+          # - label: macos-aarch64
+          #   os: macos
+          #   runner: macos-14
+          #   target: aarch64
+          #   manylinux: "" # ignored
+          #   env: {}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
