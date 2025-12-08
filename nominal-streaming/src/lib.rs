@@ -179,6 +179,7 @@ pub mod prelude {
 
     pub use crate::consumer::NominalCoreConsumer;
     pub use crate::stream::NominalDatasetStream;
+    #[expect(deprecated)]
     pub use crate::stream::NominalDatasourceStream;
     pub use crate::stream::NominalStreamOpts;
     pub use crate::types::AuthProvider;

@@ -88,7 +88,7 @@ impl AvroIngestManager {
                     match upload_and_ingest_file(
                         uploader.clone(),
                         &token,
-                        auth_provider.workspace_rid().map(WorkspaceRid::from),
+                        auth_provider.workspace_rid(),
                         f,
                         file_name,
                         &file_path,

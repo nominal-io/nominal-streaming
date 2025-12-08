@@ -35,8 +35,9 @@ pub mod conjure {
     pub use conjure_runtime_rustls_platform_verifier::conjure_runtime as runtime;
 }
 
+/// The URL that points toward's Nominal's default production deployment.
 pub const PRODUCTION_API_URL: &str = "https://api.gov.nominal.io/api";
-const STAGING_API_URL: &str = "https://api-staging.gov.nominal.io/api";
+
 const USER_AGENT: &str = "nominal-streaming";
 
 impl AuthProvider for BearerToken {
@@ -101,9 +102,6 @@ impl NominalApiClients {
 
 pub static PRODUCTION_CLIENTS: LazyLock<NominalApiClients> =
     LazyLock::new(|| NominalApiClients::from_uri(PRODUCTION_API_URL));
-
-pub static STAGING_CLIENTS: LazyLock<NominalApiClients> =
-    LazyLock::new(|| NominalApiClients::from_uri(STAGING_API_URL));
 
 fn async_conjure_streaming_client(uri: Url) -> Result<PlatformVerifierClient, Error> {
     Client::builder()
