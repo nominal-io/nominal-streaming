@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0](https://github.com/nominal-io/nominal-streaming/compare/v0.6.0...v0.7.0) - 2025-12-08
+
+### Added
+
+- [**breaking**] remove staging clients ([#128](https://github.com/nominal-io/nominal-streaming/pull/128))
+- use platform verifier for TLS ([#123](https://github.com/nominal-io/nominal-streaming/pull/123))
+
+### Other
+
+- move README into lib.rs ([#99](https://github.com/nominal-io/nominal-streaming/pull/99))
+
 ## [0.6.0](https://github.com/nominal-io/nominal-streaming/compare/v0.5.8...v0.6.0) - 2025-10-29
 
 ### Added
