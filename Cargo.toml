@@ -29,7 +29,7 @@ tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 url = "2.5.4"
 
 # Test dependencies
-test-log = { version = "0.2.18", features = ["trace"] }
+test-log = { version = "0.2.19", features = ["trace"] }
 
 # Allow workspace packages to access core package
 nominal-streaming = { path = "nominal-streaming" }
