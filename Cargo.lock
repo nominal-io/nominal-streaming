@@ -1177,7 +1177,7 @@ dependencies = [
  "libc",
  "percent-encoding",
  "pin-project-lite",
- "socket2 0.5.10",
+ "socket2 0.6.1",
  "system-configuration",
  "tokio",
  "tower-service",
@@ -1566,9 +1566,9 @@ dependencies = [
 
 [[package]]
 name = "nominal-api"
-version = "0.987.0"
+version = "0.1026.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "19da27fdb146d3ed412bdb5acf6db483bb90dd9505035f2651024b692f3f236e"
+checksum = "8e4fbbbe348ef31205e1f93ee095e55544de8cc93d19517a8d163d5e1b2b333a"
 dependencies = [
  "conjure-codegen",
  "conjure-error",
