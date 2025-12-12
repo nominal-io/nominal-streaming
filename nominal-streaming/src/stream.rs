@@ -545,30 +545,37 @@ impl SeriesBufferGuard<'_> {
                     PointsType::ArrayPoints(ArrayPoints { array_type: None }),
                     PointsType::ArrayPoints(ArrayPoints { array_type: None }),
                 ) => {}
+                (PointsType::StructPoints(existing), PointsType::StructPoints(new)) => {
+                    existing.points.extend(new.points);
+                }
                 // this is hideous, but exhaustive matching is good to avoid future errors
                 (
                     PointsType::DoublePoints(_),
                     PointsType::IntegerPoints(_)
                     | PointsType::StringPoints(_)
-                    | PointsType::ArrayPoints(_),
+                    | PointsType::ArrayPoints(_)
+                    | PointsType::StructPoints(_),
                 )
                 | (
                     PointsType::StringPoints(_),
                     PointsType::DoublePoints(_)
                     | PointsType::IntegerPoints(_)
-                    | PointsType::ArrayPoints(_),
+                    | PointsType::ArrayPoints(_)
+                    | PointsType::StructPoints(_),
                 )
                 | (
                     PointsType::IntegerPoints(_),
                     PointsType::DoublePoints(_)
                     | PointsType::StringPoints(_)
-                    | PointsType::ArrayPoints(_),
+                    | PointsType::ArrayPoints(_)
+                    | PointsType::StructPoints(_),
                 )
                 | (
                     PointsType::ArrayPoints(_),
                     PointsType::DoublePoints(_)
                     | PointsType::StringPoints(_)
-                    | PointsType::IntegerPoints(_),
+                    | PointsType::IntegerPoints(_)
+                    | PointsType::StructPoints(_),
                 )
                 | (
                     PointsType::ArrayPoints(ArrayPoints {
@@ -597,6 +604,13 @@ impl SeriesBufferGuard<'_> {
                     PointsType::ArrayPoints(ArrayPoints {
                         array_type: Some(ArrayType::DoubleArrayPoints(_)),
                     }),
+                )
+                | (
+                    PointsType::StructPoints(_),
+                    PointsType::DoublePoints(_)
+                    | PointsType::StringPoints(_)
+                    | PointsType::IntegerPoints(_)
+                    | PointsType::ArrayPoints(_),
                 ) => {
                     // todo: improve error
                     panic!("mismatched types");
@@ -814,11 +828,11 @@ fn points_len(points_type: &PointsType) -> usize {
         PointsType::DoublePoints(points) => points.points.len(),
         PointsType::StringPoints(points) => points.points.len(),
         PointsType::IntegerPoints(points) => points.points.len(),
-        // is this correct?
         PointsType::ArrayPoints(points) => match &points.array_type {
             Some(ArrayType::DoubleArrayPoints(points)) => points.points.len(),
             Some(ArrayType::StringArrayPoints(points)) => points.points.len(),
             None => 0,
         },
+        PointsType::StructPoints(points) => points.points.len(),
     }
 }

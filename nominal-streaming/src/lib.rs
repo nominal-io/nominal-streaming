@@ -162,6 +162,8 @@ pub mod stream;
 mod types;
 pub mod upload;
 
+pub use nominal_api as api;
+
 /// This includes the most common types in this crate, re-exported for your convenience.
 pub mod prelude {
     pub use conjure_object::BearerToken;
