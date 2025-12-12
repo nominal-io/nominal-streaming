@@ -21,7 +21,7 @@ For example:
 
 - A file stream is constructed as:
 
-  ```rust
+  ```rust,no_run
   use nominal_streaming::stream::NominalDatasetStreamBuilder;
 
   let stream = NominalDatasetStreamBuilder::new()
