@@ -235,7 +235,7 @@ mod tests {
         (test_consumer, stream)
     }
 
-    #[test]
+    #[test_log::test]
     fn test_stream() {
         let (test_consumer, stream) = create_test_stream();
 
@@ -275,7 +275,7 @@ mod tests {
         }
     }
 
-    #[test]
+    #[test_log::test]
     fn test_stream_types() {
         let (test_consumer, stream) = create_test_stream();
 
