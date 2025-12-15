@@ -213,17 +213,22 @@ impl SeriesBuffer {
         count == 0 || count + new_points_count <= self.max_capacity
     }
 
-    pub(crate) fn lock(&self) -> SeriesBufferGuard<'_> {
+    pub(crate) fn with_lock<R>(&self, f: impl FnOnce(SeriesBufferGuard<'_>) -> R) -> R {
+        self.inner.with_lock(f)
+    }
+
+    pub(crate) fn _lock(&self) -> SeriesBufferGuard<'_> {
         self.inner.lock()
     }
 
     pub(crate) fn take(&self) -> (usize, Vec<Series>) {
-        let mut points = self.lock();
-        self.flush_time.store(
-            UNIX_EPOCH.elapsed().unwrap().as_nanos() as u64,
-            Ordering::Release,
-        );
-        points.take()
+        self.with_lock(|mut guard| {
+            self.flush_time.store(
+                UNIX_EPOCH.elapsed().unwrap().as_nanos() as u64,
+                Ordering::Release,
+            );
+            guard.take()
+        })
     }
 
     pub(crate) fn is_empty(&self) -> bool {
@@ -235,15 +240,16 @@ impl SeriesBuffer {
     }
 
     pub(crate) fn on_notify(&self, on_notify: impl FnOnce(SeriesBufferGuard)) {
-        let mut guard = self.inner.lock();
-        // concurrency bug without this - the buffer could have been emptied since we
-        // checked the count, so this will wait forever & block any new points from entering
-        if !guard.sb.is_empty() {
-            self.condvar.wait(&mut guard.sb);
-        } else {
-            debug!("buffer emptied since last check, skipping condvar wait");
-        }
-        on_notify(guard);
+        self.with_lock(|mut guard| {
+            // concurrency bug without this - the buffer could have been emptied since we
+            // checked the count, so this will wait forever & block any new points from entering
+            if !guard.sb.is_empty() {
+                self.condvar.wait(&mut guard.sb);
+            } else {
+                debug!("buffer emptied since last check, skipping condvar wait");
+            }
+            on_notify(guard);
+        })
     }
 
     pub(crate) fn notify(&self) -> bool {
@@ -272,5 +278,9 @@ impl SeriesBufferInner {
             sb: self.points.lock(),
             count: &self.count,
         }
+    }
+
+    fn with_lock<R>(&self, f: impl FnOnce(SeriesBufferGuard<'_>) -> R) -> R {
+        f(self.lock())
     }
 }

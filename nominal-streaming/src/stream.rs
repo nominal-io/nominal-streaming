@@ -356,12 +356,12 @@ impl NominalDatasetStream {
 
         if self.primary_buffer.has_capacity(new_count) {
             debug!("adding {} points to primary buffer", new_count);
-            callback(self.primary_buffer.lock());
+            self.primary_buffer.with_lock(callback);
         } else if self.secondary_buffer.has_capacity(new_count) {
             // primary buffer is definitely full
             self.primary_handle.thread().unpark();
             debug!("adding {} points to secondary buffer", new_count);
-            callback(self.secondary_buffer.lock());
+            self.secondary_buffer.with_lock(callback);
         } else {
             let buf = if self.primary_buffer < self.secondary_buffer {
                 info!("waiting for primary buffer to flush to append {new_count} points...");
