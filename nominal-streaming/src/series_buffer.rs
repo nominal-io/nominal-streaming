@@ -4,6 +4,7 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::time::UNIX_EPOCH;
 
+use inner::SeriesBufferInner;
 use nominal_api::tonic::io::nominal::scout::api::proto::array_points::ArrayType;
 use nominal_api::tonic::io::nominal::scout::api::proto::points::PointsType;
 use nominal_api::tonic::io::nominal::scout::api::proto::ArrayPoints;
@@ -11,7 +12,6 @@ use nominal_api::tonic::io::nominal::scout::api::proto::Channel;
 use nominal_api::tonic::io::nominal::scout::api::proto::Points;
 use nominal_api::tonic::io::nominal::scout::api::proto::Series;
 use parking_lot::Condvar;
-use parking_lot::Mutex;
 use parking_lot::MutexGuard;
 use tracing::debug;
 
@@ -24,11 +24,6 @@ pub(crate) struct SeriesBuffer {
     flush_time: AtomicU64,
     condvar: Condvar,
     max_capacity: usize,
-}
-
-struct SeriesBufferInner {
-    points: Mutex<HashMap<ChannelDescriptor, PointsType>>,
-    count: AtomicUsize,
 }
 
 pub(crate) struct SeriesBufferGuard<'sb> {
@@ -257,30 +252,41 @@ impl SeriesBuffer {
     }
 }
 
-impl SeriesBufferInner {
-    fn new() -> Self {
-        Self {
-            points: Mutex::new(HashMap::new()),
-            count: AtomicUsize::new(0),
+mod inner {
+    use parking_lot::Mutex;
+
+    use super::*;
+
+    pub(super) struct SeriesBufferInner {
+        points: Mutex<HashMap<ChannelDescriptor, PointsType>>,
+        count: AtomicUsize,
+    }
+
+    impl SeriesBufferInner {
+        pub(super) fn new() -> Self {
+            Self {
+                points: Mutex::new(HashMap::new()),
+                count: AtomicUsize::new(0),
+            }
         }
-    }
 
-    fn count(&self) -> usize {
-        self.count.load(Ordering::Acquire)
-    }
-
-    fn is_empty(&self) -> bool {
-        self.count() == 0
-    }
-
-    fn lock(&self) -> SeriesBufferGuard<'_> {
-        SeriesBufferGuard {
-            sb: self.points.lock(),
-            count: &self.count,
+        pub(super) fn count(&self) -> usize {
+            self.count.load(Ordering::Acquire)
         }
-    }
 
-    fn with_lock<R>(&self, f: impl FnOnce(SeriesBufferGuard<'_>) -> R) -> R {
-        f(self.lock())
+        pub(super) fn is_empty(&self) -> bool {
+            self.count() == 0
+        }
+
+        pub(super) fn lock(&self) -> SeriesBufferGuard<'_> {
+            SeriesBufferGuard {
+                sb: self.points.lock(),
+                count: &self.count,
+            }
+        }
+
+        pub(super) fn with_lock<R>(&self, f: impl FnOnce(SeriesBufferGuard<'_>) -> R) -> R {
+            f(self.lock())
+        }
     }
 }
