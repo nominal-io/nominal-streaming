@@ -42,6 +42,7 @@ use crate::listener::LoggingListener;
 use crate::types::ChannelDescriptor;
 use crate::types::IntoPoints;
 use crate::types::IntoTimestamp;
+use crate::types::PointsTypeExt;
 
 #[derive(Debug, Clone)]
 pub struct NominalStreamOpts {
@@ -352,7 +353,7 @@ impl NominalDatasetStream {
 
     pub fn enqueue(&self, channel_descriptor: &ChannelDescriptor, new_points: impl IntoPoints) {
         let new_points = new_points.into_points();
-        let new_count = points_len(&new_points);
+        let new_count = new_points.len();
 
         self.when_capacity(new_count, |mut sb| {
             sb.extend(channel_descriptor, new_points)
@@ -510,7 +511,7 @@ struct SeriesBufferGuard<'sb> {
 impl SeriesBufferGuard<'_> {
     fn extend(&mut self, channel_descriptor: &ChannelDescriptor, points: impl IntoPoints) {
         let points = points.into_points();
-        let new_point_count = points_len(&points);
+        let new_point_count = points.len();
 
         if !self.sb.contains_key(channel_descriptor) {
             self.sb.insert(channel_descriptor.clone(), points);
@@ -821,18 +822,4 @@ fn request_dispatcher<C: WriteRequestConsumer + 'static>(
         "request dispatcher thread exiting. total request time: {}",
         total_request_time
     );
-}
-
-fn points_len(points_type: &PointsType) -> usize {
-    match points_type {
-        PointsType::DoublePoints(points) => points.points.len(),
-        PointsType::StringPoints(points) => points.points.len(),
-        PointsType::IntegerPoints(points) => points.points.len(),
-        PointsType::ArrayPoints(points) => match &points.array_type {
-            Some(ArrayType::DoubleArrayPoints(points)) => points.points.len(),
-            Some(ArrayType::StringArrayPoints(points)) => points.points.len(),
-            None => 0,
-        },
-        PointsType::StructPoints(points) => points.points.len(),
-    }
 }
