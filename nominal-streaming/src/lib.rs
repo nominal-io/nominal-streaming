@@ -158,6 +158,7 @@ let stream = NominalDatasetStreamBuilder::new()
 pub mod client;
 pub mod consumer;
 pub mod listener;
+mod series_buffer;
 pub mod stream;
 mod types;
 pub mod upload;
