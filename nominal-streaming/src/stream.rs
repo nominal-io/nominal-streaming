@@ -714,8 +714,9 @@ impl SeriesBuffer {
 }
 
 mod inner {
-    use super::*;
     use parking_lot::Mutex;
+
+    use super::*;
 
     pub(super) struct SeriesBufferInner {
         points: Mutex<HashMap<ChannelDescriptor, PointsType>>,
