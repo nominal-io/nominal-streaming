@@ -13,6 +13,7 @@ use std::time::UNIX_EPOCH;
 
 use conjure_object::BearerToken;
 use conjure_object::ResourceIdentifier;
+use inner::SeriesBufferInner;
 use nominal_api::tonic::io::nominal::scout::api::proto::array_points::ArrayType;
 use nominal_api::tonic::io::nominal::scout::api::proto::points::PointsType;
 use nominal_api::tonic::io::nominal::scout::api::proto::ArrayPoints;
@@ -24,7 +25,6 @@ use nominal_api::tonic::io::nominal::scout::api::proto::Series;
 use nominal_api::tonic::io::nominal::scout::api::proto::StringPoint;
 use nominal_api::tonic::io::nominal::scout::api::proto::WriteRequestNominal;
 use parking_lot::Condvar;
-use parking_lot::Mutex;
 use parking_lot::MutexGuard;
 use tracing::debug;
 use tracing::error;
@@ -501,11 +501,6 @@ struct SeriesBuffer {
     max_capacity: usize,
 }
 
-struct SeriesBufferInner {
-    points: Mutex<HashMap<ChannelDescriptor, PointsType>>,
-    count: AtomicUsize,
-}
-
 struct SeriesBufferGuard<'sb> {
     sb: MutexGuard<'sb, HashMap<ChannelDescriptor, PointsType>>,
     count: &'sb AtomicUsize,
@@ -718,22 +713,32 @@ impl SeriesBuffer {
     }
 }
 
-impl SeriesBufferInner {
-    fn new() -> Self {
-        Self {
-            points: Mutex::new(HashMap::new()),
-            count: AtomicUsize::new(0),
+mod inner {
+    use super::*;
+    use parking_lot::Mutex;
+
+    pub(super) struct SeriesBufferInner {
+        points: Mutex<HashMap<ChannelDescriptor, PointsType>>,
+        count: AtomicUsize,
+    }
+
+    impl SeriesBufferInner {
+        pub(super) fn new() -> Self {
+            Self {
+                points: Mutex::new(HashMap::new()),
+                count: AtomicUsize::new(0),
+            }
         }
-    }
 
-    fn count(&self) -> usize {
-        self.count.load(Ordering::Acquire)
-    }
+        pub(super) fn count(&self) -> usize {
+            self.count.load(Ordering::Acquire)
+        }
 
-    fn lock(&self) -> SeriesBufferGuard<'_> {
-        SeriesBufferGuard {
-            sb: self.points.lock(),
-            count: &self.count,
+        pub(super) fn lock(&self) -> SeriesBufferGuard<'_> {
+            SeriesBufferGuard {
+                sb: self.points.lock(),
+                count: &self.count,
+            }
         }
     }
 }
