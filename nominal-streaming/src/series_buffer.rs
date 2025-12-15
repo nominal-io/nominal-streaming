@@ -20,11 +20,15 @@ use crate::types::IntoPoints;
 use crate::types::PointsTypeExt;
 
 pub(crate) struct SeriesBuffer {
-    points: Mutex<HashMap<ChannelDescriptor, PointsType>>,
-    count: AtomicUsize,
+    inner: SeriesBufferInner,
     flush_time: AtomicU64,
     condvar: Condvar,
     max_capacity: usize,
+}
+
+struct SeriesBufferInner {
+    points: Mutex<HashMap<ChannelDescriptor, PointsType>>,
+    count: AtomicUsize,
 }
 
 pub(crate) struct SeriesBufferGuard<'sb> {
@@ -193,8 +197,7 @@ impl PartialOrd for SeriesBuffer {
 impl SeriesBuffer {
     pub(crate) fn new(capacity: usize) -> Self {
         Self {
-            points: Mutex::new(HashMap::new()),
-            count: AtomicUsize::new(0),
+            inner: SeriesBufferInner::new(),
             flush_time: AtomicU64::new(0),
             condvar: Condvar::new(),
             max_capacity: capacity,
@@ -206,15 +209,12 @@ impl SeriesBuffer {
     /// larger than MAX_POINTS_PER_RECORD is inserted while the buffer is empty. This avoids needing
     /// to handle splitting batches of points across multiple requests.
     pub(crate) fn has_capacity(&self, new_points_count: usize) -> bool {
-        let count = self.count.load(Ordering::Acquire);
+        let count = self.count();
         count == 0 || count + new_points_count <= self.max_capacity
     }
 
     pub(crate) fn lock(&self) -> SeriesBufferGuard<'_> {
-        SeriesBufferGuard {
-            sb: self.points.lock(),
-            count: &self.count,
-        }
+        self.inner.lock()
     }
 
     pub(crate) fn take(&self) -> (usize, Vec<Series>) {
@@ -227,29 +227,50 @@ impl SeriesBuffer {
     }
 
     pub(crate) fn is_empty(&self) -> bool {
-        self.count() == 0
+        self.inner.is_empty()
     }
 
     pub(crate) fn count(&self) -> usize {
-        self.count.load(Ordering::Acquire)
+        self.inner.count()
     }
 
     pub(crate) fn on_notify(&self, on_notify: impl FnOnce(SeriesBufferGuard)) {
-        let mut points_lock = self.points.lock();
+        let mut guard = self.inner.lock();
         // concurrency bug without this - the buffer could have been emptied since we
         // checked the count, so this will wait forever & block any new points from entering
-        if !points_lock.is_empty() {
-            self.condvar.wait(&mut points_lock);
+        if !guard.sb.is_empty() {
+            self.condvar.wait(&mut guard.sb);
         } else {
             debug!("buffer emptied since last check, skipping condvar wait");
         }
-        on_notify(SeriesBufferGuard {
-            sb: points_lock,
-            count: &self.count,
-        });
+        on_notify(guard);
     }
 
     pub(crate) fn notify(&self) -> bool {
         self.condvar.notify_one()
+    }
+}
+
+impl SeriesBufferInner {
+    fn new() -> Self {
+        Self {
+            points: Mutex::new(HashMap::new()),
+            count: AtomicUsize::new(0),
+        }
+    }
+
+    fn count(&self) -> usize {
+        self.count.load(Ordering::Acquire)
+    }
+
+    fn is_empty(&self) -> bool {
+        self.count() == 0
+    }
+
+    fn lock(&self) -> SeriesBufferGuard<'_> {
+        SeriesBufferGuard {
+            sb: self.points.lock(),
+            count: &self.count,
+        }
     }
 }
