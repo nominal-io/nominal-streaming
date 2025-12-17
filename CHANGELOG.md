@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.2](https://github.com/nominal-io/nominal-streaming/compare/v0.7.1...v0.7.2) - 2025-12-17
+
+### Fixed
+
+- load unflushed points count once per loop while dropping ([#133](https://github.com/nominal-io/nominal-streaming/pull/133))
+
+### Other
+
+- enable tracing for all tests ([#132](https://github.com/nominal-io/nominal-streaming/pull/132))
+- prevent doctests from generating artifact ([#131](https://github.com/nominal-io/nominal-streaming/pull/131))
+
 ## [0.7.1](https://github.com/nominal-io/nominal-streaming/compare/v0.7.0...v0.7.1) - 2025-12-12
 
 ### Other
