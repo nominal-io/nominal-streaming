@@ -4,6 +4,7 @@ use std::time::Duration;
 use conjure_object::BearerToken;
 use nominal_api::api::rids::WorkspaceRid;
 use nominal_api::tonic::google::protobuf::Timestamp;
+use nominal_api::tonic::io::nominal::scout::api::proto::array_points::ArrayType;
 use nominal_api::tonic::io::nominal::scout::api::proto::points::PointsType;
 use nominal_api::tonic::io::nominal::scout::api::proto::DoublePoint;
 use nominal_api::tonic::io::nominal::scout::api::proto::DoublePoints;
@@ -115,6 +116,26 @@ impl IntoTimestamp for i64 {
         Timestamp {
             seconds: (self / NANOS_PER_SECOND),
             nanos: (self % NANOS_PER_SECOND) as i32,
+        }
+    }
+}
+
+pub trait PointsTypeExt {
+    fn len(&self) -> usize;
+}
+
+impl PointsTypeExt for PointsType {
+    fn len(&self) -> usize {
+        match self {
+            PointsType::DoublePoints(points) => points.points.len(),
+            PointsType::StringPoints(points) => points.points.len(),
+            PointsType::IntegerPoints(points) => points.points.len(),
+            PointsType::ArrayPoints(points) => match &points.array_type {
+                Some(ArrayType::DoubleArrayPoints(points)) => points.points.len(),
+                Some(ArrayType::StringArrayPoints(points)) => points.points.len(),
+                None => 0,
+            },
+            PointsType::StructPoints(points) => points.points.len(),
         }
     }
 }
