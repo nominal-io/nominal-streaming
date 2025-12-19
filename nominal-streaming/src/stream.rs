@@ -533,6 +533,9 @@ impl SeriesBufferGuard<'_> {
                         array_type: Some(ArrayType::DoubleArrayPoints(new)),
                     }),
                 ) => existing.points.extend(new.points),
+                (PointsType::Uint64Points(existing), PointsType::Uint64Points(new)) => {
+                    existing.points.extend(new.points)
+                }
                 (
                     PointsType::ArrayPoints(ArrayPoints {
                         array_type: Some(ArrayType::StringArrayPoints(existing)),
@@ -552,6 +555,7 @@ impl SeriesBufferGuard<'_> {
                 (
                     PointsType::DoublePoints(_),
                     PointsType::IntegerPoints(_)
+                    | PointsType::Uint64Points(_)
                     | PointsType::StringPoints(_)
                     | PointsType::ArrayPoints(_)
                     | PointsType::StructPoints(_),
@@ -560,12 +564,14 @@ impl SeriesBufferGuard<'_> {
                     PointsType::StringPoints(_),
                     PointsType::DoublePoints(_)
                     | PointsType::IntegerPoints(_)
+                    | PointsType::Uint64Points(_)
                     | PointsType::ArrayPoints(_)
                     | PointsType::StructPoints(_),
                 )
                 | (
                     PointsType::IntegerPoints(_),
                     PointsType::DoublePoints(_)
+                    | PointsType::Uint64Points(_)
                     | PointsType::StringPoints(_)
                     | PointsType::ArrayPoints(_)
                     | PointsType::StructPoints(_),
@@ -573,6 +579,7 @@ impl SeriesBufferGuard<'_> {
                 | (
                     PointsType::ArrayPoints(_),
                     PointsType::DoublePoints(_)
+                    | PointsType::Uint64Points(_)
                     | PointsType::StringPoints(_)
                     | PointsType::IntegerPoints(_)
                     | PointsType::StructPoints(_),
@@ -606,8 +613,17 @@ impl SeriesBufferGuard<'_> {
                     }),
                 )
                 | (
+                    PointsType::Uint64Points(_),
+                    PointsType::IntegerPoints(_)
+                    | PointsType::StringPoints(_)
+                    | PointsType::DoublePoints(_)
+                    | PointsType::ArrayPoints(_)
+                    | PointsType::StructPoints(_),
+                )
+                | (
                     PointsType::StructPoints(_),
                     PointsType::DoublePoints(_)
+                    | PointsType::Uint64Points(_)
                     | PointsType::StringPoints(_)
                     | PointsType::IntegerPoints(_)
                     | PointsType::ArrayPoints(_),
@@ -831,6 +847,7 @@ fn points_len(points_type: &PointsType) -> usize {
         PointsType::DoublePoints(points) => points.points.len(),
         PointsType::StringPoints(points) => points.points.len(),
         PointsType::IntegerPoints(points) => points.points.len(),
+        PointsType::Uint64Points(points) => points.points.len(),
         PointsType::ArrayPoints(points) => match &points.array_type {
             Some(ArrayType::DoubleArrayPoints(points)) => points.points.len(),
             Some(ArrayType::StringArrayPoints(points)) => points.points.len(),
