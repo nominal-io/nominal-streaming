@@ -19,7 +19,7 @@ futures = "0.3"
 nominal-api = "0.1046"
 parking_lot = "0.12"
 prost = "0.13"
-reqwest = "0.12.22"
+reqwest = "0.12.26"
 serde_json = "1.0.140"
 snap = "1"
 thiserror = "2"
@@ -29,7 +29,7 @@ tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 url = "2.5.4"
 
 # Test dependencies
-test-log = { version = "0.2.18", features = ["trace"] }
+test-log = { version = "0.2.19", features = ["trace"] }
 
 # Allow workspace packages to access core package
 nominal-streaming = { path = "nominal-streaming" }
