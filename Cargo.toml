@@ -3,6 +3,9 @@ members = [
     "nominal-streaming",
     "py-nominal-streaming",
 ]
+# Require opt-in for building python bindings (should be built with maturin, not cargo)
+default-members = ["nominal-streaming"]
+
 resolver = "2"
 
 [workspace.dependencies]
