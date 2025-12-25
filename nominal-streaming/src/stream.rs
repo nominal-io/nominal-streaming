@@ -636,6 +636,31 @@ impl SeriesBufferGuard<'_> {
 
         self.count.fetch_add(new_point_count, Ordering::Release);
     }
+
+    fn take(&mut self) -> (usize, Vec<Series>) {
+        let result = self
+            .sb
+            .drain()
+            .map(|(ChannelDescriptor { name, tags }, points)| {
+                let channel = Channel { name };
+                let points_obj = Points {
+                    points_type: Some(points),
+                };
+                Series {
+                    channel: Some(channel),
+                    tags: tags
+                        .map(|tags| tags.into_iter().collect())
+                        .unwrap_or_default(),
+                    points: Some(points_obj),
+                }
+            })
+            .collect();
+        let result_count = self
+            .count
+            .fetch_update(Ordering::Release, Ordering::Acquire, |_| Some(0))
+            .unwrap();
+        (result_count, result)
+    }
 }
 
 impl PartialEq for SeriesBuffer {
@@ -685,28 +710,7 @@ impl SeriesBuffer {
             UNIX_EPOCH.elapsed().unwrap().as_nanos() as u64,
             Ordering::Release,
         );
-        let result = points
-            .sb
-            .drain()
-            .map(|(ChannelDescriptor { name, tags }, points)| {
-                let channel = Channel { name };
-                let points_obj = Points {
-                    points_type: Some(points),
-                };
-                Series {
-                    channel: Some(channel),
-                    tags: tags
-                        .map(|tags| tags.into_iter().collect())
-                        .unwrap_or_default(),
-                    points: Some(points_obj),
-                }
-            })
-            .collect();
-        let result_count = self
-            .count
-            .fetch_update(Ordering::Release, Ordering::Acquire, |_| Some(0))
-            .unwrap();
-        (result_count, result)
+        points.take()
     }
 
     fn is_empty(&self) -> bool {
