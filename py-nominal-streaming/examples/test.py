@@ -4,11 +4,18 @@ import time
 from nominal.core import NominalClient
 from nominal_streaming import NominalDatasetStream, PyNominalStreamOpts
 
+logger = logging.getLogger(__name__)
+
 if __name__ == "__main__":
     logging.basicConfig(level=logging.DEBUG)
     num_rows = 100_000
     num_batches = 1000
-    client = NominalClient.from_profile("production")
+    client = NominalClient.from_profile("staging")
+    dataset = client.create_dataset("py-nominal-streaming test")
+
+    auth_header = client._clients.auth_header.split()[-1]
+    base_api_url = client._clients.authentication._uri
+
     stream = (
         NominalDatasetStream(
             auth_header=client._clients.auth_header.split()[-1],
@@ -17,12 +24,15 @@ if __name__ == "__main__":
                 max_buffered_requests=4,
                 num_runtime_workers=20,
                 max_points_per_batch=100_000,
+                base_api_url=base_api_url,
             ),
         )
         .enable_logging("info")
-        .with_core_consumer(client.create_dataset("drake test").rid)
+        .with_core_consumer(dataset.rid)
         # .to_file(pathlib.Path("test.avro"))
     )
+    logger.info("Streaming to dataset %s", dataset.nominal_url)
+
     start_time = time.time()
     offset = 1.0 / 1600
     curr_offset = 0.0
@@ -36,16 +46,21 @@ if __name__ == "__main__":
             stream.enqueue_batch("drake_test_channel4", timestamps, values)
             batch_enqueue_end = time.time()
 
-            print(
-                "Batch took",
+            logger.info(
+                "Batch took %f seconds; build took %f seconds; enqueue took %f seconds",
                 batch_enqueue_end - batch_build_start,
-                "seconds; build took",
                 batch_build_end - batch_build_start,
-                "seconds; enqueue took",
                 batch_enqueue_end - batch_build_end,
-                "seconds",
             )
         enqueue_end = time.time()
     end_time = time.time()
 
-    print(enqueue_end - start_time, end_time - enqueue_end, end_time - start_time)
+    logger.info(
+        "Overall: %f seconds to enqueue; %f seconds to flush, %f seconds overall",
+        enqueue_end - start_time,
+        end_time - enqueue_end,
+        end_time - start_time,
+    )
+
+    dataset.archive()
+    logger.info("Archived dataset %s", dataset.nominal_url)
