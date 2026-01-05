@@ -41,10 +41,6 @@ jobs:
             target: armv7
             manylinux: auto
             env: {}
-          - label: linux-aarch64
-            os: linux
-            runner: ubuntu-22.04-arm64
-            target:
 
           # --- musllinux ---
           - label: musllinux-x86_64
