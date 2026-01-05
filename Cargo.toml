@@ -5,6 +5,9 @@ members = [
 ]
 resolver = "2"
 
+# Require opt-in for building python bindings (should be built with maturin, not cargo)
+default-members = ["nominal-streaming"]
+
 [workspace.dependencies]
 apache-avro = { version = "0.17.0", features = ["snappy"] }
 async-channel = "2.5.0"
