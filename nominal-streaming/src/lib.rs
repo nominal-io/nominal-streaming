@@ -159,7 +159,7 @@ pub mod client;
 pub mod consumer;
 pub mod listener;
 pub mod stream;
-mod types;
+pub mod types;
 pub mod upload;
 
 pub use nominal_api as api;
