@@ -204,7 +204,6 @@ mod tests {
     use crate::consumer::ConsumerResult;
     use crate::consumer::WriteRequestConsumer;
     use crate::prelude::*;
-    use crate::types::IntoTimestamp;
 
     #[derive(Debug)]
     struct TestDatasourceStream {
