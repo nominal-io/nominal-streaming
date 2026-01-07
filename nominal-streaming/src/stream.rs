@@ -496,6 +496,10 @@ impl NominalStringWriter<'_> {
 
 struct SeriesBuffer {
     points: Mutex<HashMap<ChannelDescriptor, PointsType>>,
+    /// The total number of data points in the buffer.
+    ///
+    /// To ensure that `count` stays in sync with the contents of the `HashMap`,
+    /// only update `count` through the `SeriesBufferGuard`.
     count: AtomicUsize,
     flush_time: AtomicU64,
     condvar: Condvar,
@@ -702,7 +706,7 @@ impl SeriesBuffer {
                 }
             })
             .collect();
-        let result_count = self
+        let result_count = points
             .count
             .fetch_update(Ordering::Release, Ordering::Acquire, |_| Some(0))
             .unwrap();
