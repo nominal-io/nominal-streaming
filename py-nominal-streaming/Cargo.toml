@@ -3,7 +3,7 @@ name = "py-nominal-streaming"
 description = "Python bindings for the nominal-streaming Rust library"
 edition = "2021"
 license = "MIT"
-version = "0.7.4"
+version = "0.7.5"
 readme = "README.md"
 repository = "https://github.com/nominal-io/nominal-streaming"
 
