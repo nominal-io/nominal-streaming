@@ -159,7 +159,7 @@ pub mod client;
 pub mod consumer;
 pub mod listener;
 pub mod stream;
-mod types;
+pub mod types;
 pub mod upload;
 
 pub use nominal_api as api;
@@ -186,6 +186,7 @@ pub mod prelude {
     pub use crate::stream::NominalStreamOpts;
     pub use crate::types::AuthProvider;
     pub use crate::types::ChannelDescriptor;
+    pub use crate::types::IntoTimestamp;
 }
 
 #[cfg(test)]
@@ -203,7 +204,6 @@ mod tests {
     use crate::consumer::ConsumerResult;
     use crate::consumer::WriteRequestConsumer;
     use crate::prelude::*;
-    use crate::types::IntoTimestamp;
 
     #[derive(Debug)]
     struct TestDatasourceStream {
