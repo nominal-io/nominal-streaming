@@ -186,6 +186,7 @@ pub mod prelude {
     pub use crate::stream::NominalStreamOpts;
     pub use crate::types::AuthProvider;
     pub use crate::types::ChannelDescriptor;
+    pub use crate::types::IntoTimestamp;
 }
 
 #[cfg(test)]
