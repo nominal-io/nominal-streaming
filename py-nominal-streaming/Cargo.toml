@@ -14,7 +14,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 # PyO3 with a stable ABI across Python 3.10+.
-pyo3 = { version = "0.26", features = ["extension-module", "abi3-py310", "time"] }
+pyo3 = { version = "0.27", features = ["extension-module", "abi3-py310", "time"] }
 
 nominal-api = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "time"] }
