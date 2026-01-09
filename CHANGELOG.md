@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.6](https://github.com/nominal-io/nominal-streaming/compare/v0.7.5...v0.7.6) - 2026-01-09
+
+### Added
+
+- support init from shared conjure clients ([#178](https://github.com/nominal-io/nominal-streaming/pull/178))
+- add support for uint64 ([#177](https://github.com/nominal-io/nominal-streaming/pull/177))
+
 ## [0.7.5](https://github.com/nominal-io/nominal-streaming/compare/v0.7.4...v0.7.5) - 2026-01-07
 
 ### Added
