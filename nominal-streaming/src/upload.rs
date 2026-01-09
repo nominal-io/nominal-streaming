@@ -457,7 +457,7 @@ impl FileObjectStoreUploader {
         }
 
         let initiate_response = self
-            .initiate_upload(token, file_name, workspace_rid.map(WorkspaceRid::from))
+            .initiate_upload(token, file_name, workspace_rid)
             .await?;
         let upload_id = initiate_response.upload_id();
         let key = initiate_response.key();
