@@ -285,6 +285,7 @@ mod tests {
             let mut doubles = Vec::new();
             let mut strings = Vec::new();
             let mut ints = Vec::new();
+            let mut uints = Vec::new();
             for i in 0..1000 {
                 let start_time = UNIX_EPOCH.elapsed().unwrap();
                 doubles.push(DoublePoint {
@@ -298,6 +299,10 @@ mod tests {
                 ints.push(IntegerPoint {
                     timestamp: Some(start_time.into_timestamp()),
                     value: i % 50,
+                });
+                uints.push(Uint64Point {
+                    timestamp: Some(start_time.into_timestamp()),
+                    value: (i % 50) as u64,
                 })
             }
 
@@ -341,6 +346,10 @@ mod tests {
             panic!("invalid int points type");
         };
 
+        let PointsType::Uint64Points(up) = r.get("uint64").unwrap() else {
+            panic!("invalid uint64 points type");
+        };
+
         let PointsType::StringPoints(sp) = r.get("string").unwrap() else {
             panic!("invalid string points type");
         };
@@ -349,6 +358,7 @@ mod tests {
         assert_eq!(dp.points.len(), 1000);
         assert_eq!(sp.points.len(), 1000);
         assert_eq!(ip.points.len(), 1000);
+        assert_eq!(up.points.len(), 1000);
     }
 
     #[test_log::test]
@@ -408,9 +418,11 @@ mod tests {
         let cd1 = ChannelDescriptor::new("double");
         let cd2 = ChannelDescriptor::new("string");
         let cd3 = ChannelDescriptor::new("int");
+        let cd4 = ChannelDescriptor::new("uint64");
         let mut double_writer = stream.double_writer(&cd1);
         let mut string_writer = stream.string_writer(&cd2);
         let mut integer_writer = stream.integer_writer(&cd3);
+        let mut uint64_writer = stream.uint64_writer(&cd4);
 
         for i in 0..5000 {
             let start_time = UNIX_EPOCH.elapsed().unwrap();
@@ -418,11 +430,13 @@ mod tests {
             double_writer.push(start_time, value as f64);
             string_writer.push(start_time, format!("{}", value));
             integer_writer.push(start_time, value);
+            uint64_writer.push(start_time, value as u64);
         }
 
         drop(double_writer);
         drop(string_writer);
         drop(integer_writer);
+        drop(uint64_writer);
         drop(stream);
 
         let requests = test_consumer.requests.lock().unwrap();
@@ -448,6 +462,10 @@ mod tests {
             panic!("invalid int points type");
         };
 
+        let PointsType::Uint64Points(up) = r.get("uint64").unwrap() else {
+            panic!("invalid uint64 points type");
+        };
+
         let PointsType::StringPoints(sp) = r.get("string").unwrap() else {
             panic!("invalid string points type");
         };
@@ -456,5 +474,6 @@ mod tests {
         assert_eq!(dp.points.len(), 1000);
         assert_eq!(sp.points.len(), 1000);
         assert_eq!(ip.points.len(), 1000);
+        assert_eq!(up.points.len(), 1000);
     }
 }

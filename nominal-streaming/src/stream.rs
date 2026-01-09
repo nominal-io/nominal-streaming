@@ -351,6 +351,15 @@ impl NominalDatasetStream {
         }
     }
 
+    pub fn uint64_writer<'a>(
+        &'a self,
+        channel_descriptor: &'a ChannelDescriptor,
+    ) -> NominalUint64Writer<'a> {
+        NominalUint64Writer {
+            writer: NominalChannelWriter::new(self, channel_descriptor),
+        }
+    }
+
     pub fn enqueue(&self, channel_descriptor: &ChannelDescriptor, new_points: impl IntoPoints) {
         let new_points = new_points.into_points();
         let new_count = points_len(&new_points);
