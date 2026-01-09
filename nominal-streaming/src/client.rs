@@ -82,21 +82,22 @@ impl Debug for NominalApiClients {
 impl NominalApiClients {
     pub fn from_uri(base_uri: &str) -> Self {
         let base_uri = base_uri.parse::<url::Url>().unwrap();
-        let streaming = async_conjure_streaming_client(base_uri.clone()).expect("Failed to create streaming client");
-        let services = async_conjure_client("upload-ingest", base_uri).expect("Failed to create upload/ingest client");
+        let streaming = async_conjure_streaming_client(base_uri.clone())
+            .expect("Failed to create streaming client");
+        let services = async_conjure_client("upload-ingest", base_uri)
+            .expect("Failed to create upload/ingest client");
         Self::from_conjure_clients(streaming, services)
     }
 
     /// NOTE: the conjure client type is a shared handle, and cheap to clone.
-    pub fn from_conjure_clients(streaming: PlatformVerifierClient, services: PlatformVerifierClient) -> Self {
+    pub fn from_conjure_clients(
+        streaming: PlatformVerifierClient,
+        services: PlatformVerifierClient,
+    ) -> Self {
         Self {
             streaming,
-            upload: UploadServiceAsyncClient::new(
-                services.clone(),
-            ),
-            ingest: IngestServiceAsyncClient::new(
-                services,
-            ),
+            upload: UploadServiceAsyncClient::new(services.clone()),
+            ingest: IngestServiceAsyncClient::new(services),
         }
     }
 
@@ -127,7 +128,10 @@ pub fn async_conjure_streaming_client(uri: Url) -> Result<PlatformVerifierClient
         .build()
 }
 
-pub fn async_conjure_client(service: &'static str, uri: Url) -> Result<PlatformVerifierClient, Error> {
+pub fn async_conjure_client(
+    service: &'static str,
+    uri: Url,
+) -> Result<PlatformVerifierClient, Error> {
     Client::builder()
         .service(service)
         .user_agent(UserAgent::new(Agent::new(
