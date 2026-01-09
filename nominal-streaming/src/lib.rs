@@ -318,6 +318,10 @@ mod tests {
                 &ChannelDescriptor::with_tags("int", [("batch_id", batch.to_string())]),
                 ints,
             );
+            stream.enqueue(
+                &ChannelDescriptor::with_tags("uint64", [("batch_id", batch.to_string())]),
+                uints,
+            );
         }
 
         drop(stream); // wait for points to flush
@@ -326,7 +330,7 @@ mod tests {
 
         // validate that the requests were flushed based on the max_records value, not the
         // max request delay
-        assert_eq!(requests.len(), 15);
+        assert_eq!(requests.len(), 20);
 
         let r = requests
             .iter()
@@ -441,7 +445,7 @@ mod tests {
 
         let requests = test_consumer.requests.lock().unwrap();
 
-        assert_eq!(requests.len(), 15);
+        assert_eq!(requests.len(), 20);
 
         let r = requests
             .iter()
