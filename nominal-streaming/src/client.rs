@@ -80,18 +80,24 @@ impl Debug for NominalApiClients {
 }
 
 impl NominalApiClients {
-    pub fn from_uri(base_uri: &str) -> NominalApiClients {
-        NominalApiClients {
-            streaming: async_conjure_streaming_client(base_uri.try_into().unwrap())
-                .expect("Failed to create streaming client"),
-            upload: UploadServiceAsyncClient::new(
-                async_conjure_client("upload", base_uri.try_into().unwrap())
-                    .expect("Failed to create upload client"),
-            ),
-            ingest: IngestServiceAsyncClient::new(
-                async_conjure_client("ingest", base_uri.try_into().unwrap())
-                    .expect("Failed to create ingest client"),
-            ),
+    pub fn from_uri(base_uri: &str) -> Self {
+        let base_uri = base_uri.parse::<url::Url>().unwrap();
+        let streaming = async_conjure_streaming_client(base_uri.clone())
+            .expect("Failed to create streaming client");
+        let services = async_conjure_client("upload-ingest", base_uri)
+            .expect("Failed to create upload/ingest client");
+        Self::from_conjure_clients(streaming, services)
+    }
+
+    /// NOTE: the conjure client type is a shared handle, and cheap to clone.
+    pub fn from_conjure_clients(
+        streaming: PlatformVerifierClient,
+        services: PlatformVerifierClient,
+    ) -> Self {
+        Self {
+            streaming,
+            upload: UploadServiceAsyncClient::new(services.clone()),
+            ingest: IngestServiceAsyncClient::new(services),
         }
     }
 
@@ -103,7 +109,7 @@ impl NominalApiClients {
 pub static PRODUCTION_CLIENTS: LazyLock<NominalApiClients> =
     LazyLock::new(|| NominalApiClients::from_uri(PRODUCTION_API_URL));
 
-fn async_conjure_streaming_client(uri: Url) -> Result<PlatformVerifierClient, Error> {
+pub fn async_conjure_streaming_client(uri: Url) -> Result<PlatformVerifierClient, Error> {
     Client::builder()
         .service("core-streaming-rs")
         .user_agent(UserAgent::new(Agent::new(
@@ -122,7 +128,10 @@ fn async_conjure_streaming_client(uri: Url) -> Result<PlatformVerifierClient, Er
         .build()
 }
 
-fn async_conjure_client(service: &'static str, uri: Url) -> Result<PlatformVerifierClient, Error> {
+pub fn async_conjure_client(
+    service: &'static str,
+    uri: Url,
+) -> Result<PlatformVerifierClient, Error> {
     Client::builder()
         .service(service)
         .user_agent(UserAgent::new(Agent::new(
