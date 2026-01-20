@@ -98,7 +98,6 @@ impl IntoPoints for Vec<StructPoint> {
     }
 }
 
-
 impl IntoPoints for Vec<Uint64Point> {
     fn into_points(self) -> PointsType {
         PointsType::Uint64Points(Uint64Points { points: self })
