@@ -176,6 +176,8 @@ pub mod prelude {
     pub use nominal_api::tonic::io::nominal::scout::api::proto::IntegerPoints;
     pub use nominal_api::tonic::io::nominal::scout::api::proto::StringPoint;
     pub use nominal_api::tonic::io::nominal::scout::api::proto::StringPoints;
+    pub use nominal_api::tonic::io::nominal::scout::api::proto::StructPoint;
+    pub use nominal_api::tonic::io::nominal::scout::api::proto::StructPoints;
     pub use nominal_api::tonic::io::nominal::scout::api::proto::Uint64Point;
     pub use nominal_api::tonic::io::nominal::scout::api::proto::Uint64Points;
     pub use nominal_api::tonic::io::nominal::scout::api::proto::WriteRequest;
@@ -284,6 +286,7 @@ mod tests {
         for batch in 0..5 {
             let mut doubles = Vec::new();
             let mut strings = Vec::new();
+            let mut structs = Vec::new();
             let mut ints = Vec::new();
             let mut uints = Vec::new();
             for i in 0..1000 {
@@ -295,6 +298,10 @@ mod tests {
                 strings.push(StringPoint {
                     timestamp: Some(start_time.into_timestamp()),
                     value: format!("{}", i % 50),
+                });
+                structs.push(StructPoint {
+                    timestamp: Some(start_time.into_timestamp()),
+                    json_string: format!("{}", i % 50),
                 });
                 ints.push(IntegerPoint {
                     timestamp: Some(start_time.into_timestamp()),
@@ -315,6 +322,10 @@ mod tests {
                 strings,
             );
             stream.enqueue(
+                &ChannelDescriptor::with_tags("struct", [("batch_id", batch.to_string())]),
+                structs,
+            );
+            stream.enqueue(
                 &ChannelDescriptor::with_tags("int", [("batch_id", batch.to_string())]),
                 ints,
             );
@@ -330,7 +341,7 @@ mod tests {
 
         // validate that the requests were flushed based on the max_records value, not the
         // max request delay
-        assert_eq!(requests.len(), 20);
+        assert_eq!(requests.len(), 25);
 
         let r = requests
             .iter()
@@ -358,11 +369,16 @@ mod tests {
             panic!("invalid string points type");
         };
 
+        let PointsType::StructPoints(sp) = r.get("struct").unwrap() else {
+            panic!("invalid struct points type");
+        };
+
         // collect() overwrites into a single request
         assert_eq!(dp.points.len(), 1000);
         assert_eq!(sp.points.len(), 1000);
         assert_eq!(ip.points.len(), 1000);
         assert_eq!(up.points.len(), 1000);
+        assert_eq!(sp.points.len(), 1000);
     }
 
     #[test_log::test]
@@ -423,10 +439,12 @@ mod tests {
         let cd2 = ChannelDescriptor::new("string");
         let cd3 = ChannelDescriptor::new("int");
         let cd4 = ChannelDescriptor::new("uint64");
+        let cd5 = ChannelDescriptor::new("struct");
         let mut double_writer = stream.double_writer(&cd1);
         let mut string_writer = stream.string_writer(&cd2);
         let mut integer_writer = stream.integer_writer(&cd3);
         let mut uint64_writer = stream.uint64_writer(&cd4);
+        let mut struct_writer = stream.struct_writer(&cd5);
 
         for i in 0..5000 {
             let start_time = UNIX_EPOCH.elapsed().unwrap();
@@ -435,12 +453,14 @@ mod tests {
             string_writer.push(start_time, format!("{}", value));
             integer_writer.push(start_time, value);
             uint64_writer.push(start_time, value as u64);
+            struct_writer.push(start_time, format!("{}", value));
         }
 
         drop(double_writer);
         drop(string_writer);
         drop(integer_writer);
         drop(uint64_writer);
+        drop(struct_writer);
         drop(stream);
 
         let requests = test_consumer.requests.lock().unwrap();
@@ -474,10 +494,15 @@ mod tests {
             panic!("invalid string points type");
         };
 
+        let PointsType::StructPoints(sp) = r.get("struct").unwrap() else {
+            panic!("invalid struct points type");
+        };
+
         // collect() overwrites into a single request
         assert_eq!(dp.points.len(), 1000);
         assert_eq!(sp.points.len(), 1000);
         assert_eq!(ip.points.len(), 1000);
         assert_eq!(up.points.len(), 1000);
+        assert_eq!(sp.points.len(), 1000);
     }
 }
