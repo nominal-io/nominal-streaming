@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.9](https://github.com/nominal-io/nominal-streaming/compare/v0.7.8...v0.7.9) - 2026-01-21
+
+### Added
+
+- add StructPoints ([#188](https://github.com/nominal-io/nominal-streaming/pull/188))
+
 ## [0.7.8](https://github.com/nominal-io/nominal-streaming/compare/v0.7.7...v0.7.8) - 2026-01-18
 
 ### Other
