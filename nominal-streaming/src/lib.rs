@@ -369,7 +369,7 @@ mod tests {
             panic!("invalid string points type");
         };
 
-        let PointsType::StructPoints(sp) = r.get("struct").unwrap() else {
+        let PointsType::StructPoints(stp) = r.get("struct").unwrap() else {
             panic!("invalid struct points type");
         };
 
@@ -378,7 +378,7 @@ mod tests {
         assert_eq!(sp.points.len(), 1000);
         assert_eq!(ip.points.len(), 1000);
         assert_eq!(up.points.len(), 1000);
-        assert_eq!(sp.points.len(), 1000);
+        assert_eq!(stp.points.len(), 1000);
     }
 
     #[test_log::test]
@@ -465,7 +465,7 @@ mod tests {
 
         let requests = test_consumer.requests.lock().unwrap();
 
-        assert_eq!(requests.len(), 20);
+        assert_eq!(requests.len(), 25);
 
         let r = requests
             .iter()
@@ -494,7 +494,7 @@ mod tests {
             panic!("invalid string points type");
         };
 
-        let PointsType::StructPoints(sp) = r.get("struct").unwrap() else {
+        let PointsType::StructPoints(stp) = r.get("struct").unwrap() else {
             panic!("invalid struct points type");
         };
 
@@ -503,6 +503,6 @@ mod tests {
         assert_eq!(sp.points.len(), 1000);
         assert_eq!(ip.points.len(), 1000);
         assert_eq!(up.points.len(), 1000);
-        assert_eq!(sp.points.len(), 1000);
+        assert_eq!(stp.points.len(), 1000);
     }
 }
