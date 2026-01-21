@@ -58,7 +58,7 @@ impl PyNominalStreamOpts {
                 request_dispatcher_tasks: num_upload_workers,
                 base_api_url: base_api_url.to_string(),
             },
-            num_runtime_workers: num_runtime_workers,
+            num_runtime_workers,
         }
     }
 

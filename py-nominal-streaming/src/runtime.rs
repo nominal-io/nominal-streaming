@@ -5,7 +5,6 @@ use std::thread::{self};
 
 use anyhow::anyhow;
 use anyhow::Result;
-use crossbeam_channel;
 use tokio::runtime::Builder;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;

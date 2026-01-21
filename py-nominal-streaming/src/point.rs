@@ -80,7 +80,7 @@ where
     T: FromPyObject<'py>,
 {
     let seq = values.downcast::<PySequence>()?;
-    let len = seq.len()? as usize;
+    let len = seq.len()?;
     let mut out = Vec::with_capacity(len);
     for i in 0..len {
         let item = seq.get_item(i)?;
