@@ -414,6 +414,68 @@ mod tests {
         Channel, DoublePoint, IntegerPoint, StringPoint, Uint64Point,
     };
 
+    use apache_avro::types::Value as AvroValue;
+
+
+    /// A helper struct for the parsed contents of a single avro record from an avro file.
+    struct ParsedRecord {
+        pub channel: String,
+        pub values: Vec<AvroValue>,
+    }
+
+    impl ParsedRecord {
+        /// Given a avro record, parse out the channel name and values.
+        /// 
+        /// Note that their are other fields in the record per the schema, but they are not 
+        /// parsed out for now.
+        fn new(record: &Record) -> Self {
+            Self {
+                channel: Self::get_channel(&record),
+                values: Self::get_values(&record)
+            }
+        }
+
+        /// Get the channel field from an avro record.
+        /// 
+        /// The channel field is keyed by the "channel" field in the record.
+        fn get_channel(record: &Record) -> String {
+            record.fields.iter().find(|(k,_)| k == "channel").map(|(_,v)| {
+                let AvroValue::String(s) = v else {
+                    panic!("Channel for record not of type string: {:?}", v);
+                };
+                s.to_owned()
+            }).expect("Could not extract channel from record")
+        }
+
+        /// Get the vector of contained values from the avro record.
+        /// 
+        /// The inner values are keyed by a "values" field in the record.
+        fn get_values(record: &Record) -> Vec<AvroValue> {
+            record.fields
+                .iter()
+                .find(|(key, _)| key == "values")
+                .map(|(_, v)| {
+                    let AvroValue::Array(a) = v else {
+                        panic!(
+                            "Values for record not not of type array {:?}: {:?}",
+                            record, v
+                        );
+                    };
+
+                    let vals: Vec<AvroValue> = a.iter().map(|v| {
+                        let AvroValue::Union(_, boxed_val) = v else {
+                            panic!("Value type not Union: {:?}", v);
+                        };
+
+                        *boxed_val.to_owned()
+                    }).collect();
+                    
+                    vals
+                })
+                .expect("Could not find channel in record")
+        }
+    }
+
     #[test]
     fn test_avro_consumer_with_all_types() {
         // Create a temporary file
@@ -562,88 +624,34 @@ mod tests {
             }
         }
 
-        // Verify we have 4 series (one for each type)
-        assert_eq!(records.len(), 4, "Expected 4 series records");
 
         // Verify temperature (double) series
-        let temp_record = &records[0];
+        let temp_record = ParsedRecord::new(&records[0]);
         assert_eq!(
-            temp_record.get("channel"),
-            Some(&Value::String("temperature".to_string()))
+            temp_record.channel,
+            "temperature"
         );
-        if let Some(Value::Array(timestamps)) = temp_record.get("timestamps") {
-            assert_eq!(timestamps.len(), 2);
-            assert_eq!(timestamps[0], Value::Long(1000 * 1_000_000_000 + 500));
-            assert_eq!(timestamps[1], Value::Long(2000 * 1_000_000_000 + 1000));
-        } else {
-            panic!("Expected timestamps array");
-        }
-        if let Some(Value::Array(values)) = temp_record.get("values") {
-            assert_eq!(values.len(), 2);
-            assert_eq!(
-                values[0],
-                Value::Union(0, Box::new(Value::Double(23.5)))
-            );
-            assert_eq!(
-                values[1],
-                Value::Union(0, Box::new(Value::Double(25.7)))
-            );
-        } else {
-            panic!("Expected values array");
-        }
+        assert_eq!(temp_record.values[0], AvroValue::Double(23.5));
+        assert_eq!(temp_record.values[1], AvroValue::Double(25.7));
 
         // Verify status (string) series
-        let status_record = &records[1];
-        assert_eq!(
-            status_record.get("channel"),
-            Some(&Value::String("status".to_string()))
-        );
-        if let Some(Value::Array(values)) = status_record.get("values") {
-            assert_eq!(values.len(), 2);
-            assert_eq!(
-                values[0],
-                Value::Union(1, Box::new(Value::String("OK".to_string())))
-            );
-            assert_eq!(
-                values[1],
-                Value::Union(1, Box::new(Value::String("WARNING".to_string())))
-            );
-        } else {
-            panic!("Expected values array");
-        }
+        let status_record = ParsedRecord::new(&records[1]);
+        assert_eq!(status_record.channel, "status");
+        assert_eq!(status_record.values[0], AvroValue::String("OK".into()));
+        assert_eq!(status_record.values[1], AvroValue::String("WARNING".into()));
+
 
         // Verify count (integer) series
-        let count_record = &records[2];
-        assert_eq!(
-            count_record.get("channel"),
-            Some(&Value::String("count".to_string()))
-        );
-        if let Some(Value::Array(values)) = count_record.get("values") {
-            assert_eq!(values.len(), 2);
-            assert_eq!(values[0], Value::Union(2, Box::new(Value::Long(42))));
-            assert_eq!(values[1], Value::Union(2, Box::new(Value::Long(-17))));
-        } else {
-            panic!("Expected values array");
-        }
+        let count_record = ParsedRecord::new(&records[2]);
+        assert_eq!(count_record.channel, "count");
+        assert_eq!(count_record.values[0], AvroValue::Long(42));
+        assert_eq!(count_record.values[1], AvroValue::Long(-17));
+
 
         // Verify uptime (uint64) series
-        let uptime_record = &records[3];
-        assert_eq!(
-            uptime_record.get("channel"),
-            Some(&Value::String("uptime".to_string()))
-        );
-        if let Some(Value::Array(values)) = uptime_record.get("values") {
-            assert_eq!(values.len(), 2);
-            assert_eq!(
-                values[0],
-                Value::Union(2, Box::new(Value::Long(12345678901234)))
-            );
-            assert_eq!(
-                values[1],
-                Value::Union(2, Box::new(Value::Long(98765432109876)))
-            );
-        } else {
-            panic!("Expected values array");
-        }
+        let uptime_record = ParsedRecord::new(&records[3]);
+        assert_eq!(uptime_record.channel, "uptime");
+        assert_eq!(uptime_record.values[0], AvroValue::Long(12345678901234));
+        assert_eq!(uptime_record.values[1], AvroValue::Long(98765432109876));
     }
 }

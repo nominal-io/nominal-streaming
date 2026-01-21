@@ -1599,6 +1599,7 @@ dependencies = [
  "reqwest",
  "serde_json",
  "snap",
+ "tempfile",
  "test-log",
  "thiserror 2.0.17",
  "tokio",

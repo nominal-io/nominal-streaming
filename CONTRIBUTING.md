@@ -18,6 +18,19 @@ Some common commands are as follows:
 - `just fix`: Automatically format across rust and python bindings.
   - `just rust::fix` or `just python::fix` for language specific versions.
 
+
+## Nix Setup
+
+A dev shell for the Rust crate is also available via nix. 
+
+If you have nix installed, to get a Rust dev shell:
+```shell
+nix develop
+```
+
+This will spin up a minimal dev environment with some Rust utilities.
+
+
 ## Python bindings
 
 The py-nominal-streaming crate contains pyo3 and maturin bindings to allow users to stream data performantly from python.
@@ -65,3 +78,4 @@ To run common workflows manually, either `cd` into the `py-nominal-streaming` di
   ```
 
 If updating any public-facing bindings from the rust side (e.g. updating `PyNominalDatasetStream` or `PyNominalStreamOpts`), ensure that you make the appropriate changes to [the python bindings](py-nominal-streaming/python/nominal_streaming/_nominal_streaming.pyi).
+

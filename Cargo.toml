@@ -1,8 +1,5 @@
 [workspace]
-members = [
-    "nominal-streaming",
-    "py-nominal-streaming",
-]
+members = ["nominal-streaming", "py-nominal-streaming"]
 resolver = "2"
 
 # Require opt-in for building python bindings (should be built with maturin, not cargo)
@@ -26,13 +23,14 @@ reqwest = "0.12.28"
 serde_json = "1.0.149"
 snap = "1"
 thiserror = "2"
-tokio = { version = "1", features = ["full", "tracing", "io-util" ] }
+tokio = { version = "1", features = ["full", "tracing", "io-util"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 url = "2.5.8"
 
 # Test dependencies
 test-log = { version = "0.2.19", features = ["trace"] }
+tempfile = "3"
 
 # Allow workspace packages to access core package
 nominal-streaming = { path = "nominal-streaming" }
