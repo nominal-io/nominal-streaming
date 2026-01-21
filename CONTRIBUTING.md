@@ -47,7 +47,7 @@ Alternatively, you may run `uv run maturin develop -m py-nominal-streaming/Cargo
 
 Working with the rust => python bindings is done using `uv` and `maturin` and exposed to developers using `justfile`s.
 
-The most common workflows are as follews:
+The most common workflows are as follows:
 
 ```shell
 # Install dependencies and initialize workspace
