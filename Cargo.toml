@@ -33,6 +33,7 @@ url = "2.5.8"
 
 # Test dependencies
 test-log = { version = "0.2.19", features = ["trace"] }
+tempfile = "3"
 
 # Allow workspace packages to access core package
 nominal-streaming = { path = "nominal-streaming" }
