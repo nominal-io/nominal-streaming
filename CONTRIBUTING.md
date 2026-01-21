@@ -23,7 +23,14 @@ Some common commands are as follows:
 
 A dev shell for the Rust crate is also available via nix. 
 
-If you have nix installed, to get a Rust dev shell:
+If it is your first time developing against this repo, make sure you have direnv installed and run:
+
+```shell
+direnv allow
+```
+
+Then, to get a Rust dev shell:
+
 ```shell
 nix develop
 ```
