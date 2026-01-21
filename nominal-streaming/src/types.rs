@@ -11,6 +11,8 @@ use nominal_api::tonic::io::nominal::scout::api::proto::IntegerPoint;
 use nominal_api::tonic::io::nominal::scout::api::proto::IntegerPoints;
 use nominal_api::tonic::io::nominal::scout::api::proto::StringPoint;
 use nominal_api::tonic::io::nominal::scout::api::proto::StringPoints;
+use nominal_api::tonic::io::nominal::scout::api::proto::StructPoint;
+use nominal_api::tonic::io::nominal::scout::api::proto::StructPoints;
 use nominal_api::tonic::io::nominal::scout::api::proto::Uint64Point;
 use nominal_api::tonic::io::nominal::scout::api::proto::Uint64Points;
 
@@ -87,6 +89,12 @@ impl IntoPoints for Vec<StringPoint> {
 impl IntoPoints for Vec<IntegerPoint> {
     fn into_points(self) -> PointsType {
         PointsType::IntegerPoints(IntegerPoints { points: self })
+    }
+}
+
+impl IntoPoints for Vec<StructPoint> {
+    fn into_points(self) -> PointsType {
+        PointsType::StructPoints(StructPoints { points: self })
     }
 }
 
