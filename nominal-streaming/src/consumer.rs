@@ -723,41 +723,119 @@ mod tests {
                     );
 
                 if let (Some(channel), Some(Value::Array(values))) = (channel, values) {
-                    assert!(!values.is_empty(), "Channel {} should have values", channel);
+                    assert_eq!(values.len(), 2, "Channel {} should have 2 values", channel);
 
-                    // Check the first value's union type
-                    if let Some(Value::Union(idx, inner)) = values.first() {
-                        match channel.as_str() {
-                            "doubles" => {
-                                assert_eq!(*idx, 0, "doubles should use union index 0");
-                                assert!(matches!(inner.as_ref(), Value::Double(_)));
-                            }
-                            "strings" => {
-                                assert_eq!(*idx, 1, "strings should use union index 1");
-                                assert!(matches!(inner.as_ref(), Value::String(_)));
-                            }
-                            "longs" => {
-                                assert_eq!(*idx, 2, "longs should use union index 2");
-                                assert!(matches!(inner.as_ref(), Value::Long(_)));
-                            }
-                            "double_arrays" => {
-                                assert_eq!(*idx, 3, "double_arrays should use union index 3");
-                                assert!(matches!(inner.as_ref(), Value::Record(_)));
-                            }
-                            "string_arrays" => {
-                                assert_eq!(*idx, 4, "string_arrays should use union index 4");
-                                assert!(matches!(inner.as_ref(), Value::Record(_)));
-                            }
-                            "structs" => {
-                                assert_eq!(*idx, 5, "structs should use union index 5");
-                                assert!(matches!(inner.as_ref(), Value::Record(_)));
-                            }
-                            "uint64s" => {
-                                assert_eq!(*idx, 2, "uint64s should use union index 2 (long)");
-                                assert!(matches!(inner.as_ref(), Value::Long(_)));
-                            }
-                            _ => panic!("Unexpected channel: {}", channel),
+                    match channel.as_str() {
+                        "doubles" => {
+                            assert_eq!(values[0], Value::Union(0, Box::new(Value::Double(1.5))));
+                            assert_eq!(values[1], Value::Union(0, Box::new(Value::Double(2.5))));
                         }
+                        "strings" => {
+                            assert_eq!(
+                                values[0],
+                                Value::Union(1, Box::new(Value::String("hello".to_string())))
+                            );
+                            assert_eq!(
+                                values[1],
+                                Value::Union(1, Box::new(Value::String("world".to_string())))
+                            );
+                        }
+                        "longs" => {
+                            assert_eq!(values[0], Value::Union(2, Box::new(Value::Long(42))));
+                            assert_eq!(values[1], Value::Union(2, Box::new(Value::Long(-100))));
+                        }
+                        "double_arrays" => {
+                            assert_eq!(
+                                values[0],
+                                Value::Union(
+                                    3,
+                                    Box::new(Value::Record(vec![(
+                                        "items".to_string(),
+                                        Value::Array(vec![
+                                            Value::Double(1.0),
+                                            Value::Double(2.0),
+                                            Value::Double(3.0)
+                                        ])
+                                    )]))
+                                )
+                            );
+                            assert_eq!(
+                                values[1],
+                                Value::Union(
+                                    3,
+                                    Box::new(Value::Record(vec![(
+                                        "items".to_string(),
+                                        Value::Array(vec![Value::Double(4.0), Value::Double(5.0)])
+                                    )]))
+                                )
+                            );
+                        }
+                        "string_arrays" => {
+                            assert_eq!(
+                                values[0],
+                                Value::Union(
+                                    4,
+                                    Box::new(Value::Record(vec![(
+                                        "items".to_string(),
+                                        Value::Array(vec![
+                                            Value::String("a".to_string()),
+                                            Value::String("b".to_string())
+                                        ])
+                                    )]))
+                                )
+                            );
+                            assert_eq!(
+                                values[1],
+                                Value::Union(
+                                    4,
+                                    Box::new(Value::Record(vec![(
+                                        "items".to_string(),
+                                        Value::Array(vec![
+                                            Value::String("c".to_string()),
+                                            Value::String("d".to_string()),
+                                            Value::String("e".to_string())
+                                        ])
+                                    )]))
+                                )
+                            );
+                        }
+                        "structs" => {
+                            assert_eq!(
+                                values[0],
+                                Value::Union(
+                                    5,
+                                    Box::new(Value::Record(vec![(
+                                        "json".to_string(),
+                                        Value::String(r#"{"key": "value"}"#.to_string())
+                                    )]))
+                                )
+                            );
+                            assert_eq!(
+                                values[1],
+                                Value::Union(
+                                    5,
+                                    Box::new(Value::Record(vec![(
+                                        "json".to_string(),
+                                        Value::String(r#"{"count": 42}"#.to_string())
+                                    )]))
+                                )
+                            );
+                        }
+                        "uint64s" => {
+                            // u64::MAX as i64 is -1, 12345678901234567890u64 as i64 is negative
+                            assert_eq!(
+                                values[0],
+                                Value::Union(2, Box::new(Value::Long(u64::MAX as i64)))
+                            );
+                            assert_eq!(
+                                values[1],
+                                Value::Union(
+                                    2,
+                                    Box::new(Value::Long(12345678901234567890u64 as i64))
+                                )
+                            );
+                        }
+                        _ => panic!("Unexpected channel: {}", channel),
                     }
                 }
             }
