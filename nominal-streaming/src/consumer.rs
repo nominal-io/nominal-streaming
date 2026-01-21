@@ -406,3 +406,244 @@ where
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nominal_api::tonic::io::nominal::scout::api::proto::{
+        Channel, DoublePoint, IntegerPoint, StringPoint, Uint64Point,
+    };
+
+    #[test]
+    fn test_avro_consumer_with_all_types() {
+        // Create a temporary file
+        let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+        let temp_file = temp_dir.path().join("test.avro");
+
+        // Create an AvroFileConsumer
+        let consumer =
+            AvroFileConsumer::new_with_full_path(&temp_file).expect("Failed to create consumer");
+
+        // Create test data with all supported types
+        let write_request = WriteRequestNominal {
+            series: vec![
+                // Double points
+                Series {
+                    channel: Some(Channel {
+                        name: "temperature".to_string(),
+                    }),
+                    points: Some(Points {
+                        points_type: Some(PointsType::DoublePoints(DoublePoints {
+                            points: vec![
+                                DoublePoint {
+                                    timestamp: Some(Timestamp {
+                                        seconds: 1000,
+                                        nanos: 500,
+                                    }),
+                                    value: 23.5,
+                                },
+                                DoublePoint {
+                                    timestamp: Some(Timestamp {
+                                        seconds: 2000,
+                                        nanos: 1000,
+                                    }),
+                                    value: 25.7,
+                                },
+                            ],
+                        })),
+                    }),
+                    tags: Default::default(),
+                },
+                // String points
+                Series {
+                    channel: Some(Channel {
+                        name: "status".to_string(),
+                    }),
+                    points: Some(Points {
+                        points_type: Some(PointsType::StringPoints(StringPoints {
+                            points: vec![
+                                StringPoint {
+                                    timestamp: Some(Timestamp {
+                                        seconds: 1000,
+                                        nanos: 500,
+                                    }),
+                                    value: "OK".to_string(),
+                                },
+                                StringPoint {
+                                    timestamp: Some(Timestamp {
+                                        seconds: 2000,
+                                        nanos: 1000,
+                                    }),
+                                    value: "WARNING".to_string(),
+                                },
+                            ],
+                        })),
+                    }),
+                    tags: Default::default(),
+                },
+                // Integer points
+                Series {
+                    channel: Some(Channel {
+                        name: "count".to_string(),
+                    }),
+                    points: Some(Points {
+                        points_type: Some(PointsType::IntegerPoints(IntegerPoints {
+                            points: vec![
+                                IntegerPoint {
+                                    timestamp: Some(Timestamp {
+                                        seconds: 1000,
+                                        nanos: 500,
+                                    }),
+                                    value: 42,
+                                },
+                                IntegerPoint {
+                                    timestamp: Some(Timestamp {
+                                        seconds: 2000,
+                                        nanos: 1000,
+                                    }),
+                                    value: -17,
+                                },
+                            ],
+                        })),
+                    }),
+                    tags: Default::default(),
+                },
+                // Uint64 points
+                Series {
+                    channel: Some(Channel {
+                        name: "uptime".to_string(),
+                    }),
+                    points: Some(Points {
+                        points_type: Some(PointsType::Uint64Points(Uint64Points {
+                            points: vec![
+                                Uint64Point {
+                                    timestamp: Some(Timestamp {
+                                        seconds: 1000,
+                                        nanos: 500,
+                                    }),
+                                    value: 12345678901234,
+                                },
+                                Uint64Point {
+                                    timestamp: Some(Timestamp {
+                                        seconds: 2000,
+                                        nanos: 1000,
+                                    }),
+                                    value: 98765432109876,
+                                },
+                            ],
+                        })),
+                    }),
+                    tags: Default::default(),
+                },
+            ],
+        };
+
+        // Consume the write request
+        consumer
+            .consume(&write_request)
+            .expect("Failed to consume write request");
+
+        // Flush the writer to ensure data is written
+        drop(consumer);
+
+        // Read the avro file back and verify the data
+        let file = std::fs::File::open(&temp_file).expect("Failed to open avro file");
+        let reader = apache_avro::Reader::new(file).expect("Failed to create avro reader");
+
+        let mut records: Vec<Record> = Vec::new();
+        for record_result in reader {
+            let record = record_result.expect("Failed to read record");
+            if let Value::Record(fields) = record {
+                let mut rec = Record::new(&CORE_AVRO_SCHEMA).expect("Failed to create record");
+                for (name, value) in fields {
+                    rec.put(&name, value);
+                }
+                records.push(rec);
+            }
+        }
+
+        // Verify we have 4 series (one for each type)
+        assert_eq!(records.len(), 4, "Expected 4 series records");
+
+        // Verify temperature (double) series
+        let temp_record = &records[0];
+        assert_eq!(
+            temp_record.get("channel"),
+            Some(&Value::String("temperature".to_string()))
+        );
+        if let Some(Value::Array(timestamps)) = temp_record.get("timestamps") {
+            assert_eq!(timestamps.len(), 2);
+            assert_eq!(timestamps[0], Value::Long(1000 * 1_000_000_000 + 500));
+            assert_eq!(timestamps[1], Value::Long(2000 * 1_000_000_000 + 1000));
+        } else {
+            panic!("Expected timestamps array");
+        }
+        if let Some(Value::Array(values)) = temp_record.get("values") {
+            assert_eq!(values.len(), 2);
+            assert_eq!(
+                values[0],
+                Value::Union(0, Box::new(Value::Double(23.5)))
+            );
+            assert_eq!(
+                values[1],
+                Value::Union(0, Box::new(Value::Double(25.7)))
+            );
+        } else {
+            panic!("Expected values array");
+        }
+
+        // Verify status (string) series
+        let status_record = &records[1];
+        assert_eq!(
+            status_record.get("channel"),
+            Some(&Value::String("status".to_string()))
+        );
+        if let Some(Value::Array(values)) = status_record.get("values") {
+            assert_eq!(values.len(), 2);
+            assert_eq!(
+                values[0],
+                Value::Union(1, Box::new(Value::String("OK".to_string())))
+            );
+            assert_eq!(
+                values[1],
+                Value::Union(1, Box::new(Value::String("WARNING".to_string())))
+            );
+        } else {
+            panic!("Expected values array");
+        }
+
+        // Verify count (integer) series
+        let count_record = &records[2];
+        assert_eq!(
+            count_record.get("channel"),
+            Some(&Value::String("count".to_string()))
+        );
+        if let Some(Value::Array(values)) = count_record.get("values") {
+            assert_eq!(values.len(), 2);
+            assert_eq!(values[0], Value::Union(2, Box::new(Value::Long(42))));
+            assert_eq!(values[1], Value::Union(2, Box::new(Value::Long(-17))));
+        } else {
+            panic!("Expected values array");
+        }
+
+        // Verify uptime (uint64) series
+        let uptime_record = &records[3];
+        assert_eq!(
+            uptime_record.get("channel"),
+            Some(&Value::String("uptime".to_string()))
+        );
+        if let Some(Value::Array(values)) = uptime_record.get("values") {
+            assert_eq!(values.len(), 2);
+            assert_eq!(
+                values[0],
+                Value::Union(2, Box::new(Value::Long(12345678901234)))
+            );
+            assert_eq!(
+                values[1],
+                Value::Union(2, Box::new(Value::Long(98765432109876)))
+            );
+        } else {
+            panic!("Expected values array");
+        }
+    }
+}
