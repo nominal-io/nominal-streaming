@@ -9,11 +9,16 @@ use apache_avro::types::Record;
 use apache_avro::types::Value;
 use conjure_object::ResourceIdentifier;
 use nominal_api::tonic::google::protobuf::Timestamp;
+use nominal_api::tonic::io::nominal::scout::api::proto::array_points::ArrayType;
 use nominal_api::tonic::io::nominal::scout::api::proto::points::PointsType;
+use nominal_api::tonic::io::nominal::scout::api::proto::ArrayPoints;
 use nominal_api::tonic::io::nominal::scout::api::proto::DoublePoints;
+use nominal_api::tonic::io::nominal::scout::api::proto::IntegerPoints;
 use nominal_api::tonic::io::nominal::scout::api::proto::Points;
 use nominal_api::tonic::io::nominal::scout::api::proto::Series;
 use nominal_api::tonic::io::nominal::scout::api::proto::StringPoints;
+use nominal_api::tonic::io::nominal::scout::api::proto::StructPoints;
+use nominal_api::tonic::io::nominal::scout::api::proto::Uint64Points;
 use nominal_api::tonic::io::nominal::scout::api::proto::WriteRequestNominal;
 use parking_lot::Mutex;
 use prost::Message;
@@ -114,8 +119,16 @@ pub static CORE_SCHEMA_STR: &str = r#"{
       },
       {
           "name": "values",
-          "type": {"type": "array", "items": ["double", "string"]},
-          "doc": "Array of values. Can either be doubles or strings"
+          "type": {"type": "array", "items": [
+              "double",
+              "long",
+              "string",
+              {"type": "array", "items": "double"},
+              {"type": "array", "items": "string"},
+              {"type": "record", "name": "JsonStruct", "fields": [{"name": "json", "type": "string"}]},
+              {"type": "fixed", "name": "Uint64", "size": 8}
+          ]},
+          "doc": "Array of values. Can be doubles, longs, strings, arrays, JSON structs, or unsigned 64-bit integers"
       },
       {
           "name": "tags",
@@ -213,10 +226,15 @@ impl AvroFileConsumer {
 }
 
 fn points_to_avro(points: Option<&Points>) -> (Vec<Value>, Vec<Value>) {
+    let Some(Points {
+        points_type: Some(points),
+    }) = points
+    else {
+        return (Vec::new(), Vec::new());
+    };
+
     match points {
-        Some(Points {
-            points_type: Some(PointsType::DoublePoints(DoublePoints { points })),
-        }) => points
+        PointsType::DoublePoints(DoublePoints { points }) => points
             .iter()
             .map(|point| {
                 (
@@ -225,18 +243,77 @@ fn points_to_avro(points: Option<&Points>) -> (Vec<Value>, Vec<Value>) {
                 )
             })
             .collect(),
-        Some(Points {
-            points_type: Some(PointsType::StringPoints(StringPoints { points })),
-        }) => points
+        PointsType::StringPoints(StringPoints { points }) => points
             .iter()
             .map(|point| {
                 (
                     convert_timestamp_to_nanoseconds(point.timestamp.unwrap()),
-                    Value::Union(1, Box::new(Value::String(point.value.clone()))),
+                    Value::Union(2, Box::new(Value::String(point.value.clone()))),
                 )
             })
             .collect(),
-        _ => (Vec::new(), Vec::new()),
+        PointsType::IntegerPoints(IntegerPoints { points }) => points
+            .iter()
+            .map(|point| {
+                (
+                    convert_timestamp_to_nanoseconds(point.timestamp.unwrap()),
+                    Value::Union(1, Box::new(Value::Long(point.value))),
+                )
+            })
+            .collect(),
+        PointsType::ArrayPoints(ArrayPoints { array_type }) => match array_type {
+            Some(ArrayType::DoubleArrayPoints(points)) => points
+                .points
+                .iter()
+                .map(|point| {
+                    let array_values: Vec<Value> =
+                        point.value.iter().map(|v| Value::Double(*v)).collect();
+                    (
+                        convert_timestamp_to_nanoseconds(point.timestamp.unwrap()),
+                        Value::Union(3, Box::new(Value::Array(array_values))),
+                    )
+                })
+                .collect(),
+            Some(ArrayType::StringArrayPoints(points)) => points
+                .points
+                .iter()
+                .map(|point| {
+                    let array_values: Vec<Value> = point
+                        .value
+                        .iter()
+                        .map(|v| Value::String(v.clone()))
+                        .collect();
+                    (
+                        convert_timestamp_to_nanoseconds(point.timestamp.unwrap()),
+                        Value::Union(4, Box::new(Value::Array(array_values))),
+                    )
+                })
+                .collect(),
+            None => (Vec::new(), Vec::new()),
+        },
+        PointsType::StructPoints(StructPoints { points }) => points
+            .iter()
+            .map(|point| {
+                let record = Value::Record(vec![(
+                    "json".to_string(),
+                    Value::String(point.json_string.clone()),
+                )]);
+                (
+                    convert_timestamp_to_nanoseconds(point.timestamp.unwrap()),
+                    Value::Union(5, Box::new(record)),
+                )
+            })
+            .collect(),
+        PointsType::Uint64Points(Uint64Points { points }) => points
+            .iter()
+            .map(|point| {
+                let bytes = point.value.to_be_bytes().to_vec();
+                (
+                    convert_timestamp_to_nanoseconds(point.timestamp.unwrap()),
+                    Value::Union(6, Box::new(Value::Fixed(8, bytes))),
+                )
+            })
+            .collect(),
     }
 }
 
