@@ -121,13 +121,13 @@ pub static CORE_SCHEMA_STR: &str = r#"{
           "name": "values",
           "type": {"type": "array", "items": [
               "double",
-              "long",
               "string",
+              "long",
               {"type": "record", "name": "DoubleArray", "fields": [{"name": "items", "type": {"type": "array", "items": "double"}}]},
               {"type": "record", "name": "StringArray", "fields": [{"name": "items", "type": {"type": "array", "items": "string"}}]},
               {"type": "record", "name": "JsonStruct", "fields": [{"name": "json", "type": "string"}]}
           ]},
-          "doc": "Array of values. Can be doubles, longs, strings, arrays, JSON structs, or unsigned 64-bit integers"
+          "doc": "Array of values. Can be doubles, longs, strings, arrays, or JSON structs"
       },
       {
           "name": "tags",
@@ -247,7 +247,7 @@ fn points_to_avro(points: Option<&Points>) -> (Vec<Value>, Vec<Value>) {
             .map(|point| {
                 (
                     convert_timestamp_to_nanoseconds(point.timestamp.unwrap()),
-                    Value::Union(2, Box::new(Value::String(point.value.clone()))),
+                    Value::Union(1, Box::new(Value::String(point.value.clone()))),
                 )
             })
             .collect(),
@@ -256,7 +256,7 @@ fn points_to_avro(points: Option<&Points>) -> (Vec<Value>, Vec<Value>) {
             .map(|point| {
                 (
                     convert_timestamp_to_nanoseconds(point.timestamp.unwrap()),
-                    Value::Union(1, Box::new(Value::Long(point.value))),
+                    Value::Union(2, Box::new(Value::Long(point.value))),
                 )
             })
             .collect(),
@@ -312,7 +312,7 @@ fn points_to_avro(points: Option<&Points>) -> (Vec<Value>, Vec<Value>) {
             .map(|point| {
                 (
                     convert_timestamp_to_nanoseconds(point.timestamp.unwrap()),
-                    Value::Union(1, Box::new(Value::Long(point.value as i64))),
+                    Value::Union(2, Box::new(Value::Long(point.value as i64))),
                 )
             })
             .collect(),
@@ -732,13 +732,13 @@ mod tests {
                                 assert_eq!(*idx, 0, "doubles should use union index 0");
                                 assert!(matches!(inner.as_ref(), Value::Double(_)));
                             }
-                            "longs" => {
-                                assert_eq!(*idx, 1, "longs should use union index 1");
-                                assert!(matches!(inner.as_ref(), Value::Long(_)));
-                            }
                             "strings" => {
-                                assert_eq!(*idx, 2, "strings should use union index 2");
+                                assert_eq!(*idx, 1, "strings should use union index 1");
                                 assert!(matches!(inner.as_ref(), Value::String(_)));
+                            }
+                            "longs" => {
+                                assert_eq!(*idx, 2, "longs should use union index 2");
+                                assert!(matches!(inner.as_ref(), Value::Long(_)));
                             }
                             "double_arrays" => {
                                 assert_eq!(*idx, 3, "double_arrays should use union index 3");
@@ -753,7 +753,7 @@ mod tests {
                                 assert!(matches!(inner.as_ref(), Value::Record(_)));
                             }
                             "uint64s" => {
-                                assert_eq!(*idx, 1, "uint64s should use union index 1 (long)");
+                                assert_eq!(*idx, 2, "uint64s should use union index 2 (long)");
                                 assert!(matches!(inner.as_ref(), Value::Long(_)));
                             }
                             _ => panic!("Unexpected channel: {}", channel),
