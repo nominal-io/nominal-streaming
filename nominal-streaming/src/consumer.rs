@@ -9,7 +9,6 @@ use apache_avro::types::Record;
 use apache_avro::types::Value;
 use conjure_object::ResourceIdentifier;
 use nominal_api::tonic::google::protobuf::Timestamp;
-use nominal_api::tonic::io::nominal::scout::api::proto::IntegerPoint;
 use nominal_api::tonic::io::nominal::scout::api::proto::points::PointsType;
 use nominal_api::tonic::io::nominal::scout::api::proto::DoublePoints;
 use nominal_api::tonic::io::nominal::scout::api::proto::Points;
