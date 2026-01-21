@@ -9,11 +9,14 @@ use apache_avro::types::Record;
 use apache_avro::types::Value;
 use conjure_object::ResourceIdentifier;
 use nominal_api::tonic::google::protobuf::Timestamp;
+use nominal_api::tonic::io::nominal::scout::api::proto::IntegerPoint;
 use nominal_api::tonic::io::nominal::scout::api::proto::points::PointsType;
 use nominal_api::tonic::io::nominal::scout::api::proto::DoublePoints;
 use nominal_api::tonic::io::nominal::scout::api::proto::Points;
 use nominal_api::tonic::io::nominal::scout::api::proto::Series;
 use nominal_api::tonic::io::nominal::scout::api::proto::StringPoints;
+use nominal_api::tonic::io::nominal::scout::api::proto::IntegerPoints;
+use nominal_api::tonic::io::nominal::scout::api::proto::Uint64Points;
 use nominal_api::tonic::io::nominal::scout::api::proto::WriteRequestNominal;
 use parking_lot::Mutex;
 use prost::Message;
@@ -114,8 +117,8 @@ pub static CORE_SCHEMA_STR: &str = r#"{
       },
       {
           "name": "values",
-          "type": {"type": "array", "items": ["double", "string"]},
-          "doc": "Array of values. Can either be doubles or strings"
+          "type": {"type": "array", "items": ["double", "string", "long"]},
+          "doc": "Array of values. Can either be doubles, strings, or longs"
       },
       {
           "name": "tags",
@@ -233,6 +236,28 @@ fn points_to_avro(points: Option<&Points>) -> (Vec<Value>, Vec<Value>) {
                 (
                     convert_timestamp_to_nanoseconds(point.timestamp.unwrap()),
                     Value::Union(1, Box::new(Value::String(point.value.clone()))),
+                )
+            })
+            .collect(),
+        Some(Points {
+            points_type: Some(PointsType::IntegerPoints(IntegerPoints { points })),
+        }) => points
+            .iter()
+            .map(|point| {
+                (
+                    convert_timestamp_to_nanoseconds(point.timestamp.unwrap()),
+                    Value::Union(2, Box::new(Value::Long(point.value.clone()))),
+                )
+            })
+            .collect(),
+        Some(Points {
+            points_type: Some(PointsType::Uint64Points(Uint64Points { points })),
+        }) => points
+            .iter()
+            .map(|point| {
+                (
+                    convert_timestamp_to_nanoseconds(point.timestamp.unwrap()),
+                    Value::Union(2, Box::new(Value::Long(point.value.clone() as i64))),
                 )
             })
             .collect(),
