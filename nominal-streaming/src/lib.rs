@@ -64,7 +64,7 @@ let value: f64 = 123;
 writer.push(start_time, value);
 ```
 
-Here, we are enquing data onto Channel 1, with tags "name" and "batch".
+Here, we are enqueuing data onto Channel 1, with tags "name" and "batch".
 These are, of course, just examples, and you can choose your own.
 
 ## Example: streaming from memory to Nominal Core, with file fallback
