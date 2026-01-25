@@ -64,13 +64,13 @@ let value: f64 = 123;
 writer.push(start_time, value);
 ```
 
-Here, we are enquing data onto Channel 1, with tags "name" and "batch".
+Here, we are enqueing data onto Channel 1, with tags "name" and "batch".
 These are, of course, just examples, and you can choose your own.
 
 ## Example: streaming from memory to Nominal Core, with file fallback
 
 This is the typical scenario where we want to stream some values from memory into a [Nominal Dataset](https://docs.nominal.io/core/sdk/python-client/streaming/overview#streaming-data-to-a-dataset).
-If the upload fails (say because of network errors), we'd like to instead send the data to an AVRO file.
+If the upload fails (say because of network errors), we'd like to instead send the data to an Avro file. Note that the Avro spec does not support uint64 values, so those will be stored as signed int64 values.
 
 Note that we set up the async [Tokio runtime](https://tokio.rs/), since that is required by the underlying [`NominalCoreConsumer`](https://docs.rs/nominal-streaming/latest/nominal_streaming/consumer/struct.NominalCoreConsumer.html).
 
