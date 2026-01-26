@@ -18,6 +18,25 @@ Some common commands are as follows:
 - `just fix`: Automatically format across rust and python bindings.
   - `just rust::fix` or `just python::fix` for language specific versions.
 
+## Nix Setup
+
+A dev shell for the Rust crate is also available via nix. 
+
+If it is your first time developing against this repo, make sure you have direnv installed and run:
+
+```shell
+direnv allow
+```
+
+Then, to get a Rust dev shell:
+
+```shell
+nix develop
+```
+
+This will spin up a minimal dev environment with some Rust utilities.
+
+
 ## Python bindings
 
 The py-nominal-streaming crate contains pyo3 and maturin bindings to allow users to stream data performantly from python.
@@ -27,7 +46,7 @@ Alternatively, you may run `uv run maturin develop -m py-nominal-streaming/Cargo
 
 Working with the rust => python bindings is done using `uv` and `maturin` and exposed to developers using `justfile`s.
 
-The most common workflows are as follews:
+The most common workflows are as follows:
 
 ```shell
 # Install dependencies and initialize workspace

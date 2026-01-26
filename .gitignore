@@ -11,3 +11,6 @@ dist/
 
 # Precompiled binaries
 *.so
+
+# Nix
+.direnv
