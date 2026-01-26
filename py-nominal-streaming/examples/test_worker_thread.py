@@ -13,7 +13,6 @@ import threading
 import time
 
 from nominal.core import NominalClient
-
 from nominal_streaming import NominalDatasetStream, PyNominalStreamOpts
 
 logger = logging.getLogger(__name__)
