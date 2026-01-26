@@ -22,6 +22,7 @@ use nominal_api::tonic::io::nominal::scout::api::proto::IntegerPoint;
 use nominal_api::tonic::io::nominal::scout::api::proto::Points;
 use nominal_api::tonic::io::nominal::scout::api::proto::Series;
 use nominal_api::tonic::io::nominal::scout::api::proto::StringPoint;
+use nominal_api::tonic::io::nominal::scout::api::proto::StructPoint;
 use nominal_api::tonic::io::nominal::scout::api::proto::Uint64Point;
 use nominal_api::tonic::io::nominal::scout::api::proto::WriteRequestNominal;
 use parking_lot::Condvar;
@@ -360,6 +361,14 @@ impl NominalDatasetStream {
         }
     }
 
+    pub fn struct_writer<'a>(
+        &'a self,
+        channel_descriptor: &'a ChannelDescriptor,
+    ) -> NominalStructWriter<'a> {
+        NominalStructWriter {
+            writer: NominalChannelWriter::new(self, channel_descriptor),
+        }
+    }
     pub fn enqueue(&self, channel_descriptor: &ChannelDescriptor, new_points: impl IntoPoints) {
         let new_points = new_points.into_points();
         let new_count = points_len(&new_points);
@@ -513,6 +522,19 @@ impl NominalStringWriter<'_> {
         self.writer.push_point(StringPoint {
             timestamp: Some(timestamp.into_timestamp()),
             value: value.into(),
+        });
+    }
+}
+
+pub struct NominalStructWriter<'ds> {
+    writer: NominalChannelWriter<'ds, StructPoint>,
+}
+
+impl NominalStructWriter<'_> {
+    pub fn push(&mut self, timestamp: impl IntoTimestamp, value: impl Into<String>) {
+        self.writer.push_point(StructPoint {
+            timestamp: Some(timestamp.into_timestamp()),
+            json_string: value.into(),
         });
     }
 }

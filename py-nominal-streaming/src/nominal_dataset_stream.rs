@@ -172,7 +172,7 @@ impl PyNominalDatasetStream {
         mut slf: PyRefMut<'py, Self>,
         path: PathBuf,
     ) -> PyResult<PyRefMut<'py, Self>> {
-        slf.builder.targets.file_target = Some(FileTarget { path: path.into() });
+        slf.builder.targets.file_target = Some(FileTarget { path });
         Ok(slf)
     }
 

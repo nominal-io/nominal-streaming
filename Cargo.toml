@@ -11,7 +11,7 @@ default-members = ["nominal-streaming"]
 [workspace.dependencies]
 apache-avro = { version = "0.17.0", features = ["snappy"] }
 async-channel = "2.5.0"
-chrono = "0.4.41"
+chrono = "0.4.43"
 conjure-error = "4"
 conjure-http = "4"
 conjure-object = "4"
@@ -33,6 +33,7 @@ url = "2.5.8"
 
 # Test dependencies
 test-log = { version = "0.2.19", features = ["trace"] }
+tempfile = "3"
 
 # Allow workspace packages to access core package
 nominal-streaming = { path = "nominal-streaming" }

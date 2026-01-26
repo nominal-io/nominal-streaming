@@ -3,7 +3,7 @@ name = "nominal-streaming"
 description = "Library for durable, low-latency streaming into Nominal Core"
 edition = "2021"
 license = "MIT"
-version = "0.7.8"
+version = "0.7.9"
 readme = "../README.md"
 repository = "https://github.com/nominal-io/nominal-streaming"
 
@@ -37,3 +37,4 @@ url = { workspace = true }
 
 [dev-dependencies]
 test-log = { workspace = true }
+tempfile = { workspace = true }
