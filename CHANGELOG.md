@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.10](https://github.com/nominal-io/nominal-streaming/compare/v0.7.9...v0.7.10) - 2026-01-26
+
+### Added
+
+- support new streaming types in avro file ([#193](https://github.com/nominal-io/nominal-streaming/pull/193))
+
+### Other
+
+- add nix dev shell ([#195](https://github.com/nominal-io/nominal-streaming/pull/195))
+
 ## [0.7.9](https://github.com/nominal-io/nominal-streaming/compare/v0.7.8...v0.7.9) - 2026-01-21
 
 ### Added
