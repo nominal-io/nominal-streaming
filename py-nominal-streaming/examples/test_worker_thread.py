@@ -27,26 +27,27 @@ if __name__ == "__main__":
     auth_header = client._clients.auth_header.split()[-1]
     base_api_url = client._clients.authentication._uri
 
-    stream = (
-        NominalDatasetStream(
-            auth_header=auth_header,
-            opts=PyNominalStreamOpts(
-                num_upload_workers=16,
-                max_buffered_requests=4,
-                num_runtime_workers=20,
-                max_points_per_batch=100_000,
-                base_api_url=base_api_url,
-            ),
-        )
-        .enable_logging("info")
-        .with_core_consumer(dataset.rid)
-    )
     logger.info("Streaming to dataset %s", dataset.nominal_url)
 
     error_holder: list[Exception] = []
 
     def worker() -> None:
         try:
+            stream = (
+                NominalDatasetStream(
+                    auth_header=auth_header,
+                    opts=PyNominalStreamOpts(
+                        num_upload_workers=16,
+                        max_buffered_requests=4,
+                        num_runtime_workers=20,
+                        max_points_per_batch=100_000,
+                        base_api_url=base_api_url,
+                    ),
+                )
+                .enable_logging("info")
+                .with_core_consumer(dataset.rid)
+            )
+
             start_time = time.time()
             offset = 1.0 / 1600
             curr_offset = 0.0
