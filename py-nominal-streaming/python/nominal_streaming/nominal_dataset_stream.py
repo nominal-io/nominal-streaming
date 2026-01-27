@@ -34,6 +34,7 @@ import datetime
 import logging
 import pathlib
 import signal
+import threading
 from types import TracebackType
 from typing import Mapping, Sequence, Type
 
@@ -78,6 +79,7 @@ class NominalDatasetStream:
         self._opts = opts
         self._impl = PyNominalDatasetStream(self._opts)
         self._old_sigint = None
+        self._opened = False
 
     @classmethod
     def create(
@@ -181,25 +183,35 @@ class NominalDatasetStream:
         """Create the stream as a context manager.
 
         NOTE: installs a sigint handler to enable more graceful shutdown.
-              This is restored upon exit.
+              This is restored upon exit. The handler is only installed when
+              running in the main thread; in worker threads, the stream still
+              functions but Ctrl+C will not trigger graceful cancellation.
         """
-        if self._old_sigint is not None:
+        if self._opened:
             raise RuntimeError("Stream already opened!")
 
         logger.info("Opening underlying stream")
         self._impl.open()
+        self._opened = True
 
-        # Map Ctrl+C → fast cancel; keep handler tiny and re-raise KeyboardInterrupt.
-        def _on_sigint(signum, frame):  # type: ignore[no-untyped-def]
-            logger.debug("Cancelling underlying stream")
-            try:
-                self._impl.cancel()
-            finally:
-                raise KeyboardInterrupt
+        if threading.current_thread() is threading.main_thread():
+            # Map Ctrl+C → fast cancel; keep handler tiny and re-raise KeyboardInterrupt.
+            def _on_sigint(signum, frame):  # type: ignore[no-untyped-def]
+                logger.debug("Cancelling underlying stream")
+                try:
+                    self._impl.cancel()
+                finally:
+                    raise KeyboardInterrupt
 
-        logger.info("Installing sigint handler")
-        self._old_sigint = signal.getsignal(signal.SIGINT)  # type: ignore[assignment]
-        signal.signal(signal.SIGINT, _on_sigint)
+            logger.info("Installing sigint handler")
+            self._old_sigint = signal.getsignal(signal.SIGINT)  # type: ignore[assignment]
+            signal.signal(signal.SIGINT, _on_sigint)
+        else:
+            logger.info(
+                "Stream opened from worker thread; Ctrl+C will not trigger fast cancellation. "
+                "Stream will close gracefully when the context manager exits."
+            )
+
         return self
 
     def __enter__(self) -> Self:
@@ -227,6 +239,7 @@ class NominalDatasetStream:
                 logger.info("Restoring original sigint handler")
                 signal.signal(signal.SIGINT, self._old_sigint)
                 self._old_sigint = None
+            self._opened = False
 
     def __exit__(
         self,
