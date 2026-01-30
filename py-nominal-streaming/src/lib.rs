@@ -1,8 +1,7 @@
-//! Python extension entrypoint for `_nominal_streaming`.
+//! Top-level entrypoint for exposing Rust streaming code into python
 //! Exposes:
-//!   - PyNominalStreamOpts   (your existing options/builder wrapper)
-//!   - PyNominalDatasetStream      (the Rust-backed stream; the Python layer provides
-//!                                 a friendlier `NominalDatasetStream` name and SIGINT wiring)
+//!   - PyNominalStreamOpts     Settings builder object to pass configuration to rust
+//!   - PyNominalDatasetStream  Wrapper around rust streaming manager, with tweaks to enable pythonic usage
 
 mod lazy_dataset_stream_builder;
 mod nominal_dataset_stream;
