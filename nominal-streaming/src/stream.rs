@@ -307,7 +307,7 @@ impl NominalDatasetStream {
                     let rx = request_rx.clone();
                     let consumer = consumer.clone();
                     move || {
-                        debug!("starting request dispatcher");
+                        debug!("starting request dispatcher #{}", i);
                         request_dispatcher(running, unflushed_points, rx, consumer);
                     }
                 })
