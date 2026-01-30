@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.11](https://github.com/nominal-io/nominal-streaming/compare/v0.7.10...v0.7.11) - 2026-01-30
+
+### Added
+
+- make request dispatcher print the worker number upon startup ([#200](https://github.com/nominal-io/nominal-streaming/pull/200))
+
 ## [0.7.10](https://github.com/nominal-io/nominal-streaming/compare/v0.7.9...v0.7.10) - 2026-01-26
 
 ### Added
