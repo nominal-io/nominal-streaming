@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.12](https://github.com/nominal-io/nominal-streaming/compare/v0.7.11...v0.7.12) - 2026-02-02
+
+### Other
+
+- update Cargo.toml dependencies
+
 ## [0.7.11](https://github.com/nominal-io/nominal-streaming/compare/v0.7.10...v0.7.11) - 2026-01-30
 
 ### Added
