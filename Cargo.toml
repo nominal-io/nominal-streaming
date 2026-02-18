@@ -9,7 +9,7 @@ resolver = "2"
 default-members = ["nominal-streaming"]
 
 [workspace.dependencies]
-apache-avro = { version = "0.17.0", features = ["snappy"] }
+apache-avro = { version = "0.21.0", features = ["snappy"] }
 async-channel = "2.5.0"
 chrono = "0.4.43"
 conjure-error = "4"
