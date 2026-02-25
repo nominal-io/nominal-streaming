@@ -8,12 +8,15 @@ use std::sync::LazyLock;
 use apache_avro::types::Record;
 use apache_avro::types::Value;
 use conjure_object::ResourceIdentifier;
-use nominal_api::tonic::nominal::direct_channel_writer::v2::WriteBatchesRequest;
-use nominal_api::tonic::nominal::direct_channel_writer::v2::{
-    self as columnar, DoublePoints, IntPoints, LogPoints, StringPoints, StructPoints,
-    Uint64Points,
-};
 use nominal_api::tonic::nominal::direct_channel_writer::v2::array_points::ArrayType as ColumnarArrayType;
+use nominal_api::tonic::nominal::direct_channel_writer::v2::DoublePoints;
+use nominal_api::tonic::nominal::direct_channel_writer::v2::IntPoints;
+use nominal_api::tonic::nominal::direct_channel_writer::v2::LogPoints;
+use nominal_api::tonic::nominal::direct_channel_writer::v2::StringPoints;
+use nominal_api::tonic::nominal::direct_channel_writer::v2::StructPoints;
+use nominal_api::tonic::nominal::direct_channel_writer::v2::Uint64Points;
+use nominal_api::tonic::nominal::direct_channel_writer::v2::WriteBatchesRequest;
+use nominal_api::tonic::nominal::direct_channel_writer::v2::{self as columnar};
 use nominal_api::tonic::nominal::types::time::Timestamp as NominalTimestamp;
 use parking_lot::Mutex;
 use prost::Message;
@@ -220,9 +223,7 @@ fn convert_nominal_timestamp_to_nanoseconds(timestamp: &NominalTimestamp) -> Val
     Value::Long(seconds * 1_000_000_000 + nanos)
 }
 
-fn columnar_points_to_avro(
-    points: Option<&columnar::Points>,
-) -> (Vec<Value>, Vec<Value>) {
+fn columnar_points_to_avro(points: Option<&columnar::Points>) -> (Vec<Value>, Vec<Value>) {
     let Some(points) = points else {
         return (Vec::new(), Vec::new());
     };
@@ -254,10 +255,8 @@ fn columnar_points_to_avro(
                     .map(|point| {
                         let array_values: Vec<Value> =
                             point.value.iter().map(|v| Value::Double(*v)).collect();
-                        let record = Value::Record(vec![(
-                            "items".to_string(),
-                            Value::Array(array_values),
-                        )]);
+                        let record =
+                            Value::Record(vec![("items".to_string(), Value::Array(array_values))]);
                         Value::Union(3, Box::new(record))
                     })
                     .collect(),
@@ -270,10 +269,8 @@ fn columnar_points_to_avro(
                             .iter()
                             .map(|v: &String| Value::String(v.clone()))
                             .collect();
-                        let record = Value::Record(vec![(
-                            "items".to_string(),
-                            Value::Array(array_values),
-                        )]);
+                        let record =
+                            Value::Record(vec![("items".to_string(), Value::Array(array_values))]);
                         Value::Union(4, Box::new(record))
                     })
                     .collect(),
@@ -283,8 +280,7 @@ fn columnar_points_to_avro(
         Some(columnar::points::Points::StructPoints(StructPoints { points })) => points
             .iter()
             .map(|v| {
-                let record =
-                    Value::Record(vec![("json".to_string(), Value::String(v.clone()))]);
+                let record = Value::Record(vec![("json".to_string(), Value::String(v.clone()))]);
                 Value::Union(5, Box::new(record))
             })
             .collect(),
@@ -452,14 +448,14 @@ where
 mod tests {
     use std::collections::HashMap;
 
-    use nominal_api::tonic::nominal::direct_channel_writer::v2::{
-        self as columnar, DoubleArrayPoint, DoubleArrayPoints, StringArrayPoint,
-        StringArrayPoints,
-    };
+    use apache_avro::Reader;
+    use nominal_api::tonic::nominal::direct_channel_writer::v2::DoubleArrayPoint;
+    use nominal_api::tonic::nominal::direct_channel_writer::v2::DoubleArrayPoints;
+    use nominal_api::tonic::nominal::direct_channel_writer::v2::StringArrayPoint;
+    use nominal_api::tonic::nominal::direct_channel_writer::v2::StringArrayPoints;
+    use nominal_api::tonic::nominal::direct_channel_writer::v2::{self as columnar};
     use nominal_api::tonic::nominal::types::time::Timestamp as NominalTimestamp;
     use tempfile::NamedTempFile;
-
-    use apache_avro::Reader;
 
     use super::*;
 
@@ -522,18 +518,22 @@ mod tests {
                 "double_arrays",
                 columnar::Points {
                     timestamps: vec![make_timestamp(1000, 0), make_timestamp(1001, 0)],
-                    points: Some(columnar::points::Points::ArrayPoints(columnar::ArrayPoints {
-                        array_type: Some(ColumnarArrayType::DoubleArrayPoints(DoubleArrayPoints {
-                            points: vec![
-                                DoubleArrayPoint {
-                                    value: vec![1.0, 2.0, 3.0],
+                    points: Some(columnar::points::Points::ArrayPoints(
+                        columnar::ArrayPoints {
+                            array_type: Some(ColumnarArrayType::DoubleArrayPoints(
+                                DoubleArrayPoints {
+                                    points: vec![
+                                        DoubleArrayPoint {
+                                            value: vec![1.0, 2.0, 3.0],
+                                        },
+                                        DoubleArrayPoint {
+                                            value: vec![4.0, 5.0],
+                                        },
+                                    ],
                                 },
-                                DoubleArrayPoint {
-                                    value: vec![4.0, 5.0],
-                                },
-                            ],
-                        })),
-                    })),
+                            )),
+                        },
+                    )),
                 },
             );
 
@@ -541,22 +541,26 @@ mod tests {
                 "string_arrays",
                 columnar::Points {
                     timestamps: vec![make_timestamp(1000, 0), make_timestamp(1001, 0)],
-                    points: Some(columnar::points::Points::ArrayPoints(columnar::ArrayPoints {
-                        array_type: Some(ColumnarArrayType::StringArrayPoints(StringArrayPoints {
-                            points: vec![
-                                StringArrayPoint {
-                                    value: vec!["a".to_string(), "b".to_string()],
-                                },
-                                StringArrayPoint {
-                                    value: vec![
-                                        "c".to_string(),
-                                        "d".to_string(),
-                                        "e".to_string(),
+                    points: Some(columnar::points::Points::ArrayPoints(
+                        columnar::ArrayPoints {
+                            array_type: Some(ColumnarArrayType::StringArrayPoints(
+                                StringArrayPoints {
+                                    points: vec![
+                                        StringArrayPoint {
+                                            value: vec!["a".to_string(), "b".to_string()],
+                                        },
+                                        StringArrayPoint {
+                                            value: vec![
+                                                "c".to_string(),
+                                                "d".to_string(),
+                                                "e".to_string(),
+                                            ],
+                                        },
                                     ],
                                 },
-                            ],
-                        })),
-                    })),
+                            )),
+                        },
+                    )),
                 },
             );
 

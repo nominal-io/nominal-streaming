@@ -892,9 +892,7 @@ fn request_dispatcher<C: WriteRequestConsumer + 'static>(
 }
 
 /// Convert an old google.protobuf.Timestamp to the nominal.types.time.Timestamp.
-fn to_nominal_timestamp(
-    ts: &nominal_api::tonic::google::protobuf::Timestamp,
-) -> NominalTimestamp {
+fn to_nominal_timestamp(ts: &nominal_api::tonic::google::protobuf::Timestamp) -> NominalTimestamp {
     NominalTimestamp {
         seconds: Some(ts.seconds),
         nanos: Some(ts.nanos as i64),
@@ -949,9 +947,9 @@ fn points_type_to_columnar(points_type: PointsType) -> columnar::Points {
             }
             columnar::Points {
                 timestamps,
-                points: Some(columnar::points::Points::IntPoints(
-                    columnar::IntPoints { points: values },
-                )),
+                points: Some(columnar::points::Points::IntPoints(columnar::IntPoints {
+                    points: values,
+                })),
             }
         }
         PointsType::Uint64Points(up) => {
@@ -1000,11 +998,9 @@ fn points_type_to_columnar(points_type: PointsType) -> columnar::Points {
                     timestamps,
                     points: Some(columnar::points::Points::ArrayPoints(
                         columnar::ArrayPoints {
-                            array_type: Some(
-                                columnar::array_points::ArrayType::DoubleArrayPoints(
-                                    columnar::DoubleArrayPoints { points: values },
-                                ),
-                            ),
+                            array_type: Some(columnar::array_points::ArrayType::DoubleArrayPoints(
+                                columnar::DoubleArrayPoints { points: values },
+                            )),
                         },
                     )),
                 }
@@ -1022,11 +1018,9 @@ fn points_type_to_columnar(points_type: PointsType) -> columnar::Points {
                     timestamps,
                     points: Some(columnar::points::Points::ArrayPoints(
                         columnar::ArrayPoints {
-                            array_type: Some(
-                                columnar::array_points::ArrayType::StringArrayPoints(
-                                    columnar::StringArrayPoints { points: values },
-                                ),
-                            ),
+                            array_type: Some(columnar::array_points::ArrayType::StringArrayPoints(
+                                columnar::StringArrayPoints { points: values },
+                            )),
                         },
                     )),
                 }
