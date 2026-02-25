@@ -8,18 +8,16 @@ use std::sync::LazyLock;
 use apache_avro::types::Record;
 use apache_avro::types::Value;
 use conjure_object::ResourceIdentifier;
-use nominal_api::tonic::google::protobuf::Timestamp;
-use nominal_api::tonic::io::nominal::scout::api::proto::array_points::ArrayType;
-use nominal_api::tonic::io::nominal::scout::api::proto::points::PointsType;
-use nominal_api::tonic::io::nominal::scout::api::proto::ArrayPoints;
-use nominal_api::tonic::io::nominal::scout::api::proto::DoublePoints;
-use nominal_api::tonic::io::nominal::scout::api::proto::IntegerPoints;
-use nominal_api::tonic::io::nominal::scout::api::proto::Points;
-use nominal_api::tonic::io::nominal::scout::api::proto::Series;
-use nominal_api::tonic::io::nominal::scout::api::proto::StringPoints;
-use nominal_api::tonic::io::nominal::scout::api::proto::StructPoints;
-use nominal_api::tonic::io::nominal::scout::api::proto::Uint64Points;
-use nominal_api::tonic::io::nominal::scout::api::proto::WriteRequestNominal;
+use nominal_api::tonic::nominal::direct_channel_writer::v2::array_points::ArrayType as ColumnarArrayType;
+use nominal_api::tonic::nominal::direct_channel_writer::v2::DoublePoints;
+use nominal_api::tonic::nominal::direct_channel_writer::v2::IntPoints;
+use nominal_api::tonic::nominal::direct_channel_writer::v2::LogPoints;
+use nominal_api::tonic::nominal::direct_channel_writer::v2::StringPoints;
+use nominal_api::tonic::nominal::direct_channel_writer::v2::StructPoints;
+use nominal_api::tonic::nominal::direct_channel_writer::v2::Uint64Points;
+use nominal_api::tonic::nominal::direct_channel_writer::v2::WriteBatchesRequest;
+use nominal_api::tonic::nominal::direct_channel_writer::v2::{self as columnar};
+use nominal_api::tonic::nominal::types::time::Timestamp as NominalTimestamp;
 use parking_lot::Mutex;
 use prost::Message;
 use tracing::warn;
@@ -46,7 +44,7 @@ pub enum ConsumerError {
 pub type ConsumerResult<T> = Result<T, ConsumerError>;
 
 pub trait WriteRequestConsumer: Send + Sync + Debug {
-    fn consume(&self, request: &WriteRequestNominal) -> ConsumerResult<()>;
+    fn consume(&self, request: &WriteBatchesRequest) -> ConsumerResult<()>;
 }
 
 #[derive(Clone)]
@@ -83,13 +81,15 @@ impl<T: AuthProvider> Debug for NominalCoreConsumer<T> {
 }
 
 impl<T: AuthProvider + 'static> WriteRequestConsumer for NominalCoreConsumer<T> {
-    fn consume(&self, request: &WriteRequestNominal) -> ConsumerResult<()> {
+    fn consume(&self, request: &WriteBatchesRequest) -> ConsumerResult<()> {
         let token = self
             .auth_provider
             .token()
             .ok_or(ConsumerError::MissingTokenError)?;
-        let write_request =
-            client::encode_request(request.encode_to_vec(), &token, &self.data_source_rid)?;
+        // Set the data_source_rid in the proto body before encoding
+        let mut request_with_rid = request.clone();
+        request_with_rid.data_source_rid = self.data_source_rid.to_string();
+        let write_request = client::encode_request(request_with_rid.encode_to_vec(), &token)?;
         self.handle.block_on(async {
             self.client
                 .send(write_request)
@@ -193,24 +193,17 @@ impl AvroFileConsumer {
         })
     }
 
-    fn append_series(&self, series: &[Series]) -> ConsumerResult<()> {
+    fn append_batches(&self, batches: &[columnar::RecordsBatch]) -> ConsumerResult<()> {
         let mut records: Vec<Record> = Vec::new();
-        for series in series {
-            let (timestamps, values) = points_to_avro(series.points.as_ref());
+        for batch in batches {
+            let (timestamps, values) = columnar_points_to_avro(batch.points.as_ref());
 
             let mut record = Record::new(&CORE_AVRO_SCHEMA).expect("Failed to create Avro record");
 
-            record.put(
-                "channel",
-                series
-                    .channel
-                    .as_ref()
-                    .map(|c| c.name.clone())
-                    .unwrap_or("values".to_string()),
-            );
+            record.put("channel", batch.channel.clone());
             record.put("timestamps", Value::Array(timestamps));
             record.put("values", Value::Array(values));
-            record.put("tags", series.tags.clone());
+            record.put("tags", batch.tags.clone());
 
             records.push(record);
         }
@@ -224,108 +217,97 @@ impl AvroFileConsumer {
     }
 }
 
-fn points_to_avro(points: Option<&Points>) -> (Vec<Value>, Vec<Value>) {
-    let Some(Points {
-        points_type: Some(points),
-    }) = points
-    else {
+fn convert_nominal_timestamp_to_nanoseconds(timestamp: &NominalTimestamp) -> Value {
+    let seconds = timestamp.seconds.unwrap_or(0);
+    let nanos = timestamp.nanos.unwrap_or(0);
+    Value::Long(seconds * 1_000_000_000 + nanos)
+}
+
+fn columnar_points_to_avro(points: Option<&columnar::Points>) -> (Vec<Value>, Vec<Value>) {
+    let Some(points) = points else {
         return (Vec::new(), Vec::new());
     };
 
-    match points {
-        PointsType::DoublePoints(DoublePoints { points }) => points
-            .iter()
-            .map(|point| {
-                (
-                    convert_timestamp_to_nanoseconds(point.timestamp.unwrap()),
-                    Value::Union(0, Box::new(Value::Double(point.value))),
-                )
-            })
-            .collect(),
-        PointsType::StringPoints(StringPoints { points }) => points
-            .iter()
-            .map(|point| {
-                (
-                    convert_timestamp_to_nanoseconds(point.timestamp.unwrap()),
-                    Value::Union(1, Box::new(Value::String(point.value.clone()))),
-                )
-            })
-            .collect(),
-        PointsType::IntegerPoints(IntegerPoints { points }) => points
-            .iter()
-            .map(|point| {
-                (
-                    convert_timestamp_to_nanoseconds(point.timestamp.unwrap()),
-                    Value::Union(2, Box::new(Value::Long(point.value))),
-                )
-            })
-            .collect(),
-        PointsType::ArrayPoints(ArrayPoints { array_type }) => match array_type {
-            Some(ArrayType::DoubleArrayPoints(points)) => points
-                .points
-                .iter()
-                .map(|point| {
-                    let array_values: Vec<Value> =
-                        point.value.iter().map(|v| Value::Double(*v)).collect();
-                    let record =
-                        Value::Record(vec![("items".to_string(), Value::Array(array_values))]);
-                    (
-                        convert_timestamp_to_nanoseconds(point.timestamp.unwrap()),
-                        Value::Union(3, Box::new(record)),
-                    )
-                })
-                .collect(),
-            Some(ArrayType::StringArrayPoints(points)) => points
-                .points
-                .iter()
-                .map(|point| {
-                    let array_values: Vec<Value> = point
-                        .value
-                        .iter()
-                        .map(|v| Value::String(v.clone()))
-                        .collect();
-                    let record =
-                        Value::Record(vec![("items".to_string(), Value::Array(array_values))]);
-                    (
-                        convert_timestamp_to_nanoseconds(point.timestamp.unwrap()),
-                        Value::Union(4, Box::new(record)),
-                    )
-                })
-                .collect(),
-            None => (Vec::new(), Vec::new()),
-        },
-        PointsType::StructPoints(StructPoints { points }) => points
-            .iter()
-            .map(|point| {
-                let record = Value::Record(vec![(
-                    "json".to_string(),
-                    Value::String(point.json_string.clone()),
-                )]);
-                (
-                    convert_timestamp_to_nanoseconds(point.timestamp.unwrap()),
-                    Value::Union(5, Box::new(record)),
-                )
-            })
-            .collect(),
-        PointsType::Uint64Points(Uint64Points { points }) => points
-            .iter()
-            .map(|point| {
-                (
-                    convert_timestamp_to_nanoseconds(point.timestamp.unwrap()),
-                    Value::Union(2, Box::new(Value::Long(point.value as i64))),
-                )
-            })
-            .collect(),
-    }
-}
+    let timestamps: Vec<Value> = points
+        .timestamps
+        .iter()
+        .map(convert_nominal_timestamp_to_nanoseconds)
+        .collect();
 
-fn convert_timestamp_to_nanoseconds(timestamp: Timestamp) -> Value {
-    Value::Long(timestamp.seconds * 1_000_000_000 + timestamp.nanos as i64)
+    let values: Vec<Value> = match &points.points {
+        Some(columnar::points::Points::DoublePoints(DoublePoints { points })) => points
+            .iter()
+            .map(|v| Value::Union(0, Box::new(Value::Double(*v))))
+            .collect(),
+        Some(columnar::points::Points::StringPoints(StringPoints { points })) => points
+            .iter()
+            .map(|v| Value::Union(1, Box::new(Value::String(v.clone()))))
+            .collect(),
+        Some(columnar::points::Points::IntPoints(IntPoints { points })) => points
+            .iter()
+            .map(|v| Value::Union(2, Box::new(Value::Long(*v))))
+            .collect(),
+        Some(columnar::points::Points::ArrayPoints(columnar::ArrayPoints { array_type })) => {
+            match array_type {
+                Some(ColumnarArrayType::DoubleArrayPoints(dap)) => dap
+                    .points
+                    .iter()
+                    .map(|point| {
+                        let array_values: Vec<Value> =
+                            point.value.iter().map(|v| Value::Double(*v)).collect();
+                        let record =
+                            Value::Record(vec![("items".to_string(), Value::Array(array_values))]);
+                        Value::Union(3, Box::new(record))
+                    })
+                    .collect(),
+                Some(ColumnarArrayType::StringArrayPoints(sap)) => sap
+                    .points
+                    .iter()
+                    .map(|point| {
+                        let array_values: Vec<Value> = point
+                            .value
+                            .iter()
+                            .map(|v: &String| Value::String(v.clone()))
+                            .collect();
+                        let record =
+                            Value::Record(vec![("items".to_string(), Value::Array(array_values))]);
+                        Value::Union(4, Box::new(record))
+                    })
+                    .collect(),
+                None => Vec::new(),
+            }
+        }
+        Some(columnar::points::Points::StructPoints(StructPoints { points })) => points
+            .iter()
+            .map(|v| {
+                let record = Value::Record(vec![("json".to_string(), Value::String(v.clone()))]);
+                Value::Union(5, Box::new(record))
+            })
+            .collect(),
+        Some(columnar::points::Points::Uint64Points(Uint64Points { points })) => points
+            .iter()
+            .map(|v| Value::Union(2, Box::new(Value::Long(*v as i64))))
+            .collect(),
+        Some(columnar::points::Points::LogPoints(LogPoints { points })) => points
+            .iter()
+            .map(|p| {
+                let msg = p
+                    .value
+                    .as_ref()
+                    .map(|v| v.message.clone())
+                    .unwrap_or_default();
+                Value::Union(1, Box::new(Value::String(msg)))
+            })
+            .collect(),
+        None => Vec::new(),
+    };
+
+    (timestamps, values)
 }
 
 impl WriteRequestConsumer for AvroFileConsumer {
-    fn consume(&self, request: &WriteRequestNominal) -> ConsumerResult<()> {
-        self.append_series(&request.series)?;
+    fn consume(&self, request: &WriteBatchesRequest) -> ConsumerResult<()> {
+        self.append_batches(&request.batches)?;
         Ok(())
     }
 }
@@ -388,7 +370,7 @@ where
     P: WriteRequestConsumer + Send + Sync,
     S: WriteRequestConsumer + Send + Sync,
 {
-    fn consume(&self, request: &WriteRequestNominal) -> ConsumerResult<()> {
+    fn consume(&self, request: &WriteBatchesRequest) -> ConsumerResult<()> {
         let primary_result = self.primary.consume(request);
         let secondary_result = self.secondary.consume(request);
         if let Err(e) = &primary_result {
@@ -408,7 +390,7 @@ where
     P: WriteRequestConsumer + Send + Sync,
     F: WriteRequestConsumer + Send + Sync,
 {
-    fn consume(&self, request: &WriteRequestNominal) -> ConsumerResult<()> {
+    fn consume(&self, request: &WriteBatchesRequest) -> ConsumerResult<()> {
         if let Err(e) = self.primary.consume(request) {
             warn!("Sending request to primary consumer failed. Attempting fallback.");
             let fallback_result = self.fallback.consume(request);
@@ -448,7 +430,7 @@ impl<C> WriteRequestConsumer for ListeningWriteRequestConsumer<C>
 where
     C: WriteRequestConsumer + Send + Sync,
 {
-    fn consume(&self, request: &WriteRequestNominal) -> ConsumerResult<()> {
+    fn consume(&self, request: &WriteBatchesRequest) -> ConsumerResult<()> {
         match self.consumer.consume(request) {
             Ok(_) => {
                 self.listeners.on_success(request);
@@ -467,27 +449,27 @@ mod tests {
     use std::collections::HashMap;
 
     use apache_avro::Reader;
-    use nominal_api::tonic::google::protobuf::Timestamp;
-    use nominal_api::tonic::io::nominal::scout::api::proto::array_points::ArrayType;
-    use nominal_api::tonic::io::nominal::scout::api::proto::Channel;
-    use nominal_api::tonic::io::nominal::scout::api::proto::DoubleArrayPoint;
-    use nominal_api::tonic::io::nominal::scout::api::proto::StringArrayPoint;
+    use nominal_api::tonic::nominal::direct_channel_writer::v2::DoubleArrayPoint;
+    use nominal_api::tonic::nominal::direct_channel_writer::v2::DoubleArrayPoints;
+    use nominal_api::tonic::nominal::direct_channel_writer::v2::StringArrayPoint;
+    use nominal_api::tonic::nominal::direct_channel_writer::v2::StringArrayPoints;
+    use nominal_api::tonic::nominal::direct_channel_writer::v2::{self as columnar};
+    use nominal_api::tonic::nominal::types::time::Timestamp as NominalTimestamp;
     use tempfile::NamedTempFile;
 
     use super::*;
 
-    fn make_timestamp(secs: i64, nanos: i32) -> Option<Timestamp> {
-        Some(Timestamp {
-            seconds: secs,
-            nanos,
-        })
+    fn make_timestamp(secs: i64, nanos: i64) -> NominalTimestamp {
+        NominalTimestamp {
+            seconds: Some(secs),
+            nanos: Some(nanos),
+            picos: None,
+        }
     }
 
-    fn make_series(name: &str, points: Points) -> Series {
-        Series {
-            channel: Some(Channel {
-                name: name.to_string(),
-            }),
+    fn make_batch(name: &str, points: columnar::Points) -> columnar::RecordsBatch {
+        columnar::RecordsBatch {
+            channel: name.to_string(),
             tags: HashMap::new(),
             points: Some(points),
         }
@@ -502,155 +484,120 @@ mod tests {
         {
             let consumer = AvroFileConsumer::new_with_full_path(&path).unwrap();
 
-            // Create series with each type
-            let double_series = make_series(
+            let double_batch = make_batch(
                 "doubles",
-                Points {
-                    points_type: Some(PointsType::DoublePoints(DoublePoints {
-                        points: vec![
-                            nominal_api::tonic::io::nominal::scout::api::proto::DoublePoint {
-                                timestamp: make_timestamp(1000, 0),
-                                value: 1.5,
-                            },
-                            nominal_api::tonic::io::nominal::scout::api::proto::DoublePoint {
-                                timestamp: make_timestamp(1001, 0),
-                                value: 2.5,
-                            },
-                        ],
+                columnar::Points {
+                    timestamps: vec![make_timestamp(1000, 0), make_timestamp(1001, 0)],
+                    points: Some(columnar::points::Points::DoublePoints(DoublePoints {
+                        points: vec![1.5, 2.5],
                     })),
                 },
             );
 
-            let long_series = make_series(
+            let int_batch = make_batch(
                 "longs",
-                Points {
-                    points_type: Some(PointsType::IntegerPoints(IntegerPoints {
-                        points: vec![
-                            nominal_api::tonic::io::nominal::scout::api::proto::IntegerPoint {
-                                timestamp: make_timestamp(1000, 0),
-                                value: 42,
-                            },
-                            nominal_api::tonic::io::nominal::scout::api::proto::IntegerPoint {
-                                timestamp: make_timestamp(1001, 0),
-                                value: -100,
-                            },
-                        ],
+                columnar::Points {
+                    timestamps: vec![make_timestamp(1000, 0), make_timestamp(1001, 0)],
+                    points: Some(columnar::points::Points::IntPoints(IntPoints {
+                        points: vec![42, -100],
                     })),
                 },
             );
 
-            let string_series = make_series(
+            let string_batch = make_batch(
                 "strings",
-                Points {
-                    points_type: Some(PointsType::StringPoints(StringPoints {
-                        points: vec![
-                            nominal_api::tonic::io::nominal::scout::api::proto::StringPoint {
-                                timestamp: make_timestamp(1000, 0),
-                                value: "hello".to_string(),
-                            },
-                            nominal_api::tonic::io::nominal::scout::api::proto::StringPoint {
-                                timestamp: make_timestamp(1001, 0),
-                                value: "world".to_string(),
-                            },
-                        ],
+                columnar::Points {
+                    timestamps: vec![make_timestamp(1000, 0), make_timestamp(1001, 0)],
+                    points: Some(columnar::points::Points::StringPoints(StringPoints {
+                        points: vec!["hello".to_string(), "world".to_string()],
                     })),
                 },
             );
 
-            let double_array_series = make_series(
+            let double_array_batch = make_batch(
                 "double_arrays",
-                Points {
-                    points_type: Some(PointsType::ArrayPoints(ArrayPoints {
-                        array_type: Some(ArrayType::DoubleArrayPoints(
-                            nominal_api::tonic::io::nominal::scout::api::proto::DoubleArrayPoints {
-                                points: vec![
-                                    DoubleArrayPoint {
-                                        timestamp: make_timestamp(1000, 0),
-                                        value: vec![1.0, 2.0, 3.0],
-                                    },
-                                    DoubleArrayPoint {
-                                        timestamp: make_timestamp(1001, 0),
-                                        value: vec![4.0, 5.0],
-                                    },
-                                ],
-                            },
-                        )),
-                    })),
+                columnar::Points {
+                    timestamps: vec![make_timestamp(1000, 0), make_timestamp(1001, 0)],
+                    points: Some(columnar::points::Points::ArrayPoints(
+                        columnar::ArrayPoints {
+                            array_type: Some(ColumnarArrayType::DoubleArrayPoints(
+                                DoubleArrayPoints {
+                                    points: vec![
+                                        DoubleArrayPoint {
+                                            value: vec![1.0, 2.0, 3.0],
+                                        },
+                                        DoubleArrayPoint {
+                                            value: vec![4.0, 5.0],
+                                        },
+                                    ],
+                                },
+                            )),
+                        },
+                    )),
                 },
             );
 
-            let string_array_series = make_series(
+            let string_array_batch = make_batch(
                 "string_arrays",
-                Points {
-                    points_type: Some(PointsType::ArrayPoints(ArrayPoints {
-                        array_type: Some(ArrayType::StringArrayPoints(
-                            nominal_api::tonic::io::nominal::scout::api::proto::StringArrayPoints {
-                                points: vec![
-                                    StringArrayPoint {
-                                        timestamp: make_timestamp(1000, 0),
-                                        value: vec!["a".to_string(), "b".to_string()],
-                                    },
-                                    StringArrayPoint {
-                                        timestamp: make_timestamp(1001, 0),
-                                        value: vec![
-                                            "c".to_string(),
-                                            "d".to_string(),
-                                            "e".to_string(),
-                                        ],
-                                    },
-                                ],
-                            },
-                        )),
-                    })),
+                columnar::Points {
+                    timestamps: vec![make_timestamp(1000, 0), make_timestamp(1001, 0)],
+                    points: Some(columnar::points::Points::ArrayPoints(
+                        columnar::ArrayPoints {
+                            array_type: Some(ColumnarArrayType::StringArrayPoints(
+                                StringArrayPoints {
+                                    points: vec![
+                                        StringArrayPoint {
+                                            value: vec!["a".to_string(), "b".to_string()],
+                                        },
+                                        StringArrayPoint {
+                                            value: vec![
+                                                "c".to_string(),
+                                                "d".to_string(),
+                                                "e".to_string(),
+                                            ],
+                                        },
+                                    ],
+                                },
+                            )),
+                        },
+                    )),
                 },
             );
 
-            let struct_series = make_series(
+            let struct_batch = make_batch(
                 "structs",
-                Points {
-                    points_type: Some(PointsType::StructPoints(StructPoints {
+                columnar::Points {
+                    timestamps: vec![make_timestamp(1000, 0), make_timestamp(1001, 0)],
+                    points: Some(columnar::points::Points::StructPoints(StructPoints {
                         points: vec![
-                            nominal_api::tonic::io::nominal::scout::api::proto::StructPoint {
-                                timestamp: make_timestamp(1000, 0),
-                                json_string: r#"{"key": "value"}"#.to_string(),
-                            },
-                            nominal_api::tonic::io::nominal::scout::api::proto::StructPoint {
-                                timestamp: make_timestamp(1001, 0),
-                                json_string: r#"{"count": 42}"#.to_string(),
-                            },
+                            r#"{"key": "value"}"#.to_string(),
+                            r#"{"count": 42}"#.to_string(),
                         ],
                     })),
                 },
             );
 
-            let uint64_series = make_series(
+            let uint64_batch = make_batch(
                 "uint64s",
-                Points {
-                    points_type: Some(PointsType::Uint64Points(Uint64Points {
-                        points: vec![
-                            nominal_api::tonic::io::nominal::scout::api::proto::Uint64Point {
-                                timestamp: make_timestamp(1000, 0),
-                                value: u64::MAX,
-                            },
-                            nominal_api::tonic::io::nominal::scout::api::proto::Uint64Point {
-                                timestamp: make_timestamp(1001, 0),
-                                value: 12345678901234567890,
-                            },
-                        ],
+                columnar::Points {
+                    timestamps: vec![make_timestamp(1000, 0), make_timestamp(1001, 0)],
+                    points: Some(columnar::points::Points::Uint64Points(Uint64Points {
+                        points: vec![u64::MAX, 12345678901234567890],
                     })),
                 },
             );
 
-            let request = WriteRequestNominal {
-                series: vec![
-                    double_series,
-                    long_series,
-                    string_series,
-                    double_array_series,
-                    string_array_series,
-                    struct_series,
-                    uint64_series,
+            let request = WriteBatchesRequest {
+                batches: vec![
+                    double_batch,
+                    int_batch,
+                    string_batch,
+                    double_array_batch,
+                    string_array_batch,
+                    struct_batch,
+                    uint64_batch,
                 ],
+                data_source_rid: String::new(),
             };
 
             consumer.consume(&request).unwrap();
@@ -664,7 +611,7 @@ mod tests {
         let reader = Reader::new(file).unwrap();
 
         let records: Vec<_> = reader.map(|r| r.unwrap()).collect();
-        assert_eq!(records.len(), 7, "Expected 7 series records");
+        assert_eq!(records.len(), 7, "Expected 7 batch records");
 
         // Verify each record has the expected channel name and value types
         let channels: Vec<String> = records
