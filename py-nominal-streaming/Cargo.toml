@@ -18,7 +18,7 @@ pyo3 = { version = "0.26", features = ["extension-module", "abi3-py310", "time"]
 
 nominal-api = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "time"] }
-once_cell = "1.19"
+once_cell = "1.21"
 
 # Vendored openssl to enable CI/CD
 openssl = { version = "0.10", features = ["vendored"] }
