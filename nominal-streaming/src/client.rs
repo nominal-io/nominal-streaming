@@ -145,6 +145,42 @@ pub fn async_conjure_client(
 
 pub type WriteRequest<'a> = Request<AsyncRequestBody<'a, BodyWriter>>;
 
+/// Build a conjure HTTP POST request for the `writeLogs` endpoint.
+///
+/// The body is a conjure-serialized `WriteLogsRequest` JSON payload sent to
+/// `POST /storage/writer/v1/logs/{dataSourceRid}`, the same endpoint used by the
+/// Nominal Python client's `write_logs` API.
+pub fn encode_log_request<'b>(
+    json_bytes: Vec<u8>,
+    api_key: &BearerToken,
+    data_source_rid: &ResourceIdentifier,
+) -> WriteRequest<'b> {
+    let mut request = Request::new(AsyncRequestBody::Fixed(json_bytes.into()));
+
+    let headers = request.headers_mut();
+    headers.insert(CONTENT_TYPE, "application/json".parse().unwrap());
+
+    *request.method_mut() = conjure_http::private::http::Method::POST;
+    let mut path = conjure_http::private::UriBuilder::new();
+    path.push_literal("/storage/writer/v1/logs");
+
+    let nominal_data_source_or_dataset_rid = NominalDataSourceOrDatasetRid(data_source_rid.clone());
+    path.push_path_parameter(&nominal_data_source_or_dataset_rid);
+
+    *request.uri_mut() = path.build();
+    conjure_http::private::encode_header_auth(&mut request, api_key);
+    conjure_http::private::encode_empty_response_headers(&mut request);
+    request
+        .extensions_mut()
+        .insert(conjure_http::client::Endpoint::new(
+            "NominalChannelWriterService",
+            None,
+            "writeLogs",
+            "/storage/writer/v1/logs/{dataSourceRid}",
+        ));
+    request
+}
+
 pub fn encode_request<'a, 'b>(
     write_request_bytes: Vec<u8>,
     api_key: &'a BearerToken,

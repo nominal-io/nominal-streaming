@@ -158,6 +158,7 @@ let stream = NominalDatasetStreamBuilder::new()
 pub mod client;
 pub mod consumer;
 pub mod listener;
+pub mod log_stream;
 pub mod stream;
 pub mod types;
 pub mod upload;
@@ -184,6 +185,10 @@ pub mod prelude {
     pub use nominal_api::tonic::io::nominal::scout::api::proto::WriteRequestNominal;
 
     pub use crate::consumer::NominalCoreConsumer;
+    pub use crate::log_stream::LogPoint;
+    pub use crate::log_stream::NominalLogStream;
+    pub use crate::log_stream::NominalLogStreamBuilder;
+    pub use crate::log_stream::NominalLogStreamOpts;
     pub use crate::stream::NominalDatasetStream;
     #[expect(deprecated)]
     pub use crate::stream::NominalDatasourceStream;
