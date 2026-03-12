@@ -22,6 +22,7 @@ use conjure_runtime_rustls_platform_verifier::ResponseBody;
 use nominal_api::api::rids::NominalDataSourceOrDatasetRid;
 use nominal_api::api::rids::WorkspaceRid;
 use nominal_api::ingest::api::IngestServiceAsyncClient;
+use nominal_api::storage::writer::api::NominalChannelWriterServiceAsyncClient;
 use nominal_api::upload::api::UploadServiceAsyncClient;
 use snap::write::FrameEncoder;
 use url::Url;
@@ -67,6 +68,7 @@ pub struct NominalApiClients {
     pub streaming: PlatformVerifierClient,
     pub upload: UploadServiceAsyncClient<PlatformVerifierClient>,
     pub ingest: IngestServiceAsyncClient<PlatformVerifierClient>,
+    pub channel_writer: NominalChannelWriterServiceAsyncClient<PlatformVerifierClient>,
 }
 
 impl Debug for NominalApiClients {
@@ -75,6 +77,7 @@ impl Debug for NominalApiClients {
             .field("streaming", &"Client")
             .field("upload", &"UploadServiceAsyncClient<Client>")
             .field("ingest", &"IngestServiceAsyncClient<Client>")
+            .field("channel_writer", &"NominalChannelWriterServiceAsyncClient<Client>")
             .finish()
     }
 }
@@ -97,7 +100,8 @@ impl NominalApiClients {
         Self {
             streaming,
             upload: UploadServiceAsyncClient::new(services.clone()),
-            ingest: IngestServiceAsyncClient::new(services),
+            ingest: IngestServiceAsyncClient::new(services.clone()),
+            channel_writer: NominalChannelWriterServiceAsyncClient::new(services),
         }
     }
 
