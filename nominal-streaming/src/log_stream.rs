@@ -36,10 +36,16 @@ use std::time::Instant;
 
 use conjure_object::BearerToken;
 use conjure_object::ResourceIdentifier;
+use conjure_object::SafeLong;
+use nominal_api::api::Channel;
+use nominal_api::api::Timestamp;
+use nominal_api::api::rids::NominalDataSourceOrDatasetRid;
+use nominal_api::storage::writer::api::LogPoint as ApiLogPoint;
+use nominal_api::storage::writer::api::LogValue;
+use nominal_api::storage::writer::api::WriteLogsRequest;
 use tracing::error;
 use tracing::info;
 
-use crate::client;
 use crate::client::NominalApiClients;
 use crate::client::PRODUCTION_API_URL;
 use crate::types::IntoTimestamp;
@@ -155,36 +161,6 @@ impl NominalLogStreamBuilder {
     }
 }
 
-// ── wire types ────────────────────────────────────────────────────────────────
-//
-// These structs mirror the conjure `WriteLogsRequest` / `LogPoint` / `LogValue` types
-// defined in `nominal-channel-writer-api.yml` (package `io.nominal.storage.writer.api`).
-// The conjure `global.Timestamp` type is `{ seconds: safelong, nanos: safelong }`.
-
-#[derive(serde::Serialize)]
-struct WriteLogsRequestJson<'a> {
-    logs: Vec<LogPointJson<'a>>,
-    channel: &'a str,
-}
-
-#[derive(serde::Serialize)]
-struct LogPointJson<'a> {
-    timestamp: TimestampJson,
-    value: LogValueJson<'a>,
-}
-
-#[derive(serde::Serialize)]
-struct TimestampJson {
-    seconds: i64,
-    nanos: i64,
-}
-
-#[derive(serde::Serialize)]
-struct LogValueJson<'a> {
-    message: &'a str,
-    args: &'a BTreeMap<String, String>,
-}
-
 // ── public log point type ─────────────────────────────────────────────────────
 
 /// A single log entry buffered in a [`NominalLogStream`].
@@ -285,40 +261,48 @@ impl NominalLogStream {
             return;
         };
 
-        let request_body = WriteLogsRequestJson {
-            logs: self
-                .buffer
-                .iter()
-                .map(|lp| LogPointJson {
-                    timestamp: TimestampJson {
-                        seconds: lp.timestamp_nanos / 1_000_000_000,
-                        nanos: lp.timestamp_nanos % 1_000_000_000,
-                    },
-                    value: LogValueJson {
-                        message: &lp.message,
-                        args: &lp.args,
-                    },
-                })
-                .collect(),
-            channel: &self.channel,
-        };
+        let logs: Vec<ApiLogPoint> = self
+            .buffer
+            .iter()
+            .map(|lp| {
+                let secs = lp.timestamp_nanos / 1_000_000_000;
+                let nanos = lp.timestamp_nanos % 1_000_000_000;
+                ApiLogPoint::builder()
+                    .timestamp(
+                        Timestamp::builder()
+                            .seconds(SafeLong::try_from(secs).unwrap_or(SafeLong::MAX))
+                            .nanos(SafeLong::try_from(nanos).unwrap_or(SafeLong::ZERO))
+                            .build(),
+                    )
+                    .value(
+                        LogValue::builder()
+                            .message(lp.message.clone())
+                            .args(lp.args.clone())
+                            .build(),
+                    )
+                    .build()
+            })
+            .collect();
 
-        match serde_json::to_vec(&request_body) {
-            Ok(json_bytes) => {
-                info!(
-                    "flushing {} log points to channel '{}'",
-                    self.buffer.len(),
-                    self.channel,
-                );
-                let req =
-                    client::encode_log_request(json_bytes, &config.token, &config.data_source_rid);
-                if let Err(e) = config.handle.block_on(config.clients.send(req)) {
-                    error!("failed to send log batch: {e:?}");
-                }
-            }
-            Err(e) => {
-                error!("failed to serialize log request: {e}");
-            }
+        let request = WriteLogsRequest::builder()
+            .logs(logs)
+            .channel(Channel::new(self.channel.clone()))
+            .build();
+
+        info!(
+            "flushing {} log points to channel '{}'",
+            self.buffer.len(),
+            self.channel,
+        );
+
+        let rid = NominalDataSourceOrDatasetRid(config.data_source_rid.clone());
+        if let Err(e) = config.handle.block_on(
+            config
+                .clients
+                .channel_writer
+                .write_logs(&config.token, &rid, &request),
+        ) {
+            error!("failed to send log batch: {e:?}");
         }
 
         self.buffer.clear();
@@ -388,8 +372,8 @@ mod tests {
     }
 
     #[test]
-    fn test_log_stream_serialization() {
-        // Verify the JSON body matches the expected conjure WriteLogsRequest shape.
+    fn test_log_stream_timestamp_split() {
+        // Verify that nanosecond timestamps are split correctly into seconds and nanos.
         let mut stream = NominalLogStreamBuilder::new()
             .with_channel("serial_test")
             .build();
@@ -399,25 +383,8 @@ mod tests {
 
         let lp = &stream.buffer[0];
         assert_eq!(lp.timestamp_nanos, 1_000_000_001);
-
-        let request_body = WriteLogsRequestJson {
-            logs: vec![LogPointJson {
-                timestamp: TimestampJson {
-                    seconds: lp.timestamp_nanos / 1_000_000_000,
-                    nanos: lp.timestamp_nanos % 1_000_000_000,
-                },
-                value: LogValueJson {
-                    message: &lp.message,
-                    args: &lp.args,
-                },
-            }],
-            channel: "serial_test",
-        };
-
-        let json = serde_json::to_value(&request_body).unwrap();
-        assert_eq!(json["channel"], "serial_test");
-        assert_eq!(json["logs"][0]["timestamp"]["seconds"], 1);
-        assert_eq!(json["logs"][0]["timestamp"]["nanos"], 1);
-        assert_eq!(json["logs"][0]["value"]["message"], "hello");
+        assert_eq!(lp.timestamp_nanos / 1_000_000_000, 1);
+        assert_eq!(lp.timestamp_nanos % 1_000_000_000, 1);
+        assert_eq!(lp.message, "hello");
     }
 }
