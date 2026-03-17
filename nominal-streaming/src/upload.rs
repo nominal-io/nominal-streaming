@@ -11,24 +11,26 @@ use conjure_http::private::Stream;
 use conjure_object::BearerToken;
 use conjure_object::ResourceIdentifier;
 use conjure_object::SafeLong;
-use conjure_runtime_rustls_platform_verifier::conjure_runtime::BodyWriter;
-use conjure_runtime_rustls_platform_verifier::PlatformVerifierClient;
+use conjure_runtime::BodyWriter;
+use conjure_runtime::Client;
 use futures::StreamExt;
-use nominal_api::api::rids::WorkspaceRid;
-use nominal_api::ingest::api::AvroStreamOpts;
-use nominal_api::ingest::api::CompleteMultipartUploadResponse;
-use nominal_api::ingest::api::DatasetIngestTarget;
-use nominal_api::ingest::api::ExistingDatasetIngestDestination;
-use nominal_api::ingest::api::IngestOptions;
-use nominal_api::ingest::api::IngestRequest;
-use nominal_api::ingest::api::IngestResponse;
-use nominal_api::ingest::api::IngestServiceAsyncClient;
-use nominal_api::ingest::api::IngestSource;
-use nominal_api::ingest::api::InitiateMultipartUploadRequest;
-use nominal_api::ingest::api::InitiateMultipartUploadResponse;
-use nominal_api::ingest::api::Part;
-use nominal_api::ingest::api::S3IngestSource;
-use nominal_api::upload::api::UploadServiceAsyncClient;
+use nominal_api::clients::ingest::api::AsyncIngestService;
+use nominal_api::clients::ingest::api::AsyncIngestServiceClient;
+use nominal_api::clients::upload::api::AsyncUploadService;
+use nominal_api::clients::upload::api::AsyncUploadServiceClient;
+use nominal_api::objects::api::rids::WorkspaceRid;
+use nominal_api::objects::ingest::api::AvroStreamOpts;
+use nominal_api::objects::ingest::api::CompleteMultipartUploadResponse;
+use nominal_api::objects::ingest::api::DatasetIngestTarget;
+use nominal_api::objects::ingest::api::ExistingDatasetIngestDestination;
+use nominal_api::objects::ingest::api::IngestOptions;
+use nominal_api::objects::ingest::api::IngestRequest;
+use nominal_api::objects::ingest::api::IngestResponse;
+use nominal_api::objects::ingest::api::IngestSource;
+use nominal_api::objects::ingest::api::InitiateMultipartUploadRequest;
+use nominal_api::objects::ingest::api::InitiateMultipartUploadResponse;
+use nominal_api::objects::ingest::api::Part;
+use nominal_api::objects::ingest::api::S3IngestSource;
 use tokio::sync::Semaphore;
 use tracing::error;
 use tracing::info;
@@ -224,8 +226,8 @@ impl AsyncWriteBody<BodyWriter> for FileWriteBody {
 
 #[derive(Clone)]
 pub struct FileObjectStoreUploader {
-    upload_client: UploadServiceAsyncClient<PlatformVerifierClient>,
-    ingest_client: IngestServiceAsyncClient<PlatformVerifierClient>,
+    upload_client: AsyncUploadServiceClient<Client>,
+    ingest_client: AsyncIngestServiceClient<Client>,
     http_client: reqwest::Client,
     handle: tokio::runtime::Handle,
     opts: UploaderOpts,
@@ -233,8 +235,8 @@ pub struct FileObjectStoreUploader {
 
 impl FileObjectStoreUploader {
     pub fn new(
-        upload_client: UploadServiceAsyncClient<PlatformVerifierClient>,
-        ingest_client: IngestServiceAsyncClient<PlatformVerifierClient>,
+        upload_client: AsyncUploadServiceClient<Client>,
+        ingest_client: AsyncIngestServiceClient<Client>,
         http_client: reqwest::Client,
         handle: tokio::runtime::Handle,
         opts: UploaderOpts,
@@ -271,7 +273,7 @@ impl FileObjectStoreUploader {
 
     #[expect(clippy::too_many_arguments)]
     async fn upload_part(
-        client: UploadServiceAsyncClient<PlatformVerifierClient>,
+        client: AsyncUploadServiceClient<Client>,
         http_client: reqwest::Client,
         token: BearerToken,
         upload_id: String,
@@ -308,7 +310,7 @@ impl FileObjectStoreUploader {
     }
 
     async fn try_upload_part(
-        client: UploadServiceAsyncClient<PlatformVerifierClient>,
+        client: AsyncUploadServiceClient<Client>,
         http_client: reqwest::Client,
         token: &BearerToken,
         upload_id: &str,

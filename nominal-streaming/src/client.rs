@@ -1,28 +1,29 @@
 use std::fmt::Debug;
 use std::io::Write;
+use std::sync::Arc;
 use std::sync::LazyLock;
 
 use conjure_error::Error;
 use conjure_http::client::AsyncClient;
 use conjure_http::client::AsyncRequestBody;
 use conjure_http::client::AsyncService;
+use conjure_http::client::ConjureRuntime;
 use conjure_http::private::header::CONTENT_ENCODING;
 use conjure_http::private::header::CONTENT_TYPE;
 use conjure_http::private::Request;
 use conjure_http::private::Response;
 use conjure_object::BearerToken;
 use conjure_object::ResourceIdentifier;
-use conjure_runtime_rustls_platform_verifier::conjure_runtime::Agent;
-use conjure_runtime_rustls_platform_verifier::conjure_runtime::BodyWriter;
-use conjure_runtime_rustls_platform_verifier::conjure_runtime::Client;
-use conjure_runtime_rustls_platform_verifier::conjure_runtime::Idempotency;
-use conjure_runtime_rustls_platform_verifier::conjure_runtime::UserAgent;
-use conjure_runtime_rustls_platform_verifier::PlatformVerifierClient;
-use conjure_runtime_rustls_platform_verifier::ResponseBody;
-use nominal_api::api::rids::NominalDataSourceOrDatasetRid;
-use nominal_api::api::rids::WorkspaceRid;
-use nominal_api::ingest::api::IngestServiceAsyncClient;
-use nominal_api::upload::api::UploadServiceAsyncClient;
+use conjure_runtime::Agent;
+use conjure_runtime::BodyWriter;
+use conjure_runtime::Client;
+use conjure_runtime::Idempotency;
+use conjure_runtime::ResponseBody;
+use conjure_runtime::UserAgent;
+use nominal_api::clients::ingest::api::AsyncIngestServiceClient;
+use nominal_api::clients::upload::api::AsyncUploadServiceClient;
+use nominal_api::objects::api::rids::NominalDataSourceOrDatasetRid;
+use nominal_api::objects::api::rids::WorkspaceRid;
 use snap::write::FrameEncoder;
 use url::Url;
 
@@ -32,7 +33,7 @@ pub mod conjure {
     pub use conjure_error as error;
     pub use conjure_http as http;
     pub use conjure_object as object;
-    pub use conjure_runtime_rustls_platform_verifier::conjure_runtime as runtime;
+    pub use conjure_runtime as runtime;
 }
 
 /// The URL that points toward's Nominal's default production deployment.
@@ -64,9 +65,9 @@ impl AuthProvider for TokenAndWorkspaceRid {
 
 #[derive(Clone)]
 pub struct NominalApiClients {
-    pub streaming: PlatformVerifierClient,
-    pub upload: UploadServiceAsyncClient<PlatformVerifierClient>,
-    pub ingest: IngestServiceAsyncClient<PlatformVerifierClient>,
+    pub streaming: Client,
+    pub upload: AsyncUploadServiceClient<Client>,
+    pub ingest: AsyncIngestServiceClient<Client>,
 }
 
 impl Debug for NominalApiClients {
@@ -86,18 +87,19 @@ impl NominalApiClients {
             .expect("Failed to create streaming client");
         let services = async_conjure_client("upload-ingest", base_uri)
             .expect("Failed to create upload/ingest client");
-        Self::from_conjure_clients(streaming, services)
+        Self::from_conjure_clients(streaming, services, &Arc::new(ConjureRuntime::default()))
     }
 
     /// NOTE: the conjure client type is a shared handle, and cheap to clone.
     pub fn from_conjure_clients(
-        streaming: PlatformVerifierClient,
-        services: PlatformVerifierClient,
+        streaming: Client,
+        services: Client,
+        runtime: &Arc<ConjureRuntime>,
     ) -> Self {
         Self {
             streaming,
-            upload: UploadServiceAsyncClient::new(services.clone()),
-            ingest: IngestServiceAsyncClient::new(services),
+            upload: AsyncUploadServiceClient::new(services.clone(), runtime),
+            ingest: AsyncIngestServiceClient::new(services, runtime),
         }
     }
 
@@ -109,7 +111,7 @@ impl NominalApiClients {
 pub static PRODUCTION_CLIENTS: LazyLock<NominalApiClients> =
     LazyLock::new(|| NominalApiClients::from_uri(PRODUCTION_API_URL));
 
-pub fn async_conjure_streaming_client(uri: Url) -> Result<PlatformVerifierClient, Error> {
+pub fn async_conjure_streaming_client(uri: Url) -> Result<Client, Error> {
     Client::builder()
         .service("core-streaming-rs")
         .user_agent(UserAgent::new(Agent::new(
@@ -124,14 +126,10 @@ pub fn async_conjure_streaming_client(uri: Url) -> Result<PlatformVerifierClient
         .max_num_retries(2)
         // enables retries for POST endpoints like the streaming ingest one
         .idempotency(Idempotency::Always)
-        .raw_client_builder(conjure_runtime_rustls_platform_verifier::RawClientBuilder)
         .build()
 }
 
-pub fn async_conjure_client(
-    service: &'static str,
-    uri: Url,
-) -> Result<PlatformVerifierClient, Error> {
+pub fn async_conjure_client(service: &'static str, uri: Url) -> Result<Client, Error> {
     Client::builder()
         .service(service)
         .user_agent(UserAgent::new(Agent::new(
@@ -139,7 +137,6 @@ pub fn async_conjure_client(
             env!("CARGO_PKG_VERSION"),
         )))
         .uri(uri)
-        .raw_client_builder(conjure_runtime_rustls_platform_verifier::RawClientBuilder)
         .build()
 }
 
@@ -171,7 +168,7 @@ pub fn encode_request<'a, 'b>(
 
     *request.uri_mut() = path.build();
     conjure_http::private::encode_header_auth(&mut request, api_key);
-    conjure_http::private::encode_empty_response_headers(&mut request);
+    //conjure_http::private::encode_empty_response_headers(&mut request);
     request
         .extensions_mut()
         .insert(conjure_http::client::Endpoint::new(
