@@ -12,7 +12,7 @@ chrono = "0.4.43"
 conjure-error = "5"
 conjure-http = "5"
 conjure-object = "5"
-conjure-runtime = "7"
+conjure-runtime-rustls-platform-verifier = "0.2"
 crossbeam-channel = "0.5.15"
 derive_more = { version = "2", features = ["from"] }
 futures = "0.3"

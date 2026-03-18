@@ -14,12 +14,12 @@ use conjure_http::private::Request;
 use conjure_http::private::Response;
 use conjure_object::BearerToken;
 use conjure_object::ResourceIdentifier;
-use conjure_runtime::Agent;
-use conjure_runtime::BodyWriter;
-use conjure_runtime::Client;
-use conjure_runtime::Idempotency;
-use conjure_runtime::ResponseBody;
-use conjure_runtime::UserAgent;
+use conjure_runtime_rustls_platform_verifier::Agent;
+use conjure_runtime_rustls_platform_verifier::BodyWriter;
+use conjure_runtime_rustls_platform_verifier::Client;
+use conjure_runtime_rustls_platform_verifier::Idempotency;
+use conjure_runtime_rustls_platform_verifier::ResponseBody;
+use conjure_runtime_rustls_platform_verifier::UserAgent;
 use nominal_api::clients::ingest::api::AsyncIngestServiceClient;
 use nominal_api::clients::upload::api::AsyncUploadServiceClient;
 use nominal_api::objects::api::rids::NominalDataSourceOrDatasetRid;
@@ -33,7 +33,7 @@ pub mod conjure {
     pub use conjure_error as error;
     pub use conjure_http as http;
     pub use conjure_object as object;
-    pub use conjure_runtime as runtime;
+    pub use conjure_runtime_rustls_platform_verifier as runtime;
 }
 
 /// The URL that points toward's Nominal's default production deployment.
