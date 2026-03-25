@@ -8,7 +8,7 @@ default-members = ["nominal-streaming"]
 [workspace.dependencies]
 apache-avro = { version = "0.17.0", features = ["snappy"] }
 async-channel = "2.5.0"
-chrono = "0.4.43"
+chrono = "0.4.44"
 conjure-error = "5"
 conjure-http = "5"
 conjure-object = "5"
