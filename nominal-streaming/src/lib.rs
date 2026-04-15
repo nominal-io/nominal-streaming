@@ -56,7 +56,7 @@ let channel_descriptor = ChannelDescriptor::with_tags(
     "channel_1", [("experiment_id", "123")]
 );
 
-let mut writer = stream.double_writer(&channel_descriptor);
+let mut writer = stream.double_writer(channel_descriptor);
 
 // Stream single data point
 let start_time = UNIX_EPOCH.elapsed().unwrap();
@@ -115,7 +115,7 @@ async fn async_main() {
 
     let channel_descriptor = ChannelDescriptor::with_tags("channel_1", [("experiment_id", "123")]);
 
-    let mut writer = stream.double_writer(&channel_descriptor);
+    let mut writer = stream.double_writer(channel_descriptor);
 
     // Generate and upload 100,000 data points
     for i in 0..100_000 {
@@ -386,7 +386,7 @@ mod tests {
         let (test_consumer, stream) = create_test_stream();
 
         let cd = ChannelDescriptor::new("channel_1");
-        let mut writer = stream.double_writer(&cd);
+        let mut writer = stream.double_writer(cd);
 
         for i in 0..5000 {
             let start_time = UNIX_EPOCH.elapsed().unwrap();
@@ -415,7 +415,7 @@ mod tests {
         let (test_consumer, stream) = create_test_stream();
 
         let cd = ChannelDescriptor::new("channel_1");
-        let mut writer = stream.double_writer(&cd);
+        let mut writer = stream.double_writer(cd);
 
         writer.push(UNIX_EPOCH.elapsed().unwrap(), 1.0);
         thread::sleep(Duration::from_millis(101));
@@ -440,11 +440,11 @@ mod tests {
         let cd3 = ChannelDescriptor::new("int");
         let cd4 = ChannelDescriptor::new("uint64");
         let cd5 = ChannelDescriptor::new("struct");
-        let mut double_writer = stream.double_writer(&cd1);
-        let mut string_writer = stream.string_writer(&cd2);
-        let mut integer_writer = stream.integer_writer(&cd3);
-        let mut uint64_writer = stream.uint64_writer(&cd4);
-        let mut struct_writer = stream.struct_writer(&cd5);
+        let mut double_writer = stream.double_writer(cd1);
+        let mut string_writer = stream.string_writer(cd2);
+        let mut integer_writer = stream.integer_writer(cd3);
+        let mut uint64_writer = stream.uint64_writer(cd4);
+        let mut struct_writer = stream.struct_writer(cd5);
 
         for i in 0..5000 {
             let start_time = UNIX_EPOCH.elapsed().unwrap();
