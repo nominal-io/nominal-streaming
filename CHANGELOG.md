@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.1](https://github.com/nominal-io/nominal-streaming/compare/v0.8.0...v0.8.1) - 2026-04-15
+
+### Other
+
+- make channel writers own ChannelDescriptor ([#217](https://github.com/nominal-io/nominal-streaming/pull/217))
+
 ## [0.8.0](https://github.com/nominal-io/nominal-streaming/compare/v0.7.12...v0.8.0) - 2026-03-25
 
 ### Other
