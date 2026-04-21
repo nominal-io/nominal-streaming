@@ -13,7 +13,6 @@ use conjure_http::private::header::CONTENT_TYPE;
 use conjure_http::private::Request;
 use conjure_http::private::Response;
 use conjure_object::BearerToken;
-use conjure_object::ResourceIdentifier;
 use conjure_runtime_rustls_platform_verifier::Agent;
 use conjure_runtime_rustls_platform_verifier::BodyWriter;
 use conjure_runtime_rustls_platform_verifier::Client;
@@ -22,7 +21,6 @@ use conjure_runtime_rustls_platform_verifier::ResponseBody;
 use conjure_runtime_rustls_platform_verifier::UserAgent;
 use nominal_api::clients::ingest::api::AsyncIngestServiceClient;
 use nominal_api::clients::upload::api::AsyncUploadServiceClient;
-use nominal_api::objects::api::rids::NominalDataSourceOrDatasetRid;
 use nominal_api::objects::api::rids::WorkspaceRid;
 use snap::write::FrameEncoder;
 use url::Url;
@@ -142,10 +140,9 @@ pub fn async_conjure_client(service: &'static str, uri: Url) -> Result<Client, E
 
 pub type WriteRequest<'a> = Request<AsyncRequestBody<'a, BodyWriter>>;
 
-pub fn encode_request<'a, 'b>(
+pub fn encode_request<'b>(
     write_request_bytes: Vec<u8>,
-    api_key: &'a BearerToken,
-    data_source_rid: &'a ResourceIdentifier,
+    api_key: &BearerToken,
 ) -> std::io::Result<WriteRequest<'b>> {
     let mut encoder = FrameEncoder::new(Vec::with_capacity(write_request_bytes.len()));
 
@@ -161,10 +158,7 @@ pub fn encode_request<'a, 'b>(
 
     *request.method_mut() = conjure_http::private::http::Method::POST;
     let mut path = conjure_http::private::UriBuilder::new();
-    path.push_literal("/storage/writer/v1/nominal");
-
-    let nominal_data_source_or_dataset_rid = NominalDataSourceOrDatasetRid(data_source_rid.clone());
-    path.push_path_parameter(&nominal_data_source_or_dataset_rid);
+    path.push_literal("/storage/writer/v1/nominal-columnar");
 
     *request.uri_mut() = path.build();
     conjure_http::private::encode_header_auth(&mut request, api_key);
@@ -173,8 +167,8 @@ pub fn encode_request<'a, 'b>(
         .insert(conjure_http::client::Endpoint::new(
             "NominalChannelWriterService",
             None,
-            "writeNominalBatches",
-            "/storage/writer/v1/nominal/{dataSourceRid}",
+            "writeNominalColumnarBatches",
+            "/storage/writer/v1/nominal-columnar",
         ));
     Ok(request)
 }
