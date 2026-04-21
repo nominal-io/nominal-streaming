@@ -8,23 +8,40 @@ use std::sync::LazyLock;
 use apache_avro::types::Record;
 use apache_avro::types::Value;
 use conjure_object::ResourceIdentifier;
+#[cfg(not(feature = "columnar"))]
 use nominal_api::tonic::google::protobuf::Timestamp;
+#[cfg(not(feature = "columnar"))]
 use nominal_api::tonic::io::nominal::scout::api::proto::array_points::ArrayType;
+#[cfg(not(feature = "columnar"))]
 use nominal_api::tonic::io::nominal::scout::api::proto::points::PointsType;
+#[cfg(not(feature = "columnar"))]
 use nominal_api::tonic::io::nominal::scout::api::proto::ArrayPoints;
+#[cfg(not(feature = "columnar"))]
 use nominal_api::tonic::io::nominal::scout::api::proto::DoublePoints;
+#[cfg(not(feature = "columnar"))]
 use nominal_api::tonic::io::nominal::scout::api::proto::IntegerPoints;
+#[cfg(not(feature = "columnar"))]
 use nominal_api::tonic::io::nominal::scout::api::proto::Points;
+#[cfg(not(feature = "columnar"))]
 use nominal_api::tonic::io::nominal::scout::api::proto::Series;
+#[cfg(not(feature = "columnar"))]
 use nominal_api::tonic::io::nominal::scout::api::proto::StringPoints;
+#[cfg(not(feature = "columnar"))]
 use nominal_api::tonic::io::nominal::scout::api::proto::StructPoints;
+#[cfg(not(feature = "columnar"))]
 use nominal_api::tonic::io::nominal::scout::api::proto::Uint64Points;
-use nominal_api::tonic::io::nominal::scout::api::proto::WriteRequestNominal;
+#[cfg(feature = "columnar")]
+use nominal_api::tonic::nominal::direct_channel_writer::v2 as columnar;
+#[cfg(feature = "columnar")]
+use nominal_api::tonic::nominal::direct_channel_writer::v2::array_points::ArrayType as ColumnarArrayType;
+#[cfg(feature = "columnar")]
+use nominal_api::tonic::nominal::types::time::Timestamp as NominalTimestamp;
 use parking_lot::Mutex;
 use prost::Message;
 use tracing::warn;
 
 use crate::client::NominalApiClients;
+use crate::client::StreamWriteRequest;
 use crate::client::{self};
 use crate::listener::NominalStreamListener;
 use crate::types::AuthProvider;
@@ -46,7 +63,7 @@ pub enum ConsumerError {
 pub type ConsumerResult<T> = Result<T, ConsumerError>;
 
 pub trait WriteRequestConsumer: Send + Sync + Debug {
-    fn consume(&self, request: &WriteRequestNominal) -> ConsumerResult<()>;
+    fn consume(&self, request: &StreamWriteRequest) -> ConsumerResult<()>;
 }
 
 #[derive(Clone)]
@@ -83,13 +100,34 @@ impl<T: AuthProvider> Debug for NominalCoreConsumer<T> {
 }
 
 impl<T: AuthProvider + 'static> WriteRequestConsumer for NominalCoreConsumer<T> {
-    fn consume(&self, request: &WriteRequestNominal) -> ConsumerResult<()> {
+    #[cfg(not(feature = "columnar"))]
+    fn consume(&self, request: &StreamWriteRequest) -> ConsumerResult<()> {
         let token = self
             .auth_provider
             .token()
             .ok_or(ConsumerError::MissingTokenError)?;
         let write_request =
             client::encode_request(request.encode_to_vec(), &token, &self.data_source_rid)?;
+        self.handle.block_on(async {
+            self.client
+                .send(write_request)
+                .await
+                .map_err(|e| ConsumerError::RequestError(format!("{e:?}")))
+        })?;
+        Ok(())
+    }
+
+    #[cfg(feature = "columnar")]
+    fn consume(&self, request: &StreamWriteRequest) -> ConsumerResult<()> {
+        let token = self
+            .auth_provider
+            .token()
+            .ok_or(ConsumerError::MissingTokenError)?;
+        // The columnar endpoint takes data_source_rid in the proto body rather
+        // than the URL path, so we set it here before encoding.
+        let mut request_with_rid = request.clone();
+        request_with_rid.data_source_rid = self.data_source_rid.to_string();
+        let write_request = client::encode_request(request_with_rid.encode_to_vec(), &token)?;
         self.handle.block_on(async {
             self.client
                 .send(write_request)
@@ -193,6 +231,7 @@ impl AvroFileConsumer {
         })
     }
 
+    #[cfg(not(feature = "columnar"))]
     fn append_series(&self, series: &[Series]) -> ConsumerResult<()> {
         let mut records: Vec<Record> = Vec::new();
         for series in series {
@@ -222,8 +261,33 @@ impl AvroFileConsumer {
 
         Ok(())
     }
+
+    #[cfg(feature = "columnar")]
+    fn append_batches(&self, batches: &[columnar::RecordsBatch]) -> ConsumerResult<()> {
+        let mut records: Vec<Record> = Vec::new();
+        for batch in batches {
+            let (timestamps, values) = columnar_points_to_avro(batch.points.as_ref());
+
+            let mut record = Record::new(&CORE_AVRO_SCHEMA).expect("Failed to create Avro record");
+
+            record.put("channel", batch.channel.clone());
+            record.put("timestamps", Value::Array(timestamps));
+            record.put("values", Value::Array(values));
+            record.put("tags", batch.tags.clone());
+
+            records.push(record);
+        }
+
+        self.writer
+            .lock()
+            .extend(records)
+            .map_err(|e| ConsumerError::AvroError(Box::new(e)))?;
+
+        Ok(())
+    }
 }
 
+#[cfg(not(feature = "columnar"))]
 fn points_to_avro(points: Option<&Points>) -> (Vec<Value>, Vec<Value>) {
     let Some(Points {
         points_type: Some(points),
@@ -319,13 +383,111 @@ fn points_to_avro(points: Option<&Points>) -> (Vec<Value>, Vec<Value>) {
     }
 }
 
+#[cfg(not(feature = "columnar"))]
 fn convert_timestamp_to_nanoseconds(timestamp: Timestamp) -> Value {
     Value::Long(timestamp.seconds * 1_000_000_000 + timestamp.nanos as i64)
 }
 
+#[cfg(feature = "columnar")]
+fn convert_nominal_timestamp_to_nanoseconds(timestamp: &NominalTimestamp) -> Value {
+    let seconds = timestamp.seconds.unwrap_or(0);
+    let nanos = timestamp.nanos.unwrap_or(0);
+    Value::Long(seconds * 1_000_000_000 + nanos)
+}
+
+#[cfg(feature = "columnar")]
+fn columnar_points_to_avro(points: Option<&columnar::Points>) -> (Vec<Value>, Vec<Value>) {
+    let Some(points) = points else {
+        return (Vec::new(), Vec::new());
+    };
+
+    let timestamps: Vec<Value> = points
+        .timestamps
+        .iter()
+        .map(convert_nominal_timestamp_to_nanoseconds)
+        .collect();
+
+    let values: Vec<Value> = match &points.points {
+        Some(columnar::points::Points::DoublePoints(columnar::DoublePoints { points })) => points
+            .iter()
+            .map(|v| Value::Union(0, Box::new(Value::Double(*v))))
+            .collect(),
+        Some(columnar::points::Points::StringPoints(columnar::StringPoints { points })) => points
+            .iter()
+            .map(|v| Value::Union(1, Box::new(Value::String(v.clone()))))
+            .collect(),
+        Some(columnar::points::Points::IntPoints(columnar::IntPoints { points })) => points
+            .iter()
+            .map(|v| Value::Union(2, Box::new(Value::Long(*v))))
+            .collect(),
+        Some(columnar::points::Points::ArrayPoints(columnar::ArrayPoints { array_type })) => {
+            match array_type {
+                Some(ColumnarArrayType::DoubleArrayPoints(dap)) => dap
+                    .points
+                    .iter()
+                    .map(|point| {
+                        let array_values: Vec<Value> =
+                            point.value.iter().map(|v| Value::Double(*v)).collect();
+                        let record =
+                            Value::Record(vec![("items".to_string(), Value::Array(array_values))]);
+                        Value::Union(3, Box::new(record))
+                    })
+                    .collect(),
+                Some(ColumnarArrayType::StringArrayPoints(sap)) => sap
+                    .points
+                    .iter()
+                    .map(|point| {
+                        let array_values: Vec<Value> = point
+                            .value
+                            .iter()
+                            .map(|v: &String| Value::String(v.clone()))
+                            .collect();
+                        let record =
+                            Value::Record(vec![("items".to_string(), Value::Array(array_values))]);
+                        Value::Union(4, Box::new(record))
+                    })
+                    .collect(),
+                None => Vec::new(),
+            }
+        }
+        Some(columnar::points::Points::StructPoints(columnar::StructPoints { points })) => points
+            .iter()
+            .map(|v| {
+                let record = Value::Record(vec![("json".to_string(), Value::String(v.clone()))]);
+                Value::Union(5, Box::new(record))
+            })
+            .collect(),
+        Some(columnar::points::Points::Uint64Points(columnar::Uint64Points { points })) => points
+            .iter()
+            .map(|v| Value::Union(2, Box::new(Value::Long(*v as i64))))
+            .collect(),
+        Some(columnar::points::Points::LogPoints(columnar::LogPoints { points })) => points
+            .iter()
+            .map(|p| {
+                let msg = p
+                    .value
+                    .as_ref()
+                    .map(|v| v.message.clone())
+                    .unwrap_or_default();
+                Value::Union(1, Box::new(Value::String(msg)))
+            })
+            .collect(),
+        None => Vec::new(),
+    };
+
+    (timestamps, values)
+}
+
 impl WriteRequestConsumer for AvroFileConsumer {
-    fn consume(&self, request: &WriteRequestNominal) -> ConsumerResult<()> {
+    #[cfg(not(feature = "columnar"))]
+    fn consume(&self, request: &StreamWriteRequest) -> ConsumerResult<()> {
         self.append_series(&request.series)?;
+        Ok(())
+    }
+
+    #[cfg(feature = "columnar")]
+    fn consume(&self, request: &StreamWriteRequest) -> ConsumerResult<()> {
+        self.append_batches(&request.batches)?;
         Ok(())
     }
 }
@@ -388,7 +550,7 @@ where
     P: WriteRequestConsumer + Send + Sync,
     S: WriteRequestConsumer + Send + Sync,
 {
-    fn consume(&self, request: &WriteRequestNominal) -> ConsumerResult<()> {
+    fn consume(&self, request: &StreamWriteRequest) -> ConsumerResult<()> {
         let primary_result = self.primary.consume(request);
         let secondary_result = self.secondary.consume(request);
         if let Err(e) = &primary_result {
@@ -408,7 +570,7 @@ where
     P: WriteRequestConsumer + Send + Sync,
     F: WriteRequestConsumer + Send + Sync,
 {
-    fn consume(&self, request: &WriteRequestNominal) -> ConsumerResult<()> {
+    fn consume(&self, request: &StreamWriteRequest) -> ConsumerResult<()> {
         if let Err(e) = self.primary.consume(request) {
             warn!("Sending request to primary consumer failed. Attempting fallback.");
             let fallback_result = self.fallback.consume(request);
@@ -448,7 +610,7 @@ impl<C> WriteRequestConsumer for ListeningWriteRequestConsumer<C>
 where
     C: WriteRequestConsumer + Send + Sync,
 {
-    fn consume(&self, request: &WriteRequestNominal) -> ConsumerResult<()> {
+    fn consume(&self, request: &StreamWriteRequest) -> ConsumerResult<()> {
         match self.consumer.consume(request) {
             Ok(_) => {
                 self.listeners.on_success(request);
@@ -462,7 +624,7 @@ where
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "columnar")))]
 mod tests {
     use std::collections::HashMap;
 
@@ -472,6 +634,7 @@ mod tests {
     use nominal_api::tonic::io::nominal::scout::api::proto::Channel;
     use nominal_api::tonic::io::nominal::scout::api::proto::DoubleArrayPoint;
     use nominal_api::tonic::io::nominal::scout::api::proto::StringArrayPoint;
+    use nominal_api::tonic::io::nominal::scout::api::proto::WriteRequestNominal;
     use tempfile::NamedTempFile;
 
     use super::*;
@@ -823,6 +986,350 @@ mod tests {
                         }
                         "uint64s" => {
                             // u64::MAX as i64 is -1, 12345678901234567890u64 as i64 is negative
+                            assert_eq!(
+                                values[0],
+                                Value::Union(2, Box::new(Value::Long(u64::MAX as i64)))
+                            );
+                            assert_eq!(
+                                values[1],
+                                Value::Union(
+                                    2,
+                                    Box::new(Value::Long(12345678901234567890u64 as i64))
+                                )
+                            );
+                        }
+                        _ => panic!("Unexpected channel: {}", channel),
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[cfg(all(test, feature = "columnar"))]
+mod columnar_tests {
+    use std::collections::HashMap;
+
+    use apache_avro::Reader;
+    use nominal_api::tonic::nominal::direct_channel_writer::v2::DoubleArrayPoint;
+    use nominal_api::tonic::nominal::direct_channel_writer::v2::DoubleArrayPoints;
+    use nominal_api::tonic::nominal::direct_channel_writer::v2::DoublePoints;
+    use nominal_api::tonic::nominal::direct_channel_writer::v2::IntPoints;
+    use nominal_api::tonic::nominal::direct_channel_writer::v2::StringArrayPoint;
+    use nominal_api::tonic::nominal::direct_channel_writer::v2::StringArrayPoints;
+    use nominal_api::tonic::nominal::direct_channel_writer::v2::StringPoints;
+    use nominal_api::tonic::nominal::direct_channel_writer::v2::StructPoints;
+    use nominal_api::tonic::nominal::direct_channel_writer::v2::Uint64Points;
+    use nominal_api::tonic::nominal::direct_channel_writer::v2::WriteBatchesRequest;
+    use tempfile::NamedTempFile;
+
+    use super::*;
+
+    fn make_timestamp(secs: i64, nanos: i64) -> NominalTimestamp {
+        NominalTimestamp {
+            seconds: Some(secs),
+            nanos: Some(nanos),
+            picos: None,
+        }
+    }
+
+    fn make_batch(name: &str, points: columnar::Points) -> columnar::RecordsBatch {
+        columnar::RecordsBatch {
+            channel: name.to_string(),
+            tags: HashMap::new(),
+            points: Some(points),
+        }
+    }
+
+    #[test]
+    fn test_avro_file_with_all_value_types() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let path: PathBuf = tmp_file.path().to_path_buf();
+
+        {
+            let consumer = AvroFileConsumer::new_with_full_path(&path).unwrap();
+
+            let double_batch = make_batch(
+                "doubles",
+                columnar::Points {
+                    timestamps: vec![make_timestamp(1000, 0), make_timestamp(1001, 0)],
+                    points: Some(columnar::points::Points::DoublePoints(DoublePoints {
+                        points: vec![1.5, 2.5],
+                    })),
+                },
+            );
+
+            let int_batch = make_batch(
+                "longs",
+                columnar::Points {
+                    timestamps: vec![make_timestamp(1000, 0), make_timestamp(1001, 0)],
+                    points: Some(columnar::points::Points::IntPoints(IntPoints {
+                        points: vec![42, -100],
+                    })),
+                },
+            );
+
+            let string_batch = make_batch(
+                "strings",
+                columnar::Points {
+                    timestamps: vec![make_timestamp(1000, 0), make_timestamp(1001, 0)],
+                    points: Some(columnar::points::Points::StringPoints(StringPoints {
+                        points: vec!["hello".to_string(), "world".to_string()],
+                    })),
+                },
+            );
+
+            let double_array_batch = make_batch(
+                "double_arrays",
+                columnar::Points {
+                    timestamps: vec![make_timestamp(1000, 0), make_timestamp(1001, 0)],
+                    points: Some(columnar::points::Points::ArrayPoints(
+                        columnar::ArrayPoints {
+                            array_type: Some(ColumnarArrayType::DoubleArrayPoints(
+                                DoubleArrayPoints {
+                                    points: vec![
+                                        DoubleArrayPoint {
+                                            value: vec![1.0, 2.0, 3.0],
+                                        },
+                                        DoubleArrayPoint {
+                                            value: vec![4.0, 5.0],
+                                        },
+                                    ],
+                                },
+                            )),
+                        },
+                    )),
+                },
+            );
+
+            let string_array_batch = make_batch(
+                "string_arrays",
+                columnar::Points {
+                    timestamps: vec![make_timestamp(1000, 0), make_timestamp(1001, 0)],
+                    points: Some(columnar::points::Points::ArrayPoints(
+                        columnar::ArrayPoints {
+                            array_type: Some(ColumnarArrayType::StringArrayPoints(
+                                StringArrayPoints {
+                                    points: vec![
+                                        StringArrayPoint {
+                                            value: vec!["a".to_string(), "b".to_string()],
+                                        },
+                                        StringArrayPoint {
+                                            value: vec![
+                                                "c".to_string(),
+                                                "d".to_string(),
+                                                "e".to_string(),
+                                            ],
+                                        },
+                                    ],
+                                },
+                            )),
+                        },
+                    )),
+                },
+            );
+
+            let struct_batch = make_batch(
+                "structs",
+                columnar::Points {
+                    timestamps: vec![make_timestamp(1000, 0), make_timestamp(1001, 0)],
+                    points: Some(columnar::points::Points::StructPoints(StructPoints {
+                        points: vec![
+                            r#"{"key": "value"}"#.to_string(),
+                            r#"{"count": 42}"#.to_string(),
+                        ],
+                    })),
+                },
+            );
+
+            let uint64_batch = make_batch(
+                "uint64s",
+                columnar::Points {
+                    timestamps: vec![make_timestamp(1000, 0), make_timestamp(1001, 0)],
+                    points: Some(columnar::points::Points::Uint64Points(Uint64Points {
+                        points: vec![u64::MAX, 12345678901234567890],
+                    })),
+                },
+            );
+
+            let request = WriteBatchesRequest {
+                batches: vec![
+                    double_batch,
+                    int_batch,
+                    string_batch,
+                    double_array_batch,
+                    string_array_batch,
+                    struct_batch,
+                    uint64_batch,
+                ],
+                data_source_rid: String::new(),
+            };
+
+            consumer.consume(&request).unwrap();
+
+            drop(consumer);
+        }
+
+        let file = std::fs::File::open(&path).unwrap();
+        let reader = Reader::new(file).unwrap();
+
+        let records: Vec<_> = reader.map(|r| r.unwrap()).collect();
+        assert_eq!(records.len(), 7, "Expected 7 batch records");
+
+        let channels: Vec<String> = records
+            .iter()
+            .filter_map(|r| {
+                if let Value::Record(fields) = r {
+                    fields.iter().find_map(|(name, value)| {
+                        if name == "channel" {
+                            if let Value::String(s) = value {
+                                Some(s.clone())
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    })
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        assert!(channels.contains(&"doubles".to_string()));
+        assert!(channels.contains(&"longs".to_string()));
+        assert!(channels.contains(&"strings".to_string()));
+        assert!(channels.contains(&"double_arrays".to_string()));
+        assert!(channels.contains(&"string_arrays".to_string()));
+        assert!(channels.contains(&"structs".to_string()));
+        assert!(channels.contains(&"uint64s".to_string()));
+
+        for record in &records {
+            if let Value::Record(fields) = record {
+                let channel = fields.iter().find_map(|(name, value)| {
+                    if name == "channel" {
+                        if let Value::String(s) = value {
+                            Some(s.clone())
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                });
+
+                let values =
+                    fields.iter().find_map(
+                        |(name, value)| {
+                            if name == "values" {
+                                Some(value)
+                            } else {
+                                None
+                            }
+                        },
+                    );
+
+                if let (Some(channel), Some(Value::Array(values))) = (channel, values) {
+                    assert_eq!(values.len(), 2, "Channel {} should have 2 values", channel);
+
+                    match channel.as_str() {
+                        "doubles" => {
+                            assert_eq!(values[0], Value::Union(0, Box::new(Value::Double(1.5))));
+                            assert_eq!(values[1], Value::Union(0, Box::new(Value::Double(2.5))));
+                        }
+                        "strings" => {
+                            assert_eq!(
+                                values[0],
+                                Value::Union(1, Box::new(Value::String("hello".to_string())))
+                            );
+                            assert_eq!(
+                                values[1],
+                                Value::Union(1, Box::new(Value::String("world".to_string())))
+                            );
+                        }
+                        "longs" => {
+                            assert_eq!(values[0], Value::Union(2, Box::new(Value::Long(42))));
+                            assert_eq!(values[1], Value::Union(2, Box::new(Value::Long(-100))));
+                        }
+                        "double_arrays" => {
+                            assert_eq!(
+                                values[0],
+                                Value::Union(
+                                    3,
+                                    Box::new(Value::Record(vec![(
+                                        "items".to_string(),
+                                        Value::Array(vec![
+                                            Value::Double(1.0),
+                                            Value::Double(2.0),
+                                            Value::Double(3.0)
+                                        ])
+                                    )]))
+                                )
+                            );
+                            assert_eq!(
+                                values[1],
+                                Value::Union(
+                                    3,
+                                    Box::new(Value::Record(vec![(
+                                        "items".to_string(),
+                                        Value::Array(vec![Value::Double(4.0), Value::Double(5.0)])
+                                    )]))
+                                )
+                            );
+                        }
+                        "string_arrays" => {
+                            assert_eq!(
+                                values[0],
+                                Value::Union(
+                                    4,
+                                    Box::new(Value::Record(vec![(
+                                        "items".to_string(),
+                                        Value::Array(vec![
+                                            Value::String("a".to_string()),
+                                            Value::String("b".to_string())
+                                        ])
+                                    )]))
+                                )
+                            );
+                            assert_eq!(
+                                values[1],
+                                Value::Union(
+                                    4,
+                                    Box::new(Value::Record(vec![(
+                                        "items".to_string(),
+                                        Value::Array(vec![
+                                            Value::String("c".to_string()),
+                                            Value::String("d".to_string()),
+                                            Value::String("e".to_string())
+                                        ])
+                                    )]))
+                                )
+                            );
+                        }
+                        "structs" => {
+                            assert_eq!(
+                                values[0],
+                                Value::Union(
+                                    5,
+                                    Box::new(Value::Record(vec![(
+                                        "json".to_string(),
+                                        Value::String(r#"{"key": "value"}"#.to_string())
+                                    )]))
+                                )
+                            );
+                            assert_eq!(
+                                values[1],
+                                Value::Union(
+                                    5,
+                                    Box::new(Value::Record(vec![(
+                                        "json".to_string(),
+                                        Value::String(r#"{"count": 42}"#.to_string())
+                                    )]))
+                                )
+                            );
+                        }
+                        "uint64s" => {
                             assert_eq!(
                                 values[0],
                                 Value::Union(2, Box::new(Value::Long(u64::MAX as i64)))

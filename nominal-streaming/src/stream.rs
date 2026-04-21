@@ -16,15 +16,21 @@ use conjure_object::ResourceIdentifier;
 use nominal_api::tonic::io::nominal::scout::api::proto::array_points::ArrayType;
 use nominal_api::tonic::io::nominal::scout::api::proto::points::PointsType;
 use nominal_api::tonic::io::nominal::scout::api::proto::ArrayPoints;
+#[cfg(not(feature = "columnar"))]
 use nominal_api::tonic::io::nominal::scout::api::proto::Channel;
 use nominal_api::tonic::io::nominal::scout::api::proto::DoublePoint;
 use nominal_api::tonic::io::nominal::scout::api::proto::IntegerPoint;
+#[cfg(not(feature = "columnar"))]
 use nominal_api::tonic::io::nominal::scout::api::proto::Points;
+#[cfg(not(feature = "columnar"))]
 use nominal_api::tonic::io::nominal::scout::api::proto::Series;
 use nominal_api::tonic::io::nominal::scout::api::proto::StringPoint;
 use nominal_api::tonic::io::nominal::scout::api::proto::StructPoint;
 use nominal_api::tonic::io::nominal::scout::api::proto::Uint64Point;
-use nominal_api::tonic::io::nominal::scout::api::proto::WriteRequestNominal;
+#[cfg(feature = "columnar")]
+use nominal_api::tonic::nominal::direct_channel_writer::v2 as columnar;
+#[cfg(feature = "columnar")]
+use nominal_api::tonic::nominal::types::time::Timestamp as NominalTimestamp;
 use parking_lot::Condvar;
 use parking_lot::Mutex;
 use parking_lot::MutexGuard;
@@ -33,6 +39,7 @@ use tracing::error;
 use tracing::info;
 
 use crate::client::NominalApiClients;
+use crate::client::StreamWriteRequest;
 use crate::client::PRODUCTION_API_URL;
 use crate::consumer::AvroFileConsumer;
 use crate::consumer::DualWriteRequestConsumer;
@@ -263,7 +270,7 @@ impl NominalDatasetStream {
         let secondary_buffer = Arc::new(SeriesBuffer::new(opts.max_points_per_record));
 
         let (request_tx, request_rx) =
-            crossbeam_channel::bounded::<(WriteRequestNominal, usize)>(opts.max_buffered_requests);
+            crossbeam_channel::bounded::<(StreamWriteRequest, usize)>(opts.max_buffered_requests);
 
         let running = Arc::new(AtomicBool::new(true));
         let unflushed_points = Arc::new(AtomicUsize::new(0));
@@ -716,6 +723,7 @@ impl SeriesBuffer {
         }
     }
 
+    #[cfg(not(feature = "columnar"))]
     fn take(&self) -> (usize, Vec<Series>) {
         let mut points = self.lock();
         self.flush_time.store(
@@ -736,6 +744,34 @@ impl SeriesBuffer {
                         .map(|tags| tags.into_iter().collect())
                         .unwrap_or_default(),
                     points: Some(points_obj),
+                }
+            })
+            .collect();
+        let result_count = points
+            .count
+            .fetch_update(Ordering::Release, Ordering::Acquire, |_| Some(0))
+            .unwrap();
+        (result_count, result)
+    }
+
+    #[cfg(feature = "columnar")]
+    fn take(&self) -> (usize, Vec<columnar::RecordsBatch>) {
+        let mut points = self.lock();
+        self.flush_time.store(
+            UNIX_EPOCH.elapsed().unwrap().as_nanos() as u64,
+            Ordering::Release,
+        );
+        let result = points
+            .sb
+            .drain()
+            .map(|(ChannelDescriptor { name, tags }, points_type)| {
+                let columnar_points = points_type_to_columnar(points_type);
+                columnar::RecordsBatch {
+                    channel: name,
+                    tags: tags
+                        .map(|tags| tags.into_iter().collect())
+                        .unwrap_or_default(),
+                    points: Some(columnar_points),
                 }
             })
             .collect();
@@ -777,7 +813,7 @@ impl SeriesBuffer {
 fn batch_processor(
     running: Arc<AtomicBool>,
     points_buffer: Arc<SeriesBuffer>,
-    request_chan: crossbeam_channel::Sender<(WriteRequestNominal, usize)>,
+    request_chan: crossbeam_channel::Sender<(StreamWriteRequest, usize)>,
     max_request_delay: Duration,
 ) {
     loop {
@@ -793,13 +829,20 @@ fn batch_processor(
             }
             continue;
         }
-        let (point_count, series) = points_buffer.take();
+        let (point_count, items) = points_buffer.take();
 
         if points_buffer.notify() {
             debug!("notified one waiting thread after clearing points buffer");
         }
 
-        let write_request = WriteRequestNominal { series };
+        #[cfg(not(feature = "columnar"))]
+        let write_request = StreamWriteRequest { series: items };
+        #[cfg(feature = "columnar")]
+        let write_request = StreamWriteRequest {
+            batches: items,
+            // data_source_rid is set by NominalCoreConsumer before encoding
+            data_source_rid: String::new(),
+        };
 
         if request_chan.is_full() {
             debug!("ready to queue request but request channel is full");
@@ -838,7 +881,7 @@ impl Drop for NominalDatasetStream {
 fn request_dispatcher<C: WriteRequestConsumer + 'static>(
     running: Arc<AtomicBool>,
     unflushed_points: Arc<AtomicUsize>,
-    request_rx: crossbeam_channel::Receiver<(WriteRequestNominal, usize)>,
+    request_rx: crossbeam_channel::Receiver<(StreamWriteRequest, usize)>,
     consumer: Arc<C>,
 ) {
     let mut total_request_time = 0;
@@ -877,6 +920,151 @@ fn request_dispatcher<C: WriteRequestConsumer + 'static>(
         "request dispatcher thread exiting. total request time: {}",
         total_request_time
     );
+}
+
+/// Convert a `google.protobuf.Timestamp` to the `nominal.types.time.Timestamp`
+/// used by the columnar writer protocol.
+#[cfg(feature = "columnar")]
+fn to_nominal_timestamp(ts: &nominal_api::tonic::google::protobuf::Timestamp) -> NominalTimestamp {
+    NominalTimestamp {
+        seconds: Some(ts.seconds),
+        nanos: Some(ts.nanos as i64),
+        picos: None,
+    }
+}
+
+/// Convert row-oriented `PointsType` (per-point timestamps) to columnar `Points`
+/// (a parallel timestamp array plus a packed value array).
+#[cfg(feature = "columnar")]
+fn points_type_to_columnar(points_type: PointsType) -> columnar::Points {
+    match points_type {
+        PointsType::DoublePoints(dp) => {
+            let mut timestamps = Vec::with_capacity(dp.points.len());
+            let mut values = Vec::with_capacity(dp.points.len());
+            for point in dp.points {
+                if let Some(ts) = &point.timestamp {
+                    timestamps.push(to_nominal_timestamp(ts));
+                }
+                values.push(point.value);
+            }
+            columnar::Points {
+                timestamps,
+                points: Some(columnar::points::Points::DoublePoints(
+                    columnar::DoublePoints { points: values },
+                )),
+            }
+        }
+        PointsType::StringPoints(sp) => {
+            let mut timestamps = Vec::with_capacity(sp.points.len());
+            let mut values = Vec::with_capacity(sp.points.len());
+            for point in sp.points {
+                if let Some(ts) = &point.timestamp {
+                    timestamps.push(to_nominal_timestamp(ts));
+                }
+                values.push(point.value);
+            }
+            columnar::Points {
+                timestamps,
+                points: Some(columnar::points::Points::StringPoints(
+                    columnar::StringPoints { points: values },
+                )),
+            }
+        }
+        PointsType::IntegerPoints(ip) => {
+            let mut timestamps = Vec::with_capacity(ip.points.len());
+            let mut values = Vec::with_capacity(ip.points.len());
+            for point in ip.points {
+                if let Some(ts) = &point.timestamp {
+                    timestamps.push(to_nominal_timestamp(ts));
+                }
+                values.push(point.value);
+            }
+            columnar::Points {
+                timestamps,
+                points: Some(columnar::points::Points::IntPoints(columnar::IntPoints {
+                    points: values,
+                })),
+            }
+        }
+        PointsType::Uint64Points(up) => {
+            let mut timestamps = Vec::with_capacity(up.points.len());
+            let mut values = Vec::with_capacity(up.points.len());
+            for point in up.points {
+                if let Some(ts) = &point.timestamp {
+                    timestamps.push(to_nominal_timestamp(ts));
+                }
+                values.push(point.value);
+            }
+            columnar::Points {
+                timestamps,
+                points: Some(columnar::points::Points::Uint64Points(
+                    columnar::Uint64Points { points: values },
+                )),
+            }
+        }
+        PointsType::StructPoints(stp) => {
+            let mut timestamps = Vec::with_capacity(stp.points.len());
+            let mut values = Vec::with_capacity(stp.points.len());
+            for point in stp.points {
+                if let Some(ts) = &point.timestamp {
+                    timestamps.push(to_nominal_timestamp(ts));
+                }
+                values.push(point.json_string);
+            }
+            columnar::Points {
+                timestamps,
+                points: Some(columnar::points::Points::StructPoints(
+                    columnar::StructPoints { points: values },
+                )),
+            }
+        }
+        PointsType::ArrayPoints(ArrayPoints { array_type }) => match array_type {
+            Some(ArrayType::DoubleArrayPoints(dap)) => {
+                let mut timestamps = Vec::with_capacity(dap.points.len());
+                let mut values = Vec::with_capacity(dap.points.len());
+                for point in dap.points {
+                    if let Some(ts) = &point.timestamp {
+                        timestamps.push(to_nominal_timestamp(ts));
+                    }
+                    values.push(columnar::DoubleArrayPoint { value: point.value });
+                }
+                columnar::Points {
+                    timestamps,
+                    points: Some(columnar::points::Points::ArrayPoints(
+                        columnar::ArrayPoints {
+                            array_type: Some(columnar::array_points::ArrayType::DoubleArrayPoints(
+                                columnar::DoubleArrayPoints { points: values },
+                            )),
+                        },
+                    )),
+                }
+            }
+            Some(ArrayType::StringArrayPoints(sap)) => {
+                let mut timestamps = Vec::with_capacity(sap.points.len());
+                let mut values = Vec::with_capacity(sap.points.len());
+                for point in sap.points {
+                    if let Some(ts) = &point.timestamp {
+                        timestamps.push(to_nominal_timestamp(ts));
+                    }
+                    values.push(columnar::StringArrayPoint { value: point.value });
+                }
+                columnar::Points {
+                    timestamps,
+                    points: Some(columnar::points::Points::ArrayPoints(
+                        columnar::ArrayPoints {
+                            array_type: Some(columnar::array_points::ArrayType::StringArrayPoints(
+                                columnar::StringArrayPoints { points: values },
+                            )),
+                        },
+                    )),
+                }
+            }
+            None => columnar::Points {
+                timestamps: Vec::new(),
+                points: None,
+            },
+        },
+    }
 }
 
 fn points_len(points_type: &PointsType) -> usize {

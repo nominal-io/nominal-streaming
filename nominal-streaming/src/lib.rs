@@ -181,8 +181,12 @@ pub mod prelude {
     pub use nominal_api::tonic::io::nominal::scout::api::proto::Uint64Point;
     pub use nominal_api::tonic::io::nominal::scout::api::proto::Uint64Points;
     pub use nominal_api::tonic::io::nominal::scout::api::proto::WriteRequest;
+    #[cfg(not(feature = "columnar"))]
     pub use nominal_api::tonic::io::nominal::scout::api::proto::WriteRequestNominal;
+    #[cfg(feature = "columnar")]
+    pub use nominal_api::tonic::nominal::direct_channel_writer::v2::WriteBatchesRequest;
 
+    pub use crate::client::StreamWriteRequest;
     pub use crate::consumer::NominalCoreConsumer;
     pub use crate::stream::NominalDatasetStream;
     #[expect(deprecated)]
@@ -211,11 +215,11 @@ mod tests {
 
     #[derive(Debug)]
     struct TestDatasourceStream {
-        requests: Mutex<Vec<WriteRequestNominal>>,
+        requests: Mutex<Vec<StreamWriteRequest>>,
     }
 
     impl WriteRequestConsumer for Arc<TestDatasourceStream> {
-        fn consume(&self, request: &WriteRequestNominal) -> ConsumerResult<()> {
+        fn consume(&self, request: &StreamWriteRequest) -> ConsumerResult<()> {
             self.requests.lock().unwrap().push(request.clone());
             Ok(())
         }
@@ -269,13 +273,29 @@ mod tests {
         // validate that the requests were flushed based on the max_records value, not the
         // max request delay
         assert_eq!(requests.len(), 5);
-        let series = requests.first().unwrap().series.first().unwrap();
-        if let Some(PointsType::DoublePoints(points)) =
-            series.points.as_ref().unwrap().points_type.as_ref()
+        #[cfg(not(feature = "columnar"))]
         {
-            assert_eq!(points.points.len(), 1000);
-        } else {
-            panic!("unexpected data type");
+            let series = requests.first().unwrap().series.first().unwrap();
+            if let Some(PointsType::DoublePoints(points)) =
+                series.points.as_ref().unwrap().points_type.as_ref()
+            {
+                assert_eq!(points.points.len(), 1000);
+            } else {
+                panic!("unexpected data type");
+            }
+        }
+        #[cfg(feature = "columnar")]
+        {
+            use nominal_api::tonic::nominal::direct_channel_writer::v2 as columnar;
+            let batch = requests.first().unwrap().batches.first().unwrap();
+            if let Some(columnar::points::Points::DoublePoints(dp)) =
+                batch.points.as_ref().unwrap().points.as_ref()
+            {
+                assert_eq!(dp.points.len(), 1000);
+                assert_eq!(batch.points.as_ref().unwrap().timestamps.len(), 1000);
+            } else {
+                panic!("unexpected data type");
+            }
         }
     }
 
@@ -343,42 +363,84 @@ mod tests {
         // max request delay
         assert_eq!(requests.len(), 25);
 
-        let r = requests
-            .iter()
-            .flat_map(|r| r.series.clone())
-            .map(|s| {
-                (
-                    s.channel.unwrap().name,
-                    s.points.unwrap().points_type.unwrap(),
-                )
-            })
-            .collect::<HashMap<_, _>>();
-        let PointsType::DoublePoints(dp) = r.get("double").unwrap() else {
-            panic!("invalid double points type");
-        };
+        #[cfg(not(feature = "columnar"))]
+        {
+            let r = requests
+                .iter()
+                .flat_map(|r| r.series.clone())
+                .map(|s| {
+                    (
+                        s.channel.unwrap().name,
+                        s.points.unwrap().points_type.unwrap(),
+                    )
+                })
+                .collect::<HashMap<_, _>>();
+            let PointsType::DoublePoints(dp) = r.get("double").unwrap() else {
+                panic!("invalid double points type");
+            };
 
-        let PointsType::IntegerPoints(ip) = r.get("int").unwrap() else {
-            panic!("invalid int points type");
-        };
+            let PointsType::IntegerPoints(ip) = r.get("int").unwrap() else {
+                panic!("invalid int points type");
+            };
 
-        let PointsType::Uint64Points(up) = r.get("uint64").unwrap() else {
-            panic!("invalid uint64 points type");
-        };
+            let PointsType::Uint64Points(up) = r.get("uint64").unwrap() else {
+                panic!("invalid uint64 points type");
+            };
 
-        let PointsType::StringPoints(sp) = r.get("string").unwrap() else {
-            panic!("invalid string points type");
-        };
+            let PointsType::StringPoints(sp) = r.get("string").unwrap() else {
+                panic!("invalid string points type");
+            };
 
-        let PointsType::StructPoints(stp) = r.get("struct").unwrap() else {
-            panic!("invalid struct points type");
-        };
+            let PointsType::StructPoints(stp) = r.get("struct").unwrap() else {
+                panic!("invalid struct points type");
+            };
 
-        // collect() overwrites into a single request
-        assert_eq!(dp.points.len(), 1000);
-        assert_eq!(sp.points.len(), 1000);
-        assert_eq!(ip.points.len(), 1000);
-        assert_eq!(up.points.len(), 1000);
-        assert_eq!(stp.points.len(), 1000);
+            // collect() overwrites into a single request
+            assert_eq!(dp.points.len(), 1000);
+            assert_eq!(sp.points.len(), 1000);
+            assert_eq!(ip.points.len(), 1000);
+            assert_eq!(up.points.len(), 1000);
+            assert_eq!(stp.points.len(), 1000);
+        }
+        #[cfg(feature = "columnar")]
+        {
+            use nominal_api::tonic::nominal::direct_channel_writer::v2 as columnar;
+            let r: HashMap<String, columnar::Points> = requests
+                .iter()
+                .flat_map(|r| r.batches.clone())
+                .map(|b| (b.channel, b.points.unwrap()))
+                .collect();
+            match r.get("double").unwrap().points.as_ref() {
+                Some(columnar::points::Points::DoublePoints(dp)) => {
+                    assert_eq!(dp.points.len(), 1000);
+                }
+                _ => panic!("invalid double points type"),
+            }
+            match r.get("int").unwrap().points.as_ref() {
+                Some(columnar::points::Points::IntPoints(ip)) => {
+                    assert_eq!(ip.points.len(), 1000);
+                }
+                _ => panic!("invalid int points type"),
+            }
+            match r.get("uint64").unwrap().points.as_ref() {
+                Some(columnar::points::Points::Uint64Points(up)) => {
+                    assert_eq!(up.points.len(), 1000);
+                }
+                _ => panic!("invalid uint64 points type"),
+            }
+            match r.get("string").unwrap().points.as_ref() {
+                Some(columnar::points::Points::StringPoints(sp)) => {
+                    assert_eq!(sp.points.len(), 1000);
+                }
+                _ => panic!("invalid string points type"),
+            }
+            match r.get("struct").unwrap().points.as_ref() {
+                Some(columnar::points::Points::StructPoints(stp)) => {
+                    assert_eq!(stp.points.len(), 1000);
+                }
+                _ => panic!("invalid struct points type"),
+            }
+        }
     }
 
     #[test_log::test]
@@ -400,13 +462,28 @@ mod tests {
         let requests = test_consumer.requests.lock().unwrap();
 
         assert_eq!(requests.len(), 5);
-        let series = requests.first().unwrap().series.first().unwrap();
-        if let Some(PointsType::DoublePoints(points)) =
-            series.points.as_ref().unwrap().points_type.as_ref()
+        #[cfg(not(feature = "columnar"))]
         {
-            assert_eq!(points.points.len(), 1000);
-        } else {
-            panic!("unexpected data type");
+            let series = requests.first().unwrap().series.first().unwrap();
+            if let Some(PointsType::DoublePoints(points)) =
+                series.points.as_ref().unwrap().points_type.as_ref()
+            {
+                assert_eq!(points.points.len(), 1000);
+            } else {
+                panic!("unexpected data type");
+            }
+        }
+        #[cfg(feature = "columnar")]
+        {
+            use nominal_api::tonic::nominal::direct_channel_writer::v2 as columnar;
+            let batch = requests.first().unwrap().batches.first().unwrap();
+            if let Some(columnar::points::Points::DoublePoints(dp)) =
+                batch.points.as_ref().unwrap().points.as_ref()
+            {
+                assert_eq!(dp.points.len(), 1000);
+            } else {
+                panic!("unexpected data type");
+            }
         }
     }
 
@@ -467,42 +544,84 @@ mod tests {
 
         assert_eq!(requests.len(), 25);
 
-        let r = requests
-            .iter()
-            .flat_map(|r| r.series.clone())
-            .map(|s| {
-                (
-                    s.channel.unwrap().name,
-                    s.points.unwrap().points_type.unwrap(),
-                )
-            })
-            .collect::<HashMap<_, _>>();
+        #[cfg(not(feature = "columnar"))]
+        {
+            let r = requests
+                .iter()
+                .flat_map(|r| r.series.clone())
+                .map(|s| {
+                    (
+                        s.channel.unwrap().name,
+                        s.points.unwrap().points_type.unwrap(),
+                    )
+                })
+                .collect::<HashMap<_, _>>();
 
-        let PointsType::DoublePoints(dp) = r.get("double").unwrap() else {
-            panic!("invalid double points type");
-        };
+            let PointsType::DoublePoints(dp) = r.get("double").unwrap() else {
+                panic!("invalid double points type");
+            };
 
-        let PointsType::IntegerPoints(ip) = r.get("int").unwrap() else {
-            panic!("invalid int points type");
-        };
+            let PointsType::IntegerPoints(ip) = r.get("int").unwrap() else {
+                panic!("invalid int points type");
+            };
 
-        let PointsType::Uint64Points(up) = r.get("uint64").unwrap() else {
-            panic!("invalid uint64 points type");
-        };
+            let PointsType::Uint64Points(up) = r.get("uint64").unwrap() else {
+                panic!("invalid uint64 points type");
+            };
 
-        let PointsType::StringPoints(sp) = r.get("string").unwrap() else {
-            panic!("invalid string points type");
-        };
+            let PointsType::StringPoints(sp) = r.get("string").unwrap() else {
+                panic!("invalid string points type");
+            };
 
-        let PointsType::StructPoints(stp) = r.get("struct").unwrap() else {
-            panic!("invalid struct points type");
-        };
+            let PointsType::StructPoints(stp) = r.get("struct").unwrap() else {
+                panic!("invalid struct points type");
+            };
 
-        // collect() overwrites into a single request
-        assert_eq!(dp.points.len(), 1000);
-        assert_eq!(sp.points.len(), 1000);
-        assert_eq!(ip.points.len(), 1000);
-        assert_eq!(up.points.len(), 1000);
-        assert_eq!(stp.points.len(), 1000);
+            // collect() overwrites into a single request
+            assert_eq!(dp.points.len(), 1000);
+            assert_eq!(sp.points.len(), 1000);
+            assert_eq!(ip.points.len(), 1000);
+            assert_eq!(up.points.len(), 1000);
+            assert_eq!(stp.points.len(), 1000);
+        }
+        #[cfg(feature = "columnar")]
+        {
+            use nominal_api::tonic::nominal::direct_channel_writer::v2 as columnar;
+            let r: HashMap<String, columnar::Points> = requests
+                .iter()
+                .flat_map(|r| r.batches.clone())
+                .map(|b| (b.channel, b.points.unwrap()))
+                .collect();
+            match r.get("double").unwrap().points.as_ref() {
+                Some(columnar::points::Points::DoublePoints(dp)) => {
+                    assert_eq!(dp.points.len(), 1000);
+                }
+                _ => panic!("invalid double points type"),
+            }
+            match r.get("int").unwrap().points.as_ref() {
+                Some(columnar::points::Points::IntPoints(ip)) => {
+                    assert_eq!(ip.points.len(), 1000);
+                }
+                _ => panic!("invalid int points type"),
+            }
+            match r.get("uint64").unwrap().points.as_ref() {
+                Some(columnar::points::Points::Uint64Points(up)) => {
+                    assert_eq!(up.points.len(), 1000);
+                }
+                _ => panic!("invalid uint64 points type"),
+            }
+            match r.get("string").unwrap().points.as_ref() {
+                Some(columnar::points::Points::StringPoints(sp)) => {
+                    assert_eq!(sp.points.len(), 1000);
+                }
+                _ => panic!("invalid string points type"),
+            }
+            match r.get("struct").unwrap().points.as_ref() {
+                Some(columnar::points::Points::StructPoints(stp)) => {
+                    assert_eq!(stp.points.len(), 1000);
+                }
+                _ => panic!("invalid struct points type"),
+            }
+        }
     }
 }
