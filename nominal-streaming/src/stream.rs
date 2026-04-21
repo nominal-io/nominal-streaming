@@ -799,7 +799,10 @@ fn batch_processor(
             debug!("notified one waiting thread after clearing points buffer");
         }
 
-        let write_request = WriteRequestNominal { series };
+        let write_request = WriteRequestNominal {
+            series,
+            session_name: None,
+        };
 
         if request_chan.is_full() {
             debug!("ready to queue request but request channel is full");

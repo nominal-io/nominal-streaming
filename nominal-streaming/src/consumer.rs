@@ -651,6 +651,7 @@ mod tests {
                     struct_series,
                     uint64_series,
                 ],
+                session_name: None,
             };
 
             consumer.consume(&request).unwrap();
