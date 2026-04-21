@@ -32,11 +32,7 @@ pub struct LoggingListener;
 
 impl NominalStreamListener for LoggingListener {
     fn on_error(&self, error: &dyn Error, request: &StreamWriteRequest) {
-        #[cfg(not(feature = "columnar"))]
-        let (len, noun) = (request.series.len(), "series");
-        #[cfg(feature = "columnar")]
-        let (len, noun) = (request.batches.len(), "batches");
-        let message = format!("Failed to consume request with {len} {noun}");
-        error!("{message}: {error}");
+        let summary = crate::format::request_summary(request);
+        error!("Failed to consume request with {summary}: {error}");
     }
 }
