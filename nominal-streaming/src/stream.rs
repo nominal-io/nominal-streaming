@@ -324,46 +324,34 @@ impl NominalDatasetStream {
         }
     }
 
-    pub fn double_writer<'a>(
-        &'a self,
-        channel_descriptor: &'a ChannelDescriptor,
-    ) -> NominalDoubleWriter<'a> {
+    pub fn double_writer(&self, channel_descriptor: ChannelDescriptor) -> NominalDoubleWriter<'_> {
         NominalDoubleWriter {
             writer: NominalChannelWriter::new(self, channel_descriptor),
         }
     }
 
-    pub fn string_writer<'a>(
-        &'a self,
-        channel_descriptor: &'a ChannelDescriptor,
-    ) -> NominalStringWriter<'a> {
+    pub fn string_writer(&self, channel_descriptor: ChannelDescriptor) -> NominalStringWriter<'_> {
         NominalStringWriter {
             writer: NominalChannelWriter::new(self, channel_descriptor),
         }
     }
 
-    pub fn integer_writer<'a>(
-        &'a self,
-        channel_descriptor: &'a ChannelDescriptor,
-    ) -> NominalIntegerWriter<'a> {
+    pub fn integer_writer(
+        &self,
+        channel_descriptor: ChannelDescriptor,
+    ) -> NominalIntegerWriter<'_> {
         NominalIntegerWriter {
             writer: NominalChannelWriter::new(self, channel_descriptor),
         }
     }
 
-    pub fn uint64_writer<'a>(
-        &'a self,
-        channel_descriptor: &'a ChannelDescriptor,
-    ) -> NominalUint64Writer<'a> {
+    pub fn uint64_writer(&self, channel_descriptor: ChannelDescriptor) -> NominalUint64Writer<'_> {
         NominalUint64Writer {
             writer: NominalChannelWriter::new(self, channel_descriptor),
         }
     }
 
-    pub fn struct_writer<'a>(
-        &'a self,
-        channel_descriptor: &'a ChannelDescriptor,
-    ) -> NominalStructWriter<'a> {
+    pub fn struct_writer(&self, channel_descriptor: ChannelDescriptor) -> NominalStructWriter<'_> {
         NominalStructWriter {
             writer: NominalChannelWriter::new(self, channel_descriptor),
         }
@@ -409,7 +397,7 @@ pub struct NominalChannelWriter<'ds, T>
 where
     Vec<T>: IntoPoints,
 {
-    channel: &'ds ChannelDescriptor,
+    channel: ChannelDescriptor,
     stream: &'ds NominalDatasetStream,
     last_flushed_at: Instant,
     unflushed: Vec<T>,
@@ -419,10 +407,10 @@ impl<T> NominalChannelWriter<'_, T>
 where
     Vec<T>: IntoPoints,
 {
-    fn new<'ds>(
-        stream: &'ds NominalDatasetStream,
-        channel: &'ds ChannelDescriptor,
-    ) -> NominalChannelWriter<'ds, T> {
+    fn new(
+        stream: &NominalDatasetStream,
+        channel: ChannelDescriptor,
+    ) -> NominalChannelWriter<'_, T> {
         NominalChannelWriter {
             channel,
             stream,
@@ -457,7 +445,7 @@ where
         );
         self.stream.when_capacity(self.unflushed.len(), |mut buf| {
             let to_flush: Vec<T> = self.unflushed.drain(..).collect();
-            buf.extend(self.channel, to_flush);
+            buf.extend(&self.channel, to_flush);
             self.last_flushed_at = Instant::now();
         })
     }

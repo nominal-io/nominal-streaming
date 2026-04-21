@@ -1,8 +1,5 @@
 [workspace]
-members = [
-    "nominal-streaming",
-    "py-nominal-streaming",
-]
+members = ["nominal-streaming", "py-nominal-streaming"]
 resolver = "2"
 
 # Require opt-in for building python bindings (should be built with maturin, not cargo)
@@ -11,22 +8,22 @@ default-members = ["nominal-streaming"]
 [workspace.dependencies]
 apache-avro = { version = "0.17.0", features = ["snappy"] }
 async-channel = "2.5.0"
-chrono = "0.4.43"
-conjure-error = "4"
-conjure-http = "4"
-conjure-object = "4"
-conjure-runtime-rustls-platform-verifier = "0.1"
+chrono = "0.4.44"
+conjure-error = "5"
+conjure-http = "5"
+conjure-object = "5"
+conjure-runtime-rustls-platform-verifier = "0.2"
 crossbeam-channel = "0.5.15"
 derive_more = { version = "2", features = ["from"] }
 futures = "0.3"
-nominal-api = "0.1099.0"
+nominal-api = "0.1163.0"
 parking_lot = "0.12"
 prost = "0.13"
 reqwest = "0.12.28"
 serde_json = "1.0.149"
 snap = "1"
 thiserror = "2"
-tokio = { version = "1", features = ["full", "tracing", "io-util" ] }
+tokio = { version = "1", features = ["full", "tracing", "io-util"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 url = "2.5.8"
