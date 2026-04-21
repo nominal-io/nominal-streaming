@@ -11,6 +11,7 @@ use ::nominal_streaming::prelude::*;
 use nominal_streaming::prelude::BearerToken;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
+use pyo3::sync::PyOnceLock;
 use pyo3::types::PyDict;
 use tracing::info;
 use tracing::warn;
@@ -23,6 +24,15 @@ use crate::nominal_stream_opts::PyNominalStreamOpts;
 use crate::point::*;
 use crate::runtime::spawn_runtime_worker;
 use crate::runtime::StreamRuntime;
+
+static JSON_DUMPS: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
+
+fn json_dumps<'py>(py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+    let cached = JSON_DUMPS.get_or_try_init(py, || -> PyResult<Py<PyAny>> {
+        Ok(py.import("json")?.getattr("dumps")?.unbind())
+    })?;
+    Ok(cached.bind(py).clone())
+}
 
 fn extract_single_enqueue_item(
     channel_descriptor: ChannelDescriptor,
@@ -299,6 +309,61 @@ impl PyNominalDatasetStream {
         }
 
         self.send_many(py, items)
+    }
+
+    #[pyo3(
+        signature = (channel_name, timestamp, value, tags=None),
+        text_signature = "(self, channel_name, timestamp, value, tags=None)"
+    )]
+    pub fn enqueue_struct(
+        &self,
+        py: Python<'_>,
+        channel_name: &str,
+        timestamp: u64,
+        value: &Bound<'_, PyAny>,
+        tags: Option<HashMap<String, String>>,
+    ) -> PyResult<()> {
+        let kwargs = PyDict::new(py);
+        kwargs.set_item("allow_nan", false)?;
+        let json_string: String = json_dumps(py)?.call((value,), Some(&kwargs))?.extract()?;
+
+        let ts = parse_timestamp(timestamp);
+        let ch = description_with_tags(channel_name, tags);
+        self.send_one(py, single_struct(ch, ts, json_string))
+    }
+
+    #[pyo3(
+        signature = (channel_name, timestamp, value, tags=None),
+        text_signature = "(self, channel_name, timestamp, value, tags=None)"
+    )]
+    pub fn enqueue_float_array(
+        &self,
+        py: Python<'_>,
+        channel_name: &str,
+        timestamp: u64,
+        value: Vec<f64>,
+        tags: Option<HashMap<String, String>>,
+    ) -> PyResult<()> {
+        let ts = parse_timestamp(timestamp);
+        let ch = description_with_tags(channel_name, tags);
+        self.send_one(py, single_double_array(ch, ts, value))
+    }
+
+    #[pyo3(
+        signature = (channel_name, timestamp, value, tags=None),
+        text_signature = "(self, channel_name, timestamp, value, tags=None)"
+    )]
+    pub fn enqueue_string_array(
+        &self,
+        py: Python<'_>,
+        channel_name: &str,
+        timestamp: u64,
+        value: Vec<String>,
+        tags: Option<HashMap<String, String>>,
+    ) -> PyResult<()> {
+        let ts = parse_timestamp(timestamp);
+        let ch = description_with_tags(channel_name, tags);
+        self.send_one(py, single_string_array(ch, ts, value))
     }
 
     fn __enter__<'py>(mut slf: PyRefMut<'py, Self>) -> PyResult<PyRefMut<'py, Self>> {

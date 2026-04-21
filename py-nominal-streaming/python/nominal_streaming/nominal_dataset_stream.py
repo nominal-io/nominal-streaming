@@ -36,7 +36,7 @@ import pathlib
 import signal
 import threading
 from types import TracebackType
-from typing import Mapping, Sequence, Type
+from typing import Any, Mapping, Sequence, Type
 
 import dateutil
 from typing_extensions import Self
@@ -312,3 +312,76 @@ class NominalDatasetStream:
             tags: Key-value tags associated with the data being uploaded.
         """
         self._impl.enqueue_from_dict(_parse_timestamp(timestamp), {**channel_values}, {**tags} if tags else None)
+
+    def enqueue_struct(
+        self,
+        channel_name: str,
+        timestamp: TimestampLike,
+        value: Mapping[str, Any],
+        tags: Mapping[str, str] | None = None,
+    ) -> None:
+        """Write a single struct value (JSON-encoded inside Rust) to the stream.
+
+        Args:
+            channel_name: Name of the channel to upload data for.
+            timestamp: Absolute UTC timestamp of the data being uploaded.
+            value: Mapping to serialize as a JSON struct. Nested values must be
+                JSON-native (int, float, str, bool, None, list, dict). Non-native
+                types (datetime, numpy scalars, etc.) must be converted by the caller.
+            tags: Key-value tags associated with the data being uploaded.
+
+        Raises:
+            TypeError: If `value` contains a non-JSON-native element.
+        """
+        self._impl.enqueue_struct(
+            channel_name,
+            _parse_timestamp(timestamp),
+            {**value},
+            {**tags} if tags else None,
+        )
+
+    def enqueue_float_array(
+        self,
+        channel_name: str,
+        timestamp: TimestampLike,
+        value: Sequence[float],
+        tags: Mapping[str, str] | None = None,
+    ) -> None:
+        """Write a single array-of-doubles value to the stream.
+
+        Args:
+            channel_name: Name of the channel to upload data for.
+            timestamp: Absolute UTC timestamp of the data being uploaded.
+            value: Sequence of doubles forming the array value at this timestamp.
+                Integer elements are coerced to float; pass an explicit float
+                sequence if implicit int-to-float promotion is undesired.
+            tags: Key-value tags associated with the data being uploaded.
+        """
+        self._impl.enqueue_float_array(
+            channel_name,
+            _parse_timestamp(timestamp),
+            list(value),
+            {**tags} if tags else None,
+        )
+
+    def enqueue_string_array(
+        self,
+        channel_name: str,
+        timestamp: TimestampLike,
+        value: Sequence[str],
+        tags: Mapping[str, str] | None = None,
+    ) -> None:
+        """Write a single array-of-strings value to the stream.
+
+        Args:
+            channel_name: Name of the channel to upload data for.
+            timestamp: Absolute UTC timestamp of the data being uploaded.
+            value: Sequence of strings forming the array value at this timestamp.
+            tags: Key-value tags associated with the data being uploaded.
+        """
+        self._impl.enqueue_string_array(
+            channel_name,
+            _parse_timestamp(timestamp),
+            list(value),
+            {**tags} if tags else None,
+        )

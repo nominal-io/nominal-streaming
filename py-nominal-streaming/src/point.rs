@@ -44,6 +44,18 @@ pub enum EnqueueItem {
         ch: ChannelDescriptor,
         points: Vec<StringPoint>,
     },
+    Structs {
+        ch: ChannelDescriptor,
+        points: Vec<StructPoint>,
+    },
+    DoubleArrays {
+        ch: ChannelDescriptor,
+        points: Vec<DoubleArrayPoint>,
+    },
+    StringArrays {
+        ch: ChannelDescriptor,
+        points: Vec<StringArrayPoint>,
+    },
 }
 
 /// Ensure the given lists of timestamps and values have the same length
@@ -118,6 +130,39 @@ pub fn single_string(ch: ChannelDescriptor, ts: Timestamp, v: String) -> Enqueue
         points: vec![StringPoint {
             timestamp: Some(ts),
             value: v,
+        }],
+    }
+}
+pub fn single_struct(ch: ChannelDescriptor, ts: Timestamp, json_string: String) -> EnqueueItem {
+    EnqueueItem::Structs {
+        ch,
+        points: vec![StructPoint {
+            timestamp: Some(ts),
+            json_string,
+        }],
+    }
+}
+
+pub fn single_double_array(ch: ChannelDescriptor, ts: Timestamp, value: Vec<f64>) -> EnqueueItem {
+    EnqueueItem::DoubleArrays {
+        ch,
+        points: vec![DoubleArrayPoint {
+            timestamp: Some(ts),
+            value,
+        }],
+    }
+}
+
+pub fn single_string_array(
+    ch: ChannelDescriptor,
+    ts: Timestamp,
+    value: Vec<String>,
+) -> EnqueueItem {
+    EnqueueItem::StringArrays {
+        ch,
+        points: vec![StringArrayPoint {
+            timestamp: Some(ts),
+            value,
         }],
     }
 }
