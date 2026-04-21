@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Python: `NominalDatasetStream.enqueue_struct`, `enqueue_float_array`, and `enqueue_string_array` for single-point struct and array values.
+- Rust: `NominalDatasetStream::double_array_writer` and `string_array_writer` symmetric with existing `double_writer` / `string_writer`.
+- Rust: `IntoPoints` impls for `Vec<DoubleArrayPoint>` and `Vec<StringArrayPoint>`.
+- Rust: prelude re-exports for `ArrayPoints`, `ArrayType`, `DoubleArrayPoint`, `DoubleArrayPoints`, `StringArrayPoint`, `StringArrayPoints`.
+
 ## [0.8.1](https://github.com/nominal-io/nominal-streaming/compare/v0.8.0...v0.8.1) - 2026-04-15
 
 ### Other
