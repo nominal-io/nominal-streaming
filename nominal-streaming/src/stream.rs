@@ -16,15 +16,11 @@ use conjure_object::ResourceIdentifier;
 use nominal_api::tonic::io::nominal::scout::api::proto::array_points::ArrayType;
 use nominal_api::tonic::io::nominal::scout::api::proto::points::PointsType;
 use nominal_api::tonic::io::nominal::scout::api::proto::ArrayPoints;
-use nominal_api::tonic::io::nominal::scout::api::proto::Channel;
 use nominal_api::tonic::io::nominal::scout::api::proto::DoublePoint;
 use nominal_api::tonic::io::nominal::scout::api::proto::IntegerPoint;
-use nominal_api::tonic::io::nominal::scout::api::proto::Points;
-use nominal_api::tonic::io::nominal::scout::api::proto::Series;
 use nominal_api::tonic::io::nominal::scout::api::proto::StringPoint;
 use nominal_api::tonic::io::nominal::scout::api::proto::StructPoint;
 use nominal_api::tonic::io::nominal::scout::api::proto::Uint64Point;
-use nominal_api::tonic::io::nominal::scout::api::proto::WriteRequestNominal;
 use parking_lot::Condvar;
 use parking_lot::Mutex;
 use parking_lot::MutexGuard;
@@ -33,6 +29,7 @@ use tracing::error;
 use tracing::info;
 
 use crate::client::NominalApiClients;
+use crate::client::StreamWriteRequest;
 use crate::client::PRODUCTION_API_URL;
 use crate::consumer::AvroFileConsumer;
 use crate::consumer::DualWriteRequestConsumer;
@@ -263,7 +260,7 @@ impl NominalDatasetStream {
         let secondary_buffer = Arc::new(SeriesBuffer::new(opts.max_points_per_record));
 
         let (request_tx, request_rx) =
-            crossbeam_channel::bounded::<(WriteRequestNominal, usize)>(opts.max_buffered_requests);
+            crossbeam_channel::bounded::<(StreamWriteRequest, usize)>(opts.max_buffered_requests);
 
         let running = Arc::new(AtomicBool::new(true));
         let unflushed_points = Arc::new(AtomicUsize::new(0));
@@ -716,34 +713,19 @@ impl SeriesBuffer {
         }
     }
 
-    fn take(&self) -> (usize, Vec<Series>) {
+    fn take(&self) -> (usize, StreamWriteRequest) {
         let mut points = self.lock();
         self.flush_time.store(
             UNIX_EPOCH.elapsed().unwrap().as_nanos() as u64,
             Ordering::Release,
         );
-        let result = points
-            .sb
-            .drain()
-            .map(|(ChannelDescriptor { name, tags }, points)| {
-                let channel = Channel { name };
-                let points_obj = Points {
-                    points_type: Some(points),
-                };
-                Series {
-                    channel: Some(channel),
-                    tags: tags
-                        .map(|tags| tags.into_iter().collect())
-                        .unwrap_or_default(),
-                    points: Some(points_obj),
-                }
-            })
-            .collect();
+        let drained: Vec<(ChannelDescriptor, PointsType)> = points.sb.drain().collect();
+        let write_request = crate::format::build_write_request(drained);
         let result_count = points
             .count
             .fetch_update(Ordering::Release, Ordering::Acquire, |_| Some(0))
             .unwrap();
-        (result_count, result)
+        (result_count, write_request)
     }
 
     fn is_empty(&self) -> bool {
@@ -777,7 +759,7 @@ impl SeriesBuffer {
 fn batch_processor(
     running: Arc<AtomicBool>,
     points_buffer: Arc<SeriesBuffer>,
-    request_chan: crossbeam_channel::Sender<(WriteRequestNominal, usize)>,
+    request_chan: crossbeam_channel::Sender<(StreamWriteRequest, usize)>,
     max_request_delay: Duration,
 ) {
     loop {
@@ -793,13 +775,11 @@ fn batch_processor(
             }
             continue;
         }
-        let (point_count, series) = points_buffer.take();
+        let (point_count, write_request) = points_buffer.take();
 
         if points_buffer.notify() {
             debug!("notified one waiting thread after clearing points buffer");
         }
-
-        let write_request = WriteRequestNominal { series };
 
         if request_chan.is_full() {
             debug!("ready to queue request but request channel is full");
@@ -838,7 +818,7 @@ impl Drop for NominalDatasetStream {
 fn request_dispatcher<C: WriteRequestConsumer + 'static>(
     running: Arc<AtomicBool>,
     unflushed_points: Arc<AtomicUsize>,
-    request_rx: crossbeam_channel::Receiver<(WriteRequestNominal, usize)>,
+    request_rx: crossbeam_channel::Receiver<(StreamWriteRequest, usize)>,
     consumer: Arc<C>,
 ) {
     let mut total_request_time = 0;

@@ -10,6 +10,9 @@ repository = "https://github.com/nominal-io/nominal-streaming"
 [features]
 default = ["logging"]
 logging = ["tracing-subscriber"]
+# Opt-in to the columnar writeNominalColumnarBatches endpoint. When disabled,
+# the crate uses the row-oriented writeNominalBatches endpoint.
+columnar = []
 
 
 [dependencies]

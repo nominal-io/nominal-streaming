@@ -1,5 +1,4 @@
 use std::fmt::Debug;
-use std::io::Write;
 use std::sync::Arc;
 use std::sync::LazyLock;
 
@@ -8,12 +7,9 @@ use conjure_http::client::AsyncClient;
 use conjure_http::client::AsyncRequestBody;
 use conjure_http::client::AsyncService;
 use conjure_http::client::ConjureRuntime;
-use conjure_http::private::header::CONTENT_ENCODING;
-use conjure_http::private::header::CONTENT_TYPE;
 use conjure_http::private::Request;
 use conjure_http::private::Response;
 use conjure_object::BearerToken;
-use conjure_object::ResourceIdentifier;
 use conjure_runtime_rustls_platform_verifier::Agent;
 use conjure_runtime_rustls_platform_verifier::BodyWriter;
 use conjure_runtime_rustls_platform_verifier::Client;
@@ -22,12 +18,21 @@ use conjure_runtime_rustls_platform_verifier::ResponseBody;
 use conjure_runtime_rustls_platform_verifier::UserAgent;
 use nominal_api::clients::ingest::api::AsyncIngestServiceClient;
 use nominal_api::clients::upload::api::AsyncUploadServiceClient;
-use nominal_api::objects::api::rids::NominalDataSourceOrDatasetRid;
 use nominal_api::objects::api::rids::WorkspaceRid;
-use snap::write::FrameEncoder;
 use url::Url;
 
 use crate::types::AuthProvider;
+
+/// Request type sent through the stream pipeline. Changes shape based on which
+/// ingest endpoint is targeted: row-oriented `WriteRequestNominal` by default,
+/// or columnar `WriteBatchesRequest` when the `columnar` feature is enabled.
+#[cfg(not(feature = "columnar"))]
+pub type StreamWriteRequest =
+    nominal_api::tonic::io::nominal::scout::api::proto::WriteRequestNominal;
+
+#[cfg(feature = "columnar")]
+pub type StreamWriteRequest =
+    nominal_api::tonic::nominal::direct_channel_writer::v2::WriteBatchesRequest;
 
 pub mod conjure {
     pub use conjure_error as error;
@@ -141,40 +146,3 @@ pub fn async_conjure_client(service: &'static str, uri: Url) -> Result<Client, E
 }
 
 pub type WriteRequest<'a> = Request<AsyncRequestBody<'a, BodyWriter>>;
-
-pub fn encode_request<'a, 'b>(
-    write_request_bytes: Vec<u8>,
-    api_key: &'a BearerToken,
-    data_source_rid: &'a ResourceIdentifier,
-) -> std::io::Result<WriteRequest<'b>> {
-    let mut encoder = FrameEncoder::new(Vec::with_capacity(write_request_bytes.len()));
-
-    encoder.write_all(&write_request_bytes)?;
-
-    let mut request = Request::new(AsyncRequestBody::Fixed(
-        encoder.into_inner().unwrap().into(),
-    ));
-
-    let headers = request.headers_mut();
-    headers.insert(CONTENT_TYPE, "application/x-protobuf".parse().unwrap());
-    headers.insert(CONTENT_ENCODING, "x-snappy-framed".parse().unwrap());
-
-    *request.method_mut() = conjure_http::private::http::Method::POST;
-    let mut path = conjure_http::private::UriBuilder::new();
-    path.push_literal("/storage/writer/v1/nominal");
-
-    let nominal_data_source_or_dataset_rid = NominalDataSourceOrDatasetRid(data_source_rid.clone());
-    path.push_path_parameter(&nominal_data_source_or_dataset_rid);
-
-    *request.uri_mut() = path.build();
-    conjure_http::private::encode_header_auth(&mut request, api_key);
-    request
-        .extensions_mut()
-        .insert(conjure_http::client::Endpoint::new(
-            "NominalChannelWriterService",
-            None,
-            "writeNominalBatches",
-            "/storage/writer/v1/nominal/{dataSourceRid}",
-        ));
-    Ok(request)
-}
