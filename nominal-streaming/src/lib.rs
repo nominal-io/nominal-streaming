@@ -169,11 +169,17 @@ pub mod prelude {
     pub use conjure_object::BearerToken;
     pub use conjure_object::ResourceIdentifier;
     pub use nominal_api::tonic::google::protobuf::Timestamp;
+    pub use nominal_api::tonic::io::nominal::scout::api::proto::array_points::ArrayType;
     pub use nominal_api::tonic::io::nominal::scout::api::proto::points::PointsType;
+    pub use nominal_api::tonic::io::nominal::scout::api::proto::ArrayPoints;
+    pub use nominal_api::tonic::io::nominal::scout::api::proto::DoubleArrayPoint;
+    pub use nominal_api::tonic::io::nominal::scout::api::proto::DoubleArrayPoints;
     pub use nominal_api::tonic::io::nominal::scout::api::proto::DoublePoint;
     pub use nominal_api::tonic::io::nominal::scout::api::proto::DoublePoints;
     pub use nominal_api::tonic::io::nominal::scout::api::proto::IntegerPoint;
     pub use nominal_api::tonic::io::nominal::scout::api::proto::IntegerPoints;
+    pub use nominal_api::tonic::io::nominal::scout::api::proto::StringArrayPoint;
+    pub use nominal_api::tonic::io::nominal::scout::api::proto::StringArrayPoints;
     pub use nominal_api::tonic::io::nominal::scout::api::proto::StringPoint;
     pub use nominal_api::tonic::io::nominal::scout::api::proto::StringPoints;
     pub use nominal_api::tonic::io::nominal::scout::api::proto::StructPoint;
@@ -202,6 +208,8 @@ mod tests {
     use std::time::Duration;
     use std::time::UNIX_EPOCH;
 
+    use nominal_api::tonic::io::nominal::scout::api::proto::array_points::ArrayType;
+    use nominal_api::tonic::io::nominal::scout::api::proto::ArrayPoints;
     use nominal_api::tonic::io::nominal::scout::api::proto::IntegerPoint;
 
     use crate::client::PRODUCTION_API_URL;
@@ -289,6 +297,8 @@ mod tests {
             let mut structs = Vec::new();
             let mut ints = Vec::new();
             let mut uints = Vec::new();
+            let mut double_arrays = Vec::new();
+            let mut string_arrays = Vec::new();
             for i in 0..1000 {
                 let start_time = UNIX_EPOCH.elapsed().unwrap();
                 doubles.push(DoublePoint {
@@ -301,7 +311,7 @@ mod tests {
                 });
                 structs.push(StructPoint {
                     timestamp: Some(start_time.into_timestamp()),
-                    json_string: format!("{}", i % 50),
+                    json_string: format!("{{\"v\":{}}}", i % 50),
                 });
                 ints.push(IntegerPoint {
                     timestamp: Some(start_time.into_timestamp()),
@@ -310,7 +320,15 @@ mod tests {
                 uints.push(Uint64Point {
                     timestamp: Some(start_time.into_timestamp()),
                     value: (i % 50) as u64,
-                })
+                });
+                double_arrays.push(DoubleArrayPoint {
+                    timestamp: Some(start_time.into_timestamp()),
+                    value: vec![(i % 50) as f64, ((i + 1) % 50) as f64],
+                });
+                string_arrays.push(StringArrayPoint {
+                    timestamp: Some(start_time.into_timestamp()),
+                    value: vec![format!("{}", i % 50)],
+                });
             }
 
             stream.enqueue(
@@ -333,6 +351,14 @@ mod tests {
                 &ChannelDescriptor::with_tags("uint64", [("batch_id", batch.to_string())]),
                 uints,
             );
+            stream.enqueue(
+                &ChannelDescriptor::with_tags("double_array", [("batch_id", batch.to_string())]),
+                double_arrays,
+            );
+            stream.enqueue(
+                &ChannelDescriptor::with_tags("string_array", [("batch_id", batch.to_string())]),
+                string_arrays,
+            );
         }
 
         drop(stream); // wait for points to flush
@@ -341,7 +367,7 @@ mod tests {
 
         // validate that the requests were flushed based on the max_records value, not the
         // max request delay
-        assert_eq!(requests.len(), 25);
+        assert_eq!(requests.len(), 35);
 
         let r = requests
             .iter()
@@ -373,12 +399,59 @@ mod tests {
             panic!("invalid struct points type");
         };
 
-        // collect() overwrites into a single request
+        let PointsType::ArrayPoints(ArrayPoints {
+            array_type: Some(ArrayType::DoubleArrayPoints(dap)),
+        }) = r.get("double_array").unwrap()
+        else {
+            panic!("invalid double array points type");
+        };
+
+        let PointsType::ArrayPoints(ArrayPoints {
+            array_type: Some(ArrayType::StringArrayPoints(sap)),
+        }) = r.get("string_array").unwrap()
+        else {
+            panic!("invalid string array points type");
+        };
+
+        // collect() overwrites into a single request per channel
         assert_eq!(dp.points.len(), 1000);
         assert_eq!(sp.points.len(), 1000);
         assert_eq!(ip.points.len(), 1000);
         assert_eq!(up.points.len(), 1000);
         assert_eq!(stp.points.len(), 1000);
+        assert_eq!(dap.points.len(), 1000);
+        assert_eq!(sap.points.len(), 1000);
+    }
+
+    #[test_log::test]
+    #[should_panic(expected = "mismatched types")]
+    fn test_mismatched_array_types_panics() {
+        // Protects the exhaustive match in SeriesBufferGuard::extend from being
+        // silently simplified to a catch-all: pushing a DoubleArray and then a
+        // StringArray to the same channel must panic at buffer merge time.
+        //
+        // ManuallyDrop skips NominalDatasetStream::drop during unwind — the panic
+        // leaves unflushed_points non-zero, which would cause drop to spin forever.
+        let (_test_consumer, stream) = create_test_stream();
+        let stream = std::mem::ManuallyDrop::new(stream);
+        let cd = ChannelDescriptor::new("mixed_array");
+
+        let ts = UNIX_EPOCH.elapsed().unwrap().into_timestamp();
+
+        stream.enqueue(
+            &cd,
+            vec![DoubleArrayPoint {
+                timestamp: Some(ts),
+                value: vec![1.0, 2.0],
+            }],
+        );
+        stream.enqueue(
+            &cd,
+            vec![StringArrayPoint {
+                timestamp: Some(ts),
+                value: vec!["a".into()],
+            }],
+        );
     }
 
     #[test_log::test]
@@ -440,11 +513,15 @@ mod tests {
         let cd3 = ChannelDescriptor::new("int");
         let cd4 = ChannelDescriptor::new("uint64");
         let cd5 = ChannelDescriptor::new("struct");
+        let cd6 = ChannelDescriptor::new("double_array");
+        let cd7 = ChannelDescriptor::new("string_array");
         let mut double_writer = stream.double_writer(cd1);
         let mut string_writer = stream.string_writer(cd2);
         let mut integer_writer = stream.integer_writer(cd3);
         let mut uint64_writer = stream.uint64_writer(cd4);
         let mut struct_writer = stream.struct_writer(cd5);
+        let mut double_array_writer = stream.double_array_writer(cd6);
+        let mut string_array_writer = stream.string_array_writer(cd7);
 
         for i in 0..5000 {
             let start_time = UNIX_EPOCH.elapsed().unwrap();
@@ -453,7 +530,9 @@ mod tests {
             string_writer.push(start_time, format!("{}", value));
             integer_writer.push(start_time, value);
             uint64_writer.push(start_time, value as u64);
-            struct_writer.push(start_time, format!("{}", value));
+            struct_writer.push(start_time, format!("{{\"v\":{}}}", value));
+            double_array_writer.push(start_time, vec![value as f64, (value + 1) as f64]);
+            string_array_writer.push(start_time, vec![format!("{}", value)]);
         }
 
         drop(double_writer);
@@ -461,11 +540,13 @@ mod tests {
         drop(integer_writer);
         drop(uint64_writer);
         drop(struct_writer);
+        drop(double_array_writer);
+        drop(string_array_writer);
         drop(stream);
 
         let requests = test_consumer.requests.lock().unwrap();
 
-        assert_eq!(requests.len(), 25);
+        assert_eq!(requests.len(), 35);
 
         let r = requests
             .iter()
@@ -498,11 +579,27 @@ mod tests {
             panic!("invalid struct points type");
         };
 
-        // collect() overwrites into a single request
+        let PointsType::ArrayPoints(ArrayPoints {
+            array_type: Some(ArrayType::DoubleArrayPoints(dap)),
+        }) = r.get("double_array").unwrap()
+        else {
+            panic!("invalid double array points type");
+        };
+
+        let PointsType::ArrayPoints(ArrayPoints {
+            array_type: Some(ArrayType::StringArrayPoints(sap)),
+        }) = r.get("string_array").unwrap()
+        else {
+            panic!("invalid string array points type");
+        };
+
+        // collect() overwrites into a single request per channel
         assert_eq!(dp.points.len(), 1000);
         assert_eq!(sp.points.len(), 1000);
         assert_eq!(ip.points.len(), 1000);
         assert_eq!(up.points.len(), 1000);
         assert_eq!(stp.points.len(), 1000);
+        assert_eq!(dap.points.len(), 1000);
+        assert_eq!(sap.points.len(), 1000);
     }
 }
