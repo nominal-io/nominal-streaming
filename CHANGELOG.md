@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.2](https://github.com/nominal-io/nominal-streaming/compare/v0.8.1...v0.8.2) - 2026-04-22
+
+### Added
+
+- allow streaming structs and arrays from python ([#225](https://github.com/nominal-io/nominal-streaming/pull/225))
+
+### Other
+
+- *(deps)* bump nominal-api from 0.1163.0 to 0.1205.0 ([#226](https://github.com/nominal-io/nominal-streaming/pull/226))
+
 ### Added
 
 - Python: `NominalDatasetStream.enqueue_struct`, `enqueue_float_array`, and `enqueue_string_array` for single-point struct and array values.
