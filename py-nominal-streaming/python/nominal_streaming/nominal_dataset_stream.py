@@ -317,7 +317,7 @@ class NominalDatasetStream:
         self,
         channel_name: str,
         timestamp: TimestampLike,
-        value: Mapping[str, Any],
+        value: dict[str, Any],
         tags: Mapping[str, str] | None = None,
     ) -> None:
         """Write a single struct value (JSON-encoded inside Rust) to the stream.
@@ -336,7 +336,7 @@ class NominalDatasetStream:
         self._impl.enqueue_struct(
             channel_name,
             _parse_timestamp(timestamp),
-            {**value},
+            value,
             {**tags} if tags else None,
         )
 
@@ -344,7 +344,7 @@ class NominalDatasetStream:
         self,
         channel_name: str,
         timestamp: TimestampLike,
-        value: Sequence[float],
+        value: list[float],
         tags: Mapping[str, str] | None = None,
     ) -> None:
         """Write a single array-of-doubles value to the stream.
@@ -352,7 +352,7 @@ class NominalDatasetStream:
         Args:
             channel_name: Name of the channel to upload data for.
             timestamp: Absolute UTC timestamp of the data being uploaded.
-            value: Sequence of doubles forming the array value at this timestamp.
+            value: List of doubles forming the array value at this timestamp.
                 Integer elements are coerced to float; pass an explicit float
                 sequence if implicit int-to-float promotion is undesired.
             tags: Key-value tags associated with the data being uploaded.
@@ -360,7 +360,7 @@ class NominalDatasetStream:
         self._impl.enqueue_float_array(
             channel_name,
             _parse_timestamp(timestamp),
-            list(value),
+            value,
             {**tags} if tags else None,
         )
 
@@ -368,7 +368,7 @@ class NominalDatasetStream:
         self,
         channel_name: str,
         timestamp: TimestampLike,
-        value: Sequence[str],
+        value: list[str],
         tags: Mapping[str, str] | None = None,
     ) -> None:
         """Write a single array-of-strings value to the stream.
@@ -376,12 +376,12 @@ class NominalDatasetStream:
         Args:
             channel_name: Name of the channel to upload data for.
             timestamp: Absolute UTC timestamp of the data being uploaded.
-            value: Sequence of strings forming the array value at this timestamp.
+            value: List of strings forming the array value at this timestamp.
             tags: Key-value tags associated with the data being uploaded.
         """
         self._impl.enqueue_string_array(
             channel_name,
             _parse_timestamp(timestamp),
-            list(value),
+            value,
             {**tags} if tags else None,
         )
