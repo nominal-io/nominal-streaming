@@ -99,9 +99,12 @@ pub fn spawn_runtime_worker(
                     },
                     maybe_item = ingest_rx.recv() => {
                         match maybe_item {
-                            Some(EnqueueItem::Doubles { ch, points }) => { stream.enqueue(&ch, points); }
-                            Some(EnqueueItem::Ints    { ch, points }) => { stream.enqueue(&ch, points); }
-                            Some(EnqueueItem::Strings { ch, points }) => { stream.enqueue(&ch, points); }
+                            Some(EnqueueItem::Doubles      { ch, points }) => { stream.enqueue(&ch, points); }
+                            Some(EnqueueItem::Ints         { ch, points }) => { stream.enqueue(&ch, points); }
+                            Some(EnqueueItem::Strings      { ch, points }) => { stream.enqueue(&ch, points); }
+                            Some(EnqueueItem::Structs      { ch, points }) => { stream.enqueue(&ch, points); }
+                            Some(EnqueueItem::DoubleArrays { ch, points }) => { stream.enqueue(&ch, points); }
+                            Some(EnqueueItem::StringArrays { ch, points }) => { stream.enqueue(&ch, points); }
                             None => {
                                 info!("Empty enqueue item received! Stopping runtime...");
                                 break;

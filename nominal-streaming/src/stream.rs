@@ -17,10 +17,12 @@ use nominal_api::tonic::io::nominal::scout::api::proto::array_points::ArrayType;
 use nominal_api::tonic::io::nominal::scout::api::proto::points::PointsType;
 use nominal_api::tonic::io::nominal::scout::api::proto::ArrayPoints;
 use nominal_api::tonic::io::nominal::scout::api::proto::Channel;
+use nominal_api::tonic::io::nominal::scout::api::proto::DoubleArrayPoint;
 use nominal_api::tonic::io::nominal::scout::api::proto::DoublePoint;
 use nominal_api::tonic::io::nominal::scout::api::proto::IntegerPoint;
 use nominal_api::tonic::io::nominal::scout::api::proto::Points;
 use nominal_api::tonic::io::nominal::scout::api::proto::Series;
+use nominal_api::tonic::io::nominal::scout::api::proto::StringArrayPoint;
 use nominal_api::tonic::io::nominal::scout::api::proto::StringPoint;
 use nominal_api::tonic::io::nominal::scout::api::proto::StructPoint;
 use nominal_api::tonic::io::nominal::scout::api::proto::Uint64Point;
@@ -357,6 +359,25 @@ impl NominalDatasetStream {
             writer: NominalChannelWriter::new(self, channel_descriptor),
         }
     }
+
+    pub fn double_array_writer(
+        &self,
+        channel_descriptor: ChannelDescriptor,
+    ) -> NominalDoubleArrayWriter<'_> {
+        NominalDoubleArrayWriter {
+            writer: NominalChannelWriter::new(self, channel_descriptor),
+        }
+    }
+
+    pub fn string_array_writer(
+        &self,
+        channel_descriptor: ChannelDescriptor,
+    ) -> NominalStringArrayWriter<'_> {
+        NominalStringArrayWriter {
+            writer: NominalChannelWriter::new(self, channel_descriptor),
+        }
+    }
+
     pub fn enqueue(&self, channel_descriptor: &ChannelDescriptor, new_points: impl IntoPoints) {
         let new_points = new_points.into_points();
         let new_count = points_len(&new_points);
@@ -523,6 +544,36 @@ impl NominalStructWriter<'_> {
         self.writer.push_point(StructPoint {
             timestamp: Some(timestamp.into_timestamp()),
             json_string: value.into(),
+        });
+    }
+}
+
+pub struct NominalDoubleArrayWriter<'ds> {
+    writer: NominalChannelWriter<'ds, DoubleArrayPoint>,
+}
+
+impl NominalDoubleArrayWriter<'_> {
+    pub fn push(&mut self, timestamp: impl IntoTimestamp, value: Vec<f64>) {
+        self.writer.push_point(DoubleArrayPoint {
+            timestamp: Some(timestamp.into_timestamp()),
+            value,
+        });
+    }
+}
+
+pub struct NominalStringArrayWriter<'ds> {
+    writer: NominalChannelWriter<'ds, StringArrayPoint>,
+}
+
+impl NominalStringArrayWriter<'_> {
+    pub fn push(
+        &mut self,
+        timestamp: impl IntoTimestamp,
+        value: impl IntoIterator<Item = impl Into<String>>,
+    ) {
+        self.writer.push_point(StringArrayPoint {
+            timestamp: Some(timestamp.into_timestamp()),
+            value: value.into_iter().map(Into::into).collect(),
         });
     }
 }

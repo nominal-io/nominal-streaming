@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pathlib
 from types import TracebackType
-from typing import Sequence, Type
+from typing import Any, Mapping, Sequence, Type
 
 from typing_extensions import Self
 
@@ -371,6 +371,70 @@ class PyNominalDatasetStream:
         Raises:
             RuntimeError: If the stream is not open or has been cancelled.
             TypeError: If any value is not an `int`, `float`, or `str`.
+        """
+
+    def enqueue_struct(
+        self,
+        channel_name: str,
+        timestamp: int,
+        value: Mapping[str, Any],
+        tags: dict[str, str] | None = None,
+    ) -> None:
+        """Enqueue a single struct value.
+
+        The value is JSON-serialized inside Rust using Python's json.dumps
+        (with allow_nan=False). Raises TypeError at enqueue time if the
+        value contains non-JSON-native elements.
+
+        Args:
+            channel_name: Channel name to stream to
+            timestamp: Integral nanoseconds since unix epoch.
+            value: Struct value, must be JSON-encodable.
+            tags: Optional tags to attach to the data.
+
+        Raises:
+            RuntimeError: If the stream is not open or has been cancelled.
+            TypeError: If `value` contains a non-JSON-native element.
+        """
+
+    def enqueue_float_array(
+        self,
+        channel_name: str,
+        timestamp: int,
+        value: Sequence[float],
+        tags: dict[str, str] | None = None,
+    ) -> None:
+        """Enqueue a single array-of-doubles value.
+
+        Args:
+            channel_name: Channel name to stream to
+            timestamp: Integral nanoseconds since unix epoch.
+            value: Sequence of doubles forming the array value at this timestamp.
+                Integer elements are coerced to float; pass an explicit float
+                sequence if implicit int-to-float promotion is undesired.
+            tags: Optional tags to attach to the data.
+
+        Raises:
+            RuntimeError: If the stream is not open or has been cancelled.
+        """
+
+    def enqueue_string_array(
+        self,
+        channel_name: str,
+        timestamp: int,
+        value: Sequence[str],
+        tags: dict[str, str] | None = None,
+    ) -> None:
+        """Enqueue a single array-of-strings value.
+
+        Args:
+            channel_name: Channel name to stream to
+            timestamp: Integral nanoseconds since unix epoch.
+            value: Sequence of strings forming the array value at this timestamp.
+            tags: Optional tags to attach to the data.
+
+        Raises:
+            RuntimeError: If the stream is not open or has been cancelled.
         """
 
     def __enter__(self) -> Self: ...
