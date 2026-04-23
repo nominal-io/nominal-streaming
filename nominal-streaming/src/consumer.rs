@@ -130,7 +130,7 @@ pub static CORE_AVRO_SCHEMA: LazyLock<apache_avro::Schema> = LazyLock::new(|| {
 
 #[derive(Clone)]
 pub struct AvroFileConsumer {
-    pub(crate) writer: Arc<Mutex<apache_avro::Writer<'static, std::fs::File>>>,
+    writer: Arc<Mutex<apache_avro::Writer<'static, std::fs::File>>>,
     path: PathBuf,
 }
 
