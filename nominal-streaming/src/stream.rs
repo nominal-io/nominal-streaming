@@ -387,6 +387,25 @@ impl NominalDatasetStream {
         });
     }
 
+    /// Enqueue points for multiple channels in a single critical section.
+    ///
+    /// Checks combined capacity once and extends every entry under one buffer
+    /// lock, amortizing the lock-acquisition cost across all channels. Callers
+    /// who must push a wide frame (many channels for one timestamp span) should
+    /// prefer this over a loop of [`Self::enqueue`] calls.
+    pub fn enqueue_batch(&self, batch: Vec<(ChannelDescriptor, PointsType)>) {
+        let total: usize = batch.iter().map(|(_, p)| points_len(p)).sum();
+        if total == 0 {
+            return;
+        }
+
+        self.when_capacity(total, move |mut sb| {
+            for (desc, pts) in batch {
+                sb.extend(&desc, pts);
+            }
+        });
+    }
+
     fn when_capacity(&self, new_count: usize, callback: impl FnOnce(SeriesBufferGuard)) {
         self.unflushed_points
             .fetch_add(new_count, Ordering::Release);
@@ -933,7 +952,7 @@ fn request_dispatcher<C: WriteRequestConsumer + 'static>(
     );
 }
 
-fn points_len(points_type: &PointsType) -> usize {
+pub fn points_len(points_type: &PointsType) -> usize {
     match points_type {
         PointsType::DoublePoints(points) => points.points.len(),
         PointsType::StringPoints(points) => points.points.len(),
