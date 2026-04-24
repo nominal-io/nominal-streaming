@@ -10,6 +10,7 @@ repository = "https://github.com/nominal-io/nominal-streaming"
 [features]
 default = ["logging"]
 logging = ["tracing-subscriber"]
+polars = ["dep:polars"]
 
 
 [dependencies]
@@ -25,6 +26,7 @@ derive_more = { workspace = true }
 futures = { workspace = true }
 nominal-api = { workspace = true }
 parking_lot = { workspace = true }
+polars = { version = "0.52", default-features = false, features = ["dtype-struct", "dtype-array"], optional = true }
 prost = { workspace = true }
 reqwest = { workspace = true }
 serde_json = { workspace = true }

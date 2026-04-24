@@ -30,7 +30,6 @@ with (
 
 from __future__ import annotations
 
-import datetime
 import logging
 import pathlib
 import signal
@@ -38,31 +37,18 @@ import threading
 from types import TracebackType
 from typing import Any, Mapping, Sequence, Type
 
-import dateutil
 from typing_extensions import Self
 
 from nominal_streaming._nominal_streaming import (
     PyNominalDatasetStream,
     PyNominalStreamOpts,
 )
+from nominal_streaming._timestamp import ScalarValue, TimestampLike, _parse_timestamp
+
+# DataType is an alias kept for backwards compatibility.
+DataType = ScalarValue
 
 logger = logging.getLogger(__name__)
-
-TimestampLike = str | int | datetime.datetime
-DataType = int | float | str
-
-
-def _parse_timestamp(ts: str | int | datetime.datetime) -> int:
-    if isinstance(ts, int):
-        return ts
-    elif isinstance(ts, datetime.datetime):
-        secs = ts.astimezone(datetime.timezone.utc).timestamp()
-        return int(secs * 1e9)
-    else:
-        # TODO(drake): by involving dateutil, this chops off any nano level precision provided
-        #              in the timestamp. Update to not lose precision when converting to absolute nanos.
-        secs = dateutil.parser.parse(ts).astimezone(datetime.timezone.utc).timestamp()
-        return int(secs * 1e9)
 
 
 class NominalDatasetStream:

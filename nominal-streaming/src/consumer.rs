@@ -224,7 +224,11 @@ impl AvroFileConsumer {
     }
 }
 
-fn points_to_avro(points: Option<&Points>) -> (Vec<Value>, Vec<Value>) {
+/// Convert a `Points` payload into parallel `(timestamps, values)` avro `Value`
+/// arrays. Exposed so downstream consumers (e.g., a parallel record-builder
+/// in py-nominal-streaming) can reuse the dtype-dispatch logic without
+/// duplicating the schema match.
+pub fn points_to_avro(points: Option<&Points>) -> (Vec<Value>, Vec<Value>) {
     let Some(Points {
         points_type: Some(points),
     }) = points
