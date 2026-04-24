@@ -177,6 +177,7 @@ let stream = NominalDatasetStreamBuilder::new()
 */
 #![recursion_limit = "256"]
 
+pub mod avro_writer;
 pub mod client;
 pub mod consumer;
 pub mod listener;
@@ -214,6 +215,10 @@ pub mod prelude {
     pub use nominal_api::tonic::io::nominal::scout::api::proto::WriteRequest;
     pub use nominal_api::tonic::io::nominal::scout::api::proto::WriteRequestNominal;
 
+    pub use crate::avro_writer::AvroWriter;
+    pub use crate::avro_writer::AvroWriterError;
+    pub use crate::avro_writer::AvroWriterOpts;
+    pub use crate::avro_writer::PipelineStats;
     pub use crate::consumer::NominalCoreConsumer;
     pub use crate::stream::NominalDatasetStream;
     #[expect(deprecated)]

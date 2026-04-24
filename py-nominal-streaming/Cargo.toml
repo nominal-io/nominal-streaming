@@ -30,7 +30,12 @@ tokio = { workspace = true, features = ["rt-multi-thread", "time"] }
 tracing = { workspace = true }
 
 # Depend on the Rust core crate in the repository root
-nominal-streaming = { workspace = true, features = ["logging"] }
+nominal-streaming = { workspace = true, features = ["logging", "polars"] }
 
 anyhow = "1"
 crossbeam-channel = "0.5"
+polars = { version = "0.52", default-features = false, features = [
+  "dtype-struct",
+  "dtype-array",
+] }
+polars-arrow = { version = "0.52", default-features = false }

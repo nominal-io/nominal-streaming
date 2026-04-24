@@ -14,7 +14,7 @@ use std::time::Instant;
 use std::time::UNIX_EPOCH;
 
 use batching::for_each_record;
-use batching::points_len;
+pub(crate) use batching::points_len;
 use conjure_object::BearerToken;
 use conjure_object::ResourceIdentifier;
 use nominal_api::tonic::io::nominal::scout::api::proto::array_points::ArrayType;

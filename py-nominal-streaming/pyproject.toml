@@ -14,12 +14,16 @@ dynamic = ["readme", "urls", "authors", "license", "version"]
 
 dependencies = [
   "typing-extensions>=4,<5",
+  "polars>=1,<2",
   # Any version is okay for these dependencies
   "python-dateutil>=0.0.0",
 ]
 
 [project.optional-dependencies]
 numpy = ["numpy>=1.24"]
+
+[dependency-groups]
+dev = ["pytest>=7", "fastavro>=1", "cramjam>=2"]
 
 [build-system]
 requires = ["maturin>=1.6,<2.0"]
@@ -38,3 +42,11 @@ features = ["pyo3/extension-module"]
 # Tell maturin where the python code lives.
 # All files under this directory will be included in the wheel.
 python-source = "python"
+exclude = [
+  { path = "**/__pycache__/**", format = "wheel" },
+  { path = "**/*.pyc", format = "wheel" },
+  { path = "**/*.pyo", format = "wheel" },
+]
+
+[tool.pytest.ini_options]
+testpaths = ["python/tests"]

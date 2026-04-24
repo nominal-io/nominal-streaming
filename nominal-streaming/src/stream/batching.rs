@@ -83,7 +83,7 @@ fn for_each_points_chunk(
     }
 }
 
-pub(super) fn points_len(points_type: &PointsType) -> usize {
+pub(crate) fn points_len(points_type: &PointsType) -> usize {
     match points_type {
         PointsType::DoublePoints(points) => points.points.len(),
         PointsType::StringPoints(points) => points.points.len(),
