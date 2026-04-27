@@ -33,7 +33,7 @@ jobs:
           toolchain: nightly
           rustflags: ""
       - name: Install just
-        uses: extractions/setup-just@v4
+        uses: extractions/setup-just@v3
       - name: Build bindings and install in dev mode
         run: |
           just python::dev
