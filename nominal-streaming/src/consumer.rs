@@ -172,12 +172,17 @@ impl AvroFileConsumer {
         Self::new_with_full_path(full_path)
     }
 
+    /// Opens (and truncates) `file_path` for writing, then wraps it in an
+    /// avro `Writer`. If the path already exists, its prior contents are
+    /// discarded — the avro container format is single-header-and-blocks, so
+    /// "open-without-truncate" would leave leftover bytes from the previous
+    /// file past the new content's end and produce a corrupt reader stream.
     pub fn new_with_full_path(file_path: impl Into<PathBuf>) -> std::io::Result<Self> {
         let path = file_path.into();
         std::fs::create_dir_all(path.parent().unwrap_or(&path))?;
         let file = std::fs::OpenOptions::new()
             .create(true)
-            .truncate(false)
+            .truncate(true)
             .write(true)
             .open(&path)?;
 
@@ -327,6 +332,21 @@ impl WriteRequestConsumer for AvroFileConsumer {
     fn consume(&self, request: &WriteRequestNominal) -> ConsumerResult<()> {
         self.append_series(&request.series)?;
         Ok(())
+    }
+}
+
+impl Drop for AvroFileConsumer {
+    /// Flush any avro records still buffered inside the writer before the
+    /// underlying file is closed. `apache_avro::Writer` does not flush on
+    /// drop on its own — without this, small streams (under the writer's
+    /// internal block-flush threshold) silently lose their tail records.
+    fn drop(&mut self) {
+        if let Err(e) = self.writer.lock().flush() {
+            warn!(
+                "failed to flush avro writer for {:?} on drop: {e:?}",
+                self.path
+            );
+        }
     }
 }
 
@@ -841,5 +861,62 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn reopening_path_produces_valid_avro_file() {
+        // Write 100 points, then re-open the same path and write 10 points.
+        // Both passes must produce a file that reads back cleanly with the
+        // expected point count. Without truncate, the second pass would
+        // overwrite from offset 0 and leave the tail of the longer first
+        // file intact, corrupting the reader stream.
+        let tmp_file = NamedTempFile::new().unwrap();
+        let path: PathBuf = tmp_file.path().to_path_buf();
+
+        write_integer_points(&path, 100);
+        assert_eq!(read_integer_point_count(&path), 100);
+
+        write_integer_points(&path, 10);
+        assert_eq!(read_integer_point_count(&path), 10);
+    }
+
+    fn write_integer_points(path: &PathBuf, count: i64) {
+        let points = (0..count)
+            .map(
+                |i| nominal_api::tonic::io::nominal::scout::api::proto::IntegerPoint {
+                    timestamp: make_timestamp(i, 0),
+                    value: i,
+                },
+            )
+            .collect();
+        let consumer = AvroFileConsumer::new_with_full_path(path).unwrap();
+        consumer
+            .append_series(&[make_series(
+                "ch",
+                Points {
+                    points_type: Some(PointsType::IntegerPoints(IntegerPoints { points })),
+                },
+            )])
+            .unwrap();
+        // Consumer drops at end of scope, flushing the avro writer to disk.
+    }
+
+    fn read_integer_point_count(path: &PathBuf) -> usize {
+        let reader = Reader::new(std::fs::File::open(path).unwrap()).unwrap();
+        let mut total = 0;
+        for record in reader {
+            let Value::Record(fields) = record.unwrap() else {
+                panic!("expected Record");
+            };
+            let timestamps = fields
+                .iter()
+                .find(|(name, _)| name == "timestamps")
+                .map(|(_, v)| v)
+                .unwrap();
+            if let Value::Array(arr) = timestamps {
+                total += arr.len();
+            }
+        }
+        total
     }
 }
