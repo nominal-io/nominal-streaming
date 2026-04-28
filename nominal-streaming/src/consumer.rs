@@ -102,6 +102,8 @@ impl<T: AuthProvider + 'static> WriteRequestConsumer for NominalCoreConsumer<T> 
 
 const DEFAULT_FILE_PREFIX: &str = "nominal_stream";
 
+pub const DATASET_RID_METADATA_KEY: &str = "nominal.dataset_rid";
+
 pub static CORE_SCHEMA_STR: &str = r#"{
   "type": "record",
   "name": "AvroStream",
@@ -162,6 +164,7 @@ impl AvroFileConsumer {
     pub fn new(
         directory: impl Into<PathBuf>,
         file_prefix: Option<String>,
+        dataset_rid: Option<ResourceIdentifier>,
     ) -> std::io::Result<Self> {
         let datetime = chrono::Utc::now().format("%Y%m%d_%H%M%S").to_string();
         let prefix = file_prefix.unwrap_or_else(|| DEFAULT_FILE_PREFIX.to_string());
@@ -169,10 +172,13 @@ impl AvroFileConsumer {
         let directory = directory.into();
         let full_path = directory.join(&filename);
 
-        Self::new_with_full_path(full_path)
+        Self::new_with_full_path(full_path, dataset_rid)
     }
 
-    pub fn new_with_full_path(file_path: impl Into<PathBuf>) -> std::io::Result<Self> {
+    pub fn new_with_full_path(
+        file_path: impl Into<PathBuf>,
+        dataset_rid: Option<ResourceIdentifier>,
+    ) -> std::io::Result<Self> {
         let path = file_path.into();
         std::fs::create_dir_all(path.parent().unwrap_or(&path))?;
         let file = std::fs::OpenOptions::new()
@@ -181,11 +187,19 @@ impl AvroFileConsumer {
             .write(true)
             .open(&path)?;
 
-        let writer = apache_avro::Writer::builder()
+        let mut writer = apache_avro::Writer::builder()
             .schema(&CORE_AVRO_SCHEMA)
             .writer(file)
             .codec(apache_avro::Codec::Snappy)
             .build();
+
+        if let Some(rid) = dataset_rid {
+            writer
+                .add_user_metadata(DATASET_RID_METADATA_KEY.to_string(), rid.to_string())
+                .map_err(|e| {
+                    std::io::Error::other(format!("failed to write avro metadata: {e}"))
+                })?;
+        }
 
         Ok(Self {
             writer: Arc::new(Mutex::new(writer)),
@@ -500,7 +514,7 @@ mod tests {
 
         // Create consumer and write all types
         {
-            let consumer = AvroFileConsumer::new_with_full_path(&path).unwrap();
+            let consumer = AvroFileConsumer::new_with_full_path(&path, None).unwrap();
 
             // Create series with each type
             let double_series = make_series(
@@ -841,5 +855,125 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[derive(Debug)]
+    struct FailingConsumer;
+
+    impl WriteRequestConsumer for FailingConsumer {
+        fn consume(&self, _request: &WriteRequestNominal) -> ConsumerResult<()> {
+            Err(ConsumerError::RequestError("primary failed".to_string()))
+        }
+    }
+
+    #[derive(Debug)]
+    struct NoopConsumer;
+
+    impl WriteRequestConsumer for NoopConsumer {
+        fn consume(&self, _request: &WriteRequestNominal) -> ConsumerResult<()> {
+            Ok(())
+        }
+    }
+
+    fn double_request() -> WriteRequestNominal {
+        let series = make_series(
+            "doubles",
+            Points {
+                points_type: Some(PointsType::DoublePoints(DoublePoints {
+                    points: vec![
+                        nominal_api::tonic::io::nominal::scout::api::proto::DoublePoint {
+                            timestamp: make_timestamp(1000, 0),
+                            value: 1.5,
+                        },
+                    ],
+                })),
+            },
+        );
+        WriteRequestNominal {
+            series: vec![series],
+            session_name: None,
+        }
+    }
+
+    fn read_dataset_rid_metadata(path: &PathBuf) -> Option<String> {
+        let file = std::fs::File::open(path).unwrap();
+        let reader = Reader::new(file).unwrap();
+        reader
+            .user_metadata()
+            .get(DATASET_RID_METADATA_KEY)
+            .map(|bytes| String::from_utf8(bytes.clone()).unwrap())
+    }
+
+    #[test]
+    fn test_avro_file_consumer_writes_dataset_rid_metadata() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let path: PathBuf = tmp_file.path().to_path_buf();
+        let rid = ResourceIdentifier::new("ri.catalog.main.dataset.abc123").unwrap();
+
+        {
+            let consumer = AvroFileConsumer::new_with_full_path(&path, Some(rid.clone())).unwrap();
+            consumer.consume(&double_request()).unwrap();
+        }
+
+        let stored = read_dataset_rid_metadata(&path).expect("dataset_rid metadata missing");
+        assert_eq!(stored, rid.to_string());
+    }
+
+    #[test]
+    fn test_avro_file_consumer_omits_dataset_rid_metadata_when_none() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let path: PathBuf = tmp_file.path().to_path_buf();
+
+        {
+            let consumer = AvroFileConsumer::new_with_full_path(&path, None).unwrap();
+            consumer.consume(&double_request()).unwrap();
+        }
+
+        assert!(read_dataset_rid_metadata(&path).is_none());
+    }
+
+    #[test]
+    fn test_dataset_rid_metadata_present_when_used_as_fallback() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let path: PathBuf = tmp_file.path().to_path_buf();
+        let rid = ResourceIdentifier::new("ri.catalog.main.dataset.fallback").unwrap();
+
+        {
+            let fallback = AvroFileConsumer::new_with_full_path(&path, Some(rid.clone())).unwrap();
+            let consumer = RequestConsumerWithFallback::new(FailingConsumer, fallback);
+
+            consumer.consume(&double_request()).unwrap();
+        }
+
+        let stored = read_dataset_rid_metadata(&path).expect("dataset_rid metadata missing");
+        assert_eq!(stored, rid.to_string());
+
+        // Sanity check: fallback actually wrote the data record.
+        let file = std::fs::File::open(&path).unwrap();
+        let reader = Reader::new(file).unwrap();
+        let records: Vec<_> = reader.map(|r| r.unwrap()).collect();
+        assert_eq!(records.len(), 1);
+    }
+
+    #[test]
+    fn test_dataset_rid_metadata_present_when_used_as_dual_write_secondary() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let path: PathBuf = tmp_file.path().to_path_buf();
+        let rid = ResourceIdentifier::new("ri.catalog.main.dataset.dualwrite").unwrap();
+
+        {
+            let secondary = AvroFileConsumer::new_with_full_path(&path, Some(rid.clone())).unwrap();
+            let consumer = DualWriteRequestConsumer::new(NoopConsumer, secondary);
+
+            consumer.consume(&double_request()).unwrap();
+        }
+
+        let stored = read_dataset_rid_metadata(&path).expect("dataset_rid metadata missing");
+        assert_eq!(stored, rid.to_string());
+
+        let file = std::fs::File::open(&path).unwrap();
+        let reader = Reader::new(file).unwrap();
+        let records: Vec<_> = reader.map(|r| r.unwrap()).collect();
+        assert_eq!(records.len(), 1);
     }
 }
