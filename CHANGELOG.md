@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0](https://github.com/nominal-io/nominal-streaming/compare/v0.8.2...v0.9.0) - 2026-04-29
+
+### Added
+
+- write dataset rid into avro file user metadata ([#238](https://github.com/nominal-io/nominal-streaming/pull/238))
+
+### Fixed
+
+- truncate-on-open + flush-on-drop for AvroFileConsumer ([#235](https://github.com/nominal-io/nominal-streaming/pull/235))
+
 ### Added
 
 - Python: `auth_header` and `opts` arguments to `NominalDatasetStream(...)` are now optional, allowing file-only streams to be configured via `to_file(...)` without supplying Nominal API credentials.
