@@ -102,6 +102,8 @@ impl<T: AuthProvider + 'static> WriteRequestConsumer for NominalCoreConsumer<T> 
 
 const DEFAULT_FILE_PREFIX: &str = "nominal_stream";
 
+pub const DATASET_RID_METADATA_KEY: &str = "nominal.dataset_rid";
+
 pub static CORE_SCHEMA_STR: &str = r#"{
   "type": "record",
   "name": "AvroStream",
@@ -162,6 +164,7 @@ impl AvroFileConsumer {
     pub fn new(
         directory: impl Into<PathBuf>,
         file_prefix: Option<String>,
+        dataset_rid: Option<ResourceIdentifier>,
     ) -> std::io::Result<Self> {
         let datetime = chrono::Utc::now().format("%Y%m%d_%H%M%S").to_string();
         let prefix = file_prefix.unwrap_or_else(|| DEFAULT_FILE_PREFIX.to_string());
@@ -169,7 +172,7 @@ impl AvroFileConsumer {
         let directory = directory.into();
         let full_path = directory.join(&filename);
 
-        Self::new_with_full_path(full_path, true)
+        Self::new_with_full_path(full_path, true, dataset_rid)
     }
 
     /// Opens `file_path` for writing and wraps it in an avro `Writer`.
@@ -185,9 +188,14 @@ impl AvroFileConsumer {
     /// `io::ErrorKind::AlreadyExists` error is returned and no file is
     /// touched. This is the safe choice when the caller does not want to
     /// silently destroy prior data.
+    ///
+    /// If `dataset_rid` is provided, it is written to the avro file's user
+    /// metadata under the `nominal.dataset_rid` key so downstream readers
+    /// can identify the dataset the file belongs to.
     pub fn new_with_full_path(
         file_path: impl Into<PathBuf>,
         overwrite: bool,
+        dataset_rid: Option<ResourceIdentifier>,
     ) -> std::io::Result<Self> {
         let path = file_path.into();
         std::fs::create_dir_all(path.parent().unwrap_or(&path))?;
@@ -200,11 +208,19 @@ impl AvroFileConsumer {
         }
         let file = options.open(&path)?;
 
-        let writer = apache_avro::Writer::builder()
+        let mut writer = apache_avro::Writer::builder()
             .schema(&CORE_AVRO_SCHEMA)
             .writer(file)
             .codec(apache_avro::Codec::Snappy)
             .build();
+
+        if let Some(rid) = dataset_rid {
+            writer
+                .add_user_metadata(DATASET_RID_METADATA_KEY.to_string(), rid.to_string())
+                .map_err(|e| {
+                    std::io::Error::other(format!("failed to write avro metadata: {e}"))
+                })?;
+        }
 
         Ok(Self {
             writer: Arc::new(Mutex::new(writer)),
@@ -538,7 +554,7 @@ mod tests {
 
         // Create consumer and write all types
         {
-            let consumer = AvroFileConsumer::new_with_full_path(&path, true).unwrap();
+            let consumer = AvroFileConsumer::new_with_full_path(&path, true, None).unwrap();
 
             // Create series with each type
             let double_series = make_series(
@@ -915,7 +931,7 @@ mod tests {
         let path: PathBuf = tmp_file.path().to_path_buf();
 
         {
-            let consumer = AvroFileConsumer::new_with_full_path(&path, true).unwrap();
+            let consumer = AvroFileConsumer::new_with_full_path(&path, true, None).unwrap();
 
             let mut record = Record::new(&CORE_AVRO_SCHEMA).expect("Failed to create Avro record");
             record.put("channel", "ch".to_string());
@@ -946,7 +962,7 @@ mod tests {
         let path: PathBuf = tmp_file.path().to_path_buf();
         std::fs::write(&path, b"prior content").unwrap();
 
-        let err = AvroFileConsumer::new_with_full_path(&path, false)
+        let err = AvroFileConsumer::new_with_full_path(&path, false, None)
             .expect_err("expected AlreadyExists when overwrite=false and file exists");
         assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
 
@@ -961,15 +977,42 @@ mod tests {
         let tmp_dir = tempfile::tempdir().unwrap();
         let path = tmp_dir.path().join("fresh.avro");
 
-        write_integer_points_with_overwrite(&path, 3, false);
+        write_integer_points_with(&path, 3, false, None);
         assert_eq!(read_integer_point_count(&path), 3);
     }
 
-    fn write_integer_points(path: &PathBuf, count: i64) {
-        write_integer_points_with_overwrite(path, count, true);
+    #[test]
+    fn writes_dataset_rid_to_avro_user_metadata() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let path: PathBuf = tmp_file.path().to_path_buf();
+        let rid = ResourceIdentifier::new("ri.catalog.main.dataset.abc123").unwrap();
+
+        write_integer_points_with(&path, 1, true, Some(rid.clone()));
+
+        let stored = read_dataset_rid_metadata(&path).expect("dataset_rid metadata missing");
+        assert_eq!(stored, rid.to_string());
     }
 
-    fn write_integer_points_with_overwrite(path: &PathBuf, count: i64, overwrite: bool) {
+    #[test]
+    fn omits_dataset_rid_metadata_when_none() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let path: PathBuf = tmp_file.path().to_path_buf();
+
+        write_integer_points_with(&path, 1, true, None);
+
+        assert!(read_dataset_rid_metadata(&path).is_none());
+    }
+
+    fn write_integer_points(path: &PathBuf, count: i64) {
+        write_integer_points_with(path, count, true, None);
+    }
+
+    fn write_integer_points_with(
+        path: &PathBuf,
+        count: i64,
+        overwrite: bool,
+        dataset_rid: Option<ResourceIdentifier>,
+    ) {
         let points = (0..count)
             .map(
                 |i| nominal_api::tonic::io::nominal::scout::api::proto::IntegerPoint {
@@ -978,7 +1021,7 @@ mod tests {
                 },
             )
             .collect();
-        let consumer = AvroFileConsumer::new_with_full_path(path, overwrite).unwrap();
+        let consumer = AvroFileConsumer::new_with_full_path(path, overwrite, dataset_rid).unwrap();
         consumer
             .append_series(&[make_series(
                 "ch",
@@ -1007,5 +1050,14 @@ mod tests {
             }
         }
         total
+    }
+
+    fn read_dataset_rid_metadata(path: &PathBuf) -> Option<String> {
+        let file = std::fs::File::open(path).unwrap();
+        let reader = Reader::new(file).unwrap();
+        reader
+            .user_metadata()
+            .get(DATASET_RID_METADATA_KEY)
+            .map(|bytes| String::from_utf8(bytes.clone()).unwrap())
     }
 }
