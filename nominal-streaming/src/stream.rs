@@ -221,13 +221,13 @@ impl NominalDatasetStreamBuilder {
     fn file_consumer(&self) -> Option<AvroFileConsumer> {
         self.stream_to_file
             .as_ref()
-            .map(|path| AvroFileConsumer::new_with_full_path(path).unwrap())
+            .map(|path| AvroFileConsumer::new_with_full_path(path, true).unwrap())
     }
 
     fn fallback_consumer(&self) -> Option<AvroFileConsumer> {
         self.file_fallback
             .as_ref()
-            .map(|path| AvroFileConsumer::new_with_full_path(path).unwrap())
+            .map(|path| AvroFileConsumer::new_with_full_path(path, true).unwrap())
     }
 
     fn into_stream<C: WriteRequestConsumer + 'static>(self, consumer: C) -> NominalDatasetStream {
