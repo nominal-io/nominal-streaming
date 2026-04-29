@@ -26,6 +26,10 @@ with (
     stream.enqueue_batch("chanB", [0, 1_000_000_000], [5, 6], tags={"phase": "prod"})
     stream.enqueue_from_dict(0, {"chanC": "ok", "chanD": 7}, tags={"who": "tester"})
 
+# To stream to a local file only (no Nominal API credentials required):
+with NominalDatasetStream().to_file(pathlib.Path("/tmp/out.avro")) as stream:
+    stream.enqueue("chanA", datetime.now(timezone.utc), 1.23)
+
 """
 
 from __future__ import annotations
@@ -68,12 +72,13 @@ def _parse_timestamp(ts: str | int | datetime.datetime) -> int:
 class NominalDatasetStream:
     """Top-level python wrapper for the Rust streaming client to Nominal."""
 
-    def __init__(self, auth_header: str, opts: PyNominalStreamOpts):
+    def __init__(self, auth_header: str | None = None, opts: PyNominalStreamOpts | None = None):
         """Initializer for dataset stream.
 
         Args:
-            auth_header: API key or access token to the Nominal API
-            opts: Optional options for the underlying stream
+            auth_header: API key or access token to the Nominal API. May be omitted when only writing
+                to a local file via `to_file(...)`; required when calling `with_core_consumer(...)`.
+            opts: Optional options for the underlying stream. If omitted, sensible defaults are used.
         """
         self._auth_header = auth_header
         self._opts = opts
@@ -136,6 +141,10 @@ class NominalDatasetStream:
 
         Args:
             dataset_rid: RID of the Dataset in Nominal to stream to
+
+        Raises:
+            RuntimeError: If no `auth_header` was provided to the constructor and the
+                `NOMINAL_TOKEN` environment variable is not set.
         """
         self._impl = self._impl.with_core_consumer(dataset_rid, self._auth_header)
         return self

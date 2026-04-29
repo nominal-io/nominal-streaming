@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Python: `auth_header` and `opts` arguments to `NominalDatasetStream(...)` are now optional, allowing file-only streams to be configured via `to_file(...)` without supplying Nominal API credentials.
+
 ## [0.8.2](https://github.com/nominal-io/nominal-streaming/compare/v0.8.1...v0.8.2) - 2026-04-22
 
 ### Added
