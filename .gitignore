@@ -14,3 +14,7 @@ dist/
 
 # Nix
 .direnv
+
+# Claude Code
+.claude/settings.local.json
+.claude/worktrees/
