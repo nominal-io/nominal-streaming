@@ -882,20 +882,29 @@ mod tests {
     }
 
     #[test]
-    fn reopening_path_produces_valid_avro_file() {
-        // Write 100 points, then re-open the same path and write 10 points.
-        // Both passes must produce a file that reads back cleanly with the
-        // expected point count. Without truncate, the second pass would
+    fn reopening_path_with_overwrite_truncates_to_valid_avro_file() {
+        // Write 500 points, then re-open the same path with overwrite=true
+        // and write 5 points. Both passes must produce a file that reads back
+        // cleanly with the expected point count, AND the second write must
+        // shrink the file at the filesystem level — not just produce a
+        // readable record count. Without truncate, the second pass would
         // overwrite from offset 0 and leave the tail of the longer first
         // file intact, corrupting the reader stream.
         let tmp_file = NamedTempFile::new().unwrap();
         let path: PathBuf = tmp_file.path().to_path_buf();
 
-        write_integer_points(&path, 100);
-        assert_eq!(read_integer_point_count(&path), 100);
+        write_integer_points(&path, 500);
+        assert_eq!(read_integer_point_count(&path), 500);
+        let first_size = std::fs::metadata(&path).unwrap().len();
 
-        write_integer_points(&path, 10);
-        assert_eq!(read_integer_point_count(&path), 10);
+        write_integer_points(&path, 5);
+        assert_eq!(read_integer_point_count(&path), 5);
+        let second_size = std::fs::metadata(&path).unwrap().len();
+
+        assert!(
+            second_size < first_size,
+            "second write should shrink the file (first: {first_size} bytes, second: {second_size} bytes)"
+        );
     }
 
     #[test]
@@ -954,29 +963,6 @@ mod tests {
 
         write_integer_points_with_overwrite(&path, 3, false);
         assert_eq!(read_integer_point_count(&path), 3);
-    }
-
-    #[test]
-    fn new_with_full_path_truncates_existing_file_when_overwrite_true() {
-        // Sister test to the overwrite=false / AlreadyExists case: when
-        // overwrite=true, opening at an existing path must shrink the file to
-        // the new content's size and produce a valid, readable avro stream.
-        // Without truncation, leftover bytes from the longer first write past
-        // the shorter second write's end would corrupt the reader.
-        let tmp_file = NamedTempFile::new().unwrap();
-        let path: PathBuf = tmp_file.path().to_path_buf();
-
-        write_integer_points(&path, 500);
-        let first_size = std::fs::metadata(&path).unwrap().len();
-
-        write_integer_points(&path, 5);
-        let second_size = std::fs::metadata(&path).unwrap().len();
-
-        assert!(
-            second_size < first_size,
-            "second write should shrink the file (first: {first_size} bytes, second: {second_size} bytes)"
-        );
-        assert_eq!(read_integer_point_count(&path), 5);
     }
 
     fn write_integer_points(path: &PathBuf, count: i64) {
