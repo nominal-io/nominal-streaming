@@ -1,5 +1,5 @@
 [workspace]
-members = ["nominal-streaming", "py-nominal-streaming"]
+members = ["nominal-streaming", "py-nominal-streaming", "xtask", "xtask/bench"]
 resolver = "2"
 
 # Require opt-in for building python bindings (should be built with maturin, not cargo)

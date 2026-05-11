@@ -10,6 +10,7 @@ repository = "https://github.com/nominal-io/nominal-streaming"
 [features]
 default = ["logging"]
 logging = ["tracing-subscriber"]
+bench = []
 
 
 [dependencies]
@@ -36,5 +37,11 @@ tracing-subscriber = { workspace = true, optional = true }
 url = { workspace = true }
 
 [dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
 test-log = { workspace = true }
 tempfile = { workspace = true }
+
+[[bench]]
+name = "streaming"
+path = "benches/streaming/main.rs"
+harness = false
