@@ -951,7 +951,7 @@ fn request_dispatcher<C: WriteRequestConsumer + 'static>(
     unflushed_points: Arc<AtomicUsize>,
     request_rx: crossbeam_channel::Receiver<(WriteRequestNominal, usize)>,
     consumer: Arc<C>,
-    #[cfg(feature = "bench")] disp_ns: Arc<AtomicU64>,
+    #[cfg(feature = "instrumentation")] disp_ns: Arc<AtomicU64>,
 ) {
     let mut total_request_time = 0;
     loop {
@@ -969,7 +969,7 @@ fn request_dispatcher<C: WriteRequestConsumer + 'static>(
                         error!("Failed to send request: {e:?}");
                     }
                 }
-                #[cfg(feature = "bench")]
+                #[cfg(feature = "instrumentation")]
                 disp_ns.fetch_add(req_start.elapsed().as_nanos() as u64, Ordering::Relaxed);
                 unflushed_points.fetch_sub(point_count, Ordering::Release);
 
