@@ -254,9 +254,19 @@ pub struct NominalDatasetStream {
     secondary_buffer: Arc<SeriesBuffer>,
     primary_handle: thread::JoinHandle<()>,
     secondary_handle: thread::JoinHandle<()>,
-    #[cfg(feature = "bench")]
+    /// Records the total time spent processing batches on background threads.
+    ///
+    /// This field is only available when the `instrument` feature is enabled.
+    /// This field is *not* SemVer-compliant -- it may be removed during a minor version bump.
+    /// This is intended only for use in benchmarks.
+    #[cfg(feature = "instrument")]
     pub batch_processor_ns: Arc<AtomicU64>,
-    #[cfg(feature = "bench")]
+    /// Records the total time dispatching batched points on background threads.
+    ///
+    /// This field is only available when the `instrument` feature is enabled.
+    /// This field is *not* SemVer-compliant -- it may be removed during a minor version bump.
+    /// This is intended only for use in benchmarks.
+    #[cfg(feature = "instrument")]
     pub dispatcher_ns: Arc<AtomicU64>,
 }
 
@@ -278,9 +288,9 @@ impl NominalDatasetStream {
         let running = Arc::new(AtomicBool::new(true));
         let unflushed_points = Arc::new(AtomicUsize::new(0));
 
-        #[cfg(feature = "bench")]
+        #[cfg(feature = "instrument")]
         let batch_processor_ns = Arc::new(AtomicU64::new(0));
-        #[cfg(feature = "bench")]
+        #[cfg(feature = "instrument")]
         let dispatcher_ns = Arc::new(AtomicU64::new(0));
 
         let primary_handle = thread::Builder::new()
@@ -289,7 +299,7 @@ impl NominalDatasetStream {
                 let points_buffer = Arc::clone(&primary_buffer);
                 let running = running.clone();
                 let tx = request_tx.clone();
-                #[cfg(feature = "bench")]
+                #[cfg(feature = "instrument")]
                 let bp_ns = Arc::clone(&batch_processor_ns);
                 move || {
                     batch_processor(
@@ -297,7 +307,7 @@ impl NominalDatasetStream {
                         points_buffer,
                         tx,
                         opts.max_request_delay,
-                        #[cfg(feature = "bench")]
+                        #[cfg(feature = "instrument")]
                         bp_ns,
                     );
                 }
@@ -309,7 +319,7 @@ impl NominalDatasetStream {
             .spawn({
                 let secondary_buffer = Arc::clone(&secondary_buffer);
                 let running = running.clone();
-                #[cfg(feature = "bench")]
+                #[cfg(feature = "instrument")]
                 let bp_ns = Arc::clone(&batch_processor_ns);
                 move || {
                     batch_processor(
@@ -317,7 +327,7 @@ impl NominalDatasetStream {
                         secondary_buffer,
                         request_tx,
                         opts.max_request_delay,
-                        #[cfg(feature = "bench")]
+                        #[cfg(feature = "instrument")]
                         bp_ns,
                     );
                 }
@@ -334,7 +344,7 @@ impl NominalDatasetStream {
                     let unflushed_points = Arc::clone(&unflushed_points);
                     let rx = request_rx.clone();
                     let consumer = consumer.clone();
-                    #[cfg(feature = "bench")]
+                    #[cfg(feature = "instrument")]
                     let disp_ns = Arc::clone(&dispatcher_ns);
                     move || {
                         debug!("starting request dispatcher #{}", i);
@@ -343,7 +353,7 @@ impl NominalDatasetStream {
                             unflushed_points,
                             rx,
                             consumer,
-                            #[cfg(feature = "bench")]
+                            #[cfg(feature = "instrument")]
                             disp_ns,
                         );
                     }
@@ -359,9 +369,9 @@ impl NominalDatasetStream {
             secondary_buffer,
             primary_handle,
             secondary_handle,
-            #[cfg(feature = "bench")]
+            #[cfg(feature = "instrument")]
             batch_processor_ns,
-            #[cfg(feature = "bench")]
+            #[cfg(feature = "instrument")]
             dispatcher_ns,
         }
     }
@@ -869,7 +879,7 @@ fn batch_processor(
     points_buffer: Arc<SeriesBuffer>,
     request_chan: crossbeam_channel::Sender<(WriteRequestNominal, usize)>,
     max_request_delay: Duration,
-    #[cfg(feature = "bench")] bp_ns: Arc<AtomicU64>,
+    #[cfg(feature = "instrument")] bp_ns: Arc<AtomicU64>,
 ) {
     loop {
         debug!("starting processor loop");
@@ -885,7 +895,7 @@ fn batch_processor(
             continue;
         }
 
-        #[cfg(feature = "bench")]
+        #[cfg(feature = "instrument")]
         let t = Instant::now();
 
         let (point_count, series) = points_buffer.take();
@@ -910,7 +920,7 @@ fn batch_processor(
             debug!("finished submitting request");
         }
 
-        #[cfg(feature = "bench")]
+        #[cfg(feature = "instrument")]
         bp_ns.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
         thread::park_timeout(max_request_delay);

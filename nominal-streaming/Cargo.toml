@@ -10,8 +10,9 @@ repository = "https://github.com/nominal-io/nominal-streaming"
 [features]
 default = ["logging"]
 logging = ["tracing-subscriber"]
-bench = []
 
+# measures total work done in background threads
+instrument = []
 
 [dependencies]
 apache-avro = { workspace = true }
@@ -37,11 +38,5 @@ tracing-subscriber = { workspace = true, optional = true }
 url = { workspace = true }
 
 [dev-dependencies]
-criterion = { version = "0.5", features = ["html_reports"] }
 test-log = { workspace = true }
 tempfile = { workspace = true }
-
-[[bench]]
-name = "streaming"
-path = "benches/streaming/main.rs"
-harness = false
