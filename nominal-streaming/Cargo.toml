@@ -11,6 +11,8 @@ repository = "https://github.com/nominal-io/nominal-streaming"
 default = ["logging"]
 logging = ["tracing-subscriber"]
 
+# measures total work done in background threads
+instrument = []
 
 [dependencies]
 apache-avro = { workspace = true }

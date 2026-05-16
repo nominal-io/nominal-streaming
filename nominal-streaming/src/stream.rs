@@ -254,6 +254,20 @@ pub struct NominalDatasetStream {
     secondary_buffer: Arc<SeriesBuffer>,
     primary_handle: thread::JoinHandle<()>,
     secondary_handle: thread::JoinHandle<()>,
+    /// Records the total time spent processing batches on background threads.
+    ///
+    /// This field is only available when the `instrument` feature is enabled.
+    /// This field is *not* SemVer-compliant -- it may be removed during a minor version bump.
+    /// This is intended only for use in benchmarks.
+    #[cfg(feature = "instrument")]
+    pub batch_processor_ns: Arc<AtomicU64>,
+    /// Records the total time dispatching batched points on background threads.
+    ///
+    /// This field is only available when the `instrument` feature is enabled.
+    /// This field is *not* SemVer-compliant -- it may be removed during a minor version bump.
+    /// This is intended only for use in benchmarks.
+    #[cfg(feature = "instrument")]
+    pub dispatcher_ns: Arc<AtomicU64>,
 }
 
 impl NominalDatasetStream {
@@ -274,14 +288,28 @@ impl NominalDatasetStream {
         let running = Arc::new(AtomicBool::new(true));
         let unflushed_points = Arc::new(AtomicUsize::new(0));
 
+        #[cfg(feature = "instrument")]
+        let batch_processor_ns = Arc::new(AtomicU64::new(0));
+        #[cfg(feature = "instrument")]
+        let dispatcher_ns = Arc::new(AtomicU64::new(0));
+
         let primary_handle = thread::Builder::new()
             .name("nmstream_primary".to_string())
             .spawn({
                 let points_buffer = Arc::clone(&primary_buffer);
                 let running = running.clone();
                 let tx = request_tx.clone();
+                #[cfg(feature = "instrument")]
+                let bp_ns = Arc::clone(&batch_processor_ns);
                 move || {
-                    batch_processor(running, points_buffer, tx, opts.max_request_delay);
+                    batch_processor(
+                        running,
+                        points_buffer,
+                        tx,
+                        opts.max_request_delay,
+                        #[cfg(feature = "instrument")]
+                        bp_ns,
+                    );
                 }
             })
             .unwrap();
@@ -291,12 +319,16 @@ impl NominalDatasetStream {
             .spawn({
                 let secondary_buffer = Arc::clone(&secondary_buffer);
                 let running = running.clone();
+                #[cfg(feature = "instrument")]
+                let bp_ns = Arc::clone(&batch_processor_ns);
                 move || {
                     batch_processor(
                         running,
                         secondary_buffer,
                         request_tx,
                         opts.max_request_delay,
+                        #[cfg(feature = "instrument")]
+                        bp_ns,
                     );
                 }
             })
@@ -312,9 +344,18 @@ impl NominalDatasetStream {
                     let unflushed_points = Arc::clone(&unflushed_points);
                     let rx = request_rx.clone();
                     let consumer = consumer.clone();
+                    #[cfg(feature = "instrument")]
+                    let disp_ns = Arc::clone(&dispatcher_ns);
                     move || {
                         debug!("starting request dispatcher #{}", i);
-                        request_dispatcher(running, unflushed_points, rx, consumer);
+                        request_dispatcher(
+                            running,
+                            unflushed_points,
+                            rx,
+                            consumer,
+                            #[cfg(feature = "instrument")]
+                            disp_ns,
+                        );
                     }
                 })
                 .unwrap();
@@ -328,6 +369,10 @@ impl NominalDatasetStream {
             secondary_buffer,
             primary_handle,
             secondary_handle,
+            #[cfg(feature = "instrument")]
+            batch_processor_ns,
+            #[cfg(feature = "instrument")]
+            dispatcher_ns,
         }
     }
 
@@ -834,6 +879,7 @@ fn batch_processor(
     points_buffer: Arc<SeriesBuffer>,
     request_chan: crossbeam_channel::Sender<(WriteRequestNominal, usize)>,
     max_request_delay: Duration,
+    #[cfg(feature = "instrument")] bp_ns: Arc<AtomicU64>,
 ) {
     loop {
         debug!("starting processor loop");
@@ -848,6 +894,10 @@ fn batch_processor(
             }
             continue;
         }
+
+        #[cfg(feature = "instrument")]
+        let t = Instant::now();
+
         let (point_count, series) = points_buffer.take();
 
         if points_buffer.notify() {
@@ -869,6 +919,9 @@ fn batch_processor(
         } else {
             debug!("finished submitting request");
         }
+
+        #[cfg(feature = "instrument")]
+        bp_ns.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
         thread::park_timeout(max_request_delay);
     }
@@ -898,6 +951,7 @@ fn request_dispatcher<C: WriteRequestConsumer + 'static>(
     unflushed_points: Arc<AtomicUsize>,
     request_rx: crossbeam_channel::Receiver<(WriteRequestNominal, usize)>,
     consumer: Arc<C>,
+    #[cfg(feature = "instrument")] disp_ns: Arc<AtomicU64>,
 ) {
     let mut total_request_time = 0;
     loop {
@@ -915,6 +969,8 @@ fn request_dispatcher<C: WriteRequestConsumer + 'static>(
                         error!("Failed to send request: {e:?}");
                     }
                 }
+                #[cfg(feature = "instrument")]
+                disp_ns.fetch_add(req_start.elapsed().as_nanos() as u64, Ordering::Relaxed);
                 unflushed_points.fetch_sub(point_count, Ordering::Release);
 
                 if unflushed_points.load(Ordering::Acquire) == 0 && !running.load(Ordering::Acquire)
