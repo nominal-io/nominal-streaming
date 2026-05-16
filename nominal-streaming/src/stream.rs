@@ -932,6 +932,8 @@ impl Drop for NominalDatasetStream {
     fn drop(&mut self) {
         debug!("starting drop for NominalDatasetStream");
         self.running.store(false, Ordering::Release);
+        self.primary_handle.thread().unpark();
+        self.secondary_handle.thread().unpark();
         loop {
             let count = self.unflushed_points.load(Ordering::Acquire);
             if count == 0 {
@@ -940,8 +942,7 @@ impl Drop for NominalDatasetStream {
             debug!(
                 "waiting for all points to be flushed before dropping stream, {count} points remaining",
             );
-            // todo: reduce this + give up after some maximum timeout is reached
-            thread::sleep(Duration::from_millis(50));
+            thread::sleep(Duration::from_millis(1));
         }
     }
 }
