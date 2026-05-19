@@ -155,6 +155,7 @@ let stream = NominalDatasetStreamBuilder::new()
 ```
 */
 
+pub mod avro_writer;
 pub mod client;
 pub mod consumer;
 pub mod listener;
@@ -189,6 +190,10 @@ pub mod prelude {
     pub use nominal_api::tonic::io::nominal::scout::api::proto::WriteRequest;
     pub use nominal_api::tonic::io::nominal::scout::api::proto::WriteRequestNominal;
 
+    pub use crate::avro_writer::AvroWriter;
+    pub use crate::avro_writer::AvroWriterError;
+    pub use crate::avro_writer::AvroWriterOpts;
+    pub use crate::avro_writer::PipelineStats;
     pub use crate::consumer::NominalCoreConsumer;
     pub use crate::stream::NominalDatasetStream;
     #[expect(deprecated)]
@@ -490,10 +495,14 @@ mod tests {
         let cd = ChannelDescriptor::new("channel_1");
         let mut writer = stream.double_writer(cd);
 
+        // `max_request_delay` on the test stream is 100ms. Sleep 150ms between
+        // pushes so the batch_processor thread has a 1.5× margin to emit a
+        // WriteRequest before the next push — a tighter 101ms margin flaked
+        // under parallel test load.
         writer.push(UNIX_EPOCH.elapsed().unwrap(), 1.0);
-        thread::sleep(Duration::from_millis(101));
+        thread::sleep(Duration::from_millis(150));
         writer.push(UNIX_EPOCH.elapsed().unwrap(), 2.0); // first flush
-        thread::sleep(Duration::from_millis(101));
+        thread::sleep(Duration::from_millis(150));
         writer.push(UNIX_EPOCH.elapsed().unwrap(), 3.0); // second flush
 
         drop(writer);

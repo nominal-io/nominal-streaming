@@ -213,6 +213,11 @@ pub enum ValueKind {
 
 /// Peek the first element to decide the homogeneous value kind.
 /// (Full extraction to Vec<T> will still enforce homogeneity.)
+///
+/// Checks `f64` before `i64` for compatibility with
+/// `NominalDatasetStream.enqueue_batch`'s historical behavior. Callers that
+/// need integer emission in a batch path can't get it through this helper;
+/// use single-point or dict emission.
 pub fn classify_values(values: &Bound<'_, PyAny>) -> PyResult<ValueKind> {
     let seq = values.downcast::<PySequence>()?;
     let len = seq.len()?;

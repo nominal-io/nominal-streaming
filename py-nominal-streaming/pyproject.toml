@@ -20,9 +20,14 @@ dynamic = [
 
 dependencies = [
   "typing-extensions>=4,<5",
+  "polars>=1,<2",
   # Any version is okay for these dependencies
   "python-dateutil>=0.0.0",
 ]
+
+[dependency-groups]
+dev = ["pytest>=7", "fastavro>=1", "cramjam>=2"]
+
 
 [build-system]
 requires = ["maturin>=1.6,<2.0"]
@@ -37,10 +42,26 @@ strip = true
 manifest-path = "./Cargo.toml"
 
 features = [
-  "pyo3/extension-module",  # Required on unix platforms to prevent linking against libpython.so
-  "pyo3/abi3-py310"         # Sets the exact minimum python version supported within multi-version wheels
+  "extension-module",       # Our feature alias; enables pyo3/extension-module for maturin-built wheels but NOT during cargo test.
+  "pyo3/abi3-py310"         # Sets the exact minimum python version supported within multi-version wheels.
 ]
 
 # Tell maturin where the python code lives.
 # All files under this directory will be included in the wheel.
 python-source = "python"
+
+# Keep Python bytecode / caches out of the release wheel. Without this,
+# maturin picks up whatever __pycache__ happens to exist in the source
+# tree from a prior `pytest` / dev run and ships the .pyc files (plus
+# orphaned bytecode from modules that have since been deleted on the
+# branch). These are already .gitignored, but maturin doesn't consult
+# git's ignore rules.
+exclude = [
+  { path = "**/__pycache__/**", format = "wheel" },
+  { path = "**/*.pyc", format = "wheel" },
+  { path = "**/*.pyo", format = "wheel" },
+]
+
+
+[tool.pytest.ini_options]
+testpaths = ["python/tests"]
