@@ -962,7 +962,7 @@ fn request_dispatcher<C: WriteRequestConsumer + 'static>(
                 match consumer.consume(&request) {
                     Ok(_) => {
                         let time = req_start.elapsed().as_millis();
-                        debug!("request of {} points sent in {} ms", point_count, time);
+                        info!("request of {} points sent in {} ms", point_count, time);
                         total_request_time += time as u64;
                     }
                     Err(e) => {
