@@ -1,22 +1,16 @@
 [project]
-name = "nominal-streaming"
-description = "Python bindings for the Nominal Rust streaming client"
-requires-python = ">=3.10"
 classifiers = [
   "Programming Language :: Python :: 3",
   "Programming Language :: Rust",
   "License :: OSI Approved :: MIT License",
   "Operating System :: OS Independent",
 ]
+description = "Python bindings for the Nominal Rust streaming client"
+name = "nominal-streaming"
+requires-python = ">=3.10"
 
 # Let maturin source the version from Cargo.toml
-dynamic = [
-  "readme",
-  "urls",
-  "authors",
-  "license",
-  "version",
-]
+dynamic = ["readme", "urls", "authors", "license", "version"]
 
 dependencies = [
   "typing-extensions>=4,<5",
@@ -25,20 +19,20 @@ dependencies = [
 ]
 
 [build-system]
-requires = ["maturin>=1.6,<2.0"]
 build-backend = "maturin"
+requires = ["maturin>=1.6,<2.0"]
 
 [tool.maturin]
 # Put the compiled extension *inside* the top-level `nominal_streaming` folder
-module-name  = "nominal_streaming._nominal_streaming"
-requires-python = ">=3.10"
-profile = "release"
-strip = true
 manifest-path = "./Cargo.toml"
+module-name = "nominal_streaming._nominal_streaming"
+profile = "release"
+requires-python = ">=3.10"
+strip = true
 
 features = [
-  "pyo3/extension-module",  # Required on unix platforms to prevent linking against libpython.so
-  "pyo3/abi3-py310"         # Sets the exact minimum python version supported within multi-version wheels
+  "pyo3/extension-module", # Required on unix platforms to prevent linking against libpython.so
+  "pyo3/abi3-py310",       # Sets the exact minimum python version supported within multi-version wheels
 ]
 
 # Tell maturin where the python code lives.

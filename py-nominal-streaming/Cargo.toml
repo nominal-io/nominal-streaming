@@ -9,12 +9,16 @@ repository = "https://github.com/nominal-io/nominal-streaming"
 
 [lib]
 # This becomes the *module* name on the Python side unless overridden by tool.maturin.module-name
-name = "_nominal_streaming"
 crate-type = ["cdylib"]
+name = "_nominal_streaming"
 
 [dependencies]
 # PyO3 with a stable ABI across Python 3.10+.
-pyo3 = { version = "0.26", features = ["extension-module", "abi3-py310", "time"] }
+pyo3 = { version = "0.26", features = [
+  "extension-module",
+  "abi3-py310",
+  "time",
+] }
 
 nominal-api = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "time"] }
@@ -33,3 +37,10 @@ nominal-streaming = { workspace = true, features = ["logging"] }
 anyhow = "1"
 crossbeam-channel = "0.5"
 tokio-util = "0.7"
+
+# Deps flagged by cargo-machete that are intentionally kept:
+# - openssl: vendored at link time to enable CI/CD even though no Rust code references it.
+# - once_cell: kept for upcoming usage in the python binding init path.
+# - tracing-subscriber: pulled in for log setup wiring; some configs init it from python side.
+[package.metadata.cargo-machete]
+ignored = ["openssl", "once_cell", "tracing-subscriber"]

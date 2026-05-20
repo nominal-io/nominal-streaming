@@ -14,22 +14,32 @@ build:
     @echo "Running 'build' for Rust code"
     cargo build
 
-# Validate style and formatting of all rust code
+# Validate style and formatting of all rust code (rustfmt + taplo + ASCII)
 check:
     @echo "Running 'check' for Rust code"
-    cargo +nightly fmt --all --check
+    bash scripts/fmt.sh --check
 
-# Fix formatting of all rust code
+# Run all lint gates (clippy -D warnings + taplo lint + cargo machete)
+lint:
+    @echo "Running 'lint' for Rust code"
+    bash scripts/lint.sh
+
+# Format all rust code (rustfmt + taplo)
+fmt:
+    @echo "Running 'fmt' for Rust code"
+    bash scripts/fmt.sh
+
+# Fix formatting of all rust code (alias for fmt)
 fix:
     @echo "Running 'fix' for Rust code"
-    cargo +nightly fmt --all
+    bash scripts/fmt.sh
 
 # Clean rust-based build artifacts
 clean:
     @echo "Running 'clean' for Rust code"
     cargo clean
 
-# Run rust tests
+# Run rust tests (workspace, all features)
 test:
     @echo "Running 'test' for Rust code"
-    cargo test --workspace
+    bash scripts/test.sh
