@@ -40,3 +40,7 @@ url = { workspace = true }
 [dev-dependencies]
 test-log = { workspace = true }
 tempfile = { workspace = true }
+
+# derive_more is kept for upcoming refactors; cargo-machete sees no current use.
+[package.metadata.cargo-machete]
+ignored = ["derive_more"]

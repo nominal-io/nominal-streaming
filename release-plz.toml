@@ -6,9 +6,9 @@ changelog_path = "./CHANGELOG.md"
 
 # Turn off tags & releases for every package by default
 git_release_enable = false
+git_release_name = "v{{ version }}"
 git_tag_enable = false
 git_tag_name = "v{{ version }}"
-git_release_name = "v{{ version }}"
 
 [[package]]
 name = "nominal-streaming"
