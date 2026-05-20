@@ -112,10 +112,6 @@ pub static PRODUCTION_CLIENTS: LazyLock<NominalApiClients> =
     LazyLock::new(|| NominalApiClients::from_uri(PRODUCTION_API_URL));
 
 pub fn async_conjure_streaming_client(uri: Url) -> Result<Client, Error> {
-    // Hermeus 2026-05: bumped from 1s/2s/2s -> 5s/15s/15s. The customer's
-    // flight-test network has latency spikes that exhausted the prior tight
-    // timeouts, which then cascaded into batch loss because the dispatcher
-    // does not retry on consumer error.
     Client::builder()
         .service("core-streaming-rs")
         .user_agent(UserAgent::new(Agent::new(
