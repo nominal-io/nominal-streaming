@@ -45,6 +45,27 @@ pub enum ConsumerError {
 
 pub type ConsumerResult<T> = Result<T, ConsumerError>;
 
+impl ConsumerError {
+    /// Returns true for errors that cannot succeed on retry (auth, malformed
+    /// request, payload too large, etc.) so the dispatcher can drop the
+    /// batch immediately instead of burning the full retry budget.
+    pub fn is_terminal(&self) -> bool {
+        match self {
+            ConsumerError::MissingTokenError => true,
+            ConsumerError::RequestError(msg) => {
+                let m = msg.as_str();
+                m.contains("400 Bad Request")
+                    || m.contains("401 Unauthorized")
+                    || m.contains("403 Forbidden")
+                    || m.contains("404 Not Found")
+                    || m.contains("413 Payload Too Large")
+                    || m.contains("422 Unprocessable Entity")
+            }
+            _ => false,
+        }
+    }
+}
+
 pub trait WriteRequestConsumer: Send + Sync + Debug {
     fn consume(&self, request: &WriteRequestNominal) -> ConsumerResult<()>;
 }

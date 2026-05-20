@@ -1019,11 +1019,17 @@ fn request_dispatcher<C: WriteRequestConsumer + 'static>(
                             break true;
                         }
                         Err(e) => {
-                            let is_terminal_user_error =
-                                matches!(e, crate::consumer::ConsumerError::MissingTokenError);
+                            let is_terminal_user_error = e.is_terminal();
                             let msg = format!("{e:?}");
                             last_err = Some(msg.clone());
                             if is_terminal_user_error || attempt >= DISPATCH_MAX_ATTEMPTS {
+                                if is_terminal_user_error {
+                                    error!(
+                                        attempt,
+                                        point_count,
+                                        "dispatcher: terminal consume error, not retrying: {msg}"
+                                    );
+                                }
                                 break false;
                             }
                             let backoff_ms = (DISPATCH_INITIAL_BACKOFF_MS << (attempt - 1).min(20))
