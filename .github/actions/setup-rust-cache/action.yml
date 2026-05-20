@@ -1,0 +1,12 @@
+name: "Setup Rust Cache"
+description: "Setup sccache for Rust compilation caching"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Setup sccache-cache
+      uses: mozilla-actions/sccache-action@v0.0.7
+    - name: Enable sccache
+      shell: bash
+      run: |
+        echo "RUSTC_WRAPPER=sccache" >> $GITHUB_ENV
