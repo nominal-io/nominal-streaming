@@ -1030,8 +1030,7 @@ fn request_dispatcher<C: WriteRequestConsumer + 'static>(
                             if is_terminal_auth || attempt >= DISPATCH_MAX_ATTEMPTS {
                                 break false;
                             }
-                            let backoff_ms = (DISPATCH_INITIAL_BACKOFF_MS
-                                << (attempt - 1).min(20))
+                            let backoff_ms = (DISPATCH_INITIAL_BACKOFF_MS << (attempt - 1).min(20))
                                 .min(DISPATCH_MAX_BACKOFF_MS);
                             // info-level so retries are visible in production logs but
                             // do not flood at error level on every blip.
