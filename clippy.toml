@@ -1,4 +1,4 @@
-# TODO(awatwe): port HTP's disallowed-methods rule (no unwrap/expect) after
+# TODO: enable a disallowed-methods rule (no unwrap/expect) after the
 # nominal-streaming source is cleaned up. There are ~100 call sites today; a
 # follow-up PR will replace them with `?` and proper error handling, then add:
 #
