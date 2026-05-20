@@ -975,11 +975,8 @@ impl Drop for NominalDatasetStream {
     }
 }
 
-/// Bounded retry loop around `consumer.consume(...)`. Without this the
-/// dispatcher dropped any batch on the first consumer error, costing all
-/// channels carried in that batch. Backoff is exponential and capped, so a
-/// long server outage still progresses (data lost only after the full
-/// retry budget is exhausted) instead of stalling the dispatcher forever.
+/// Without bounded retries here the dispatcher loses an entire batch
+/// (all channels carried in it) on the first transient consumer error.
 pub const DISPATCH_MAX_ATTEMPTS: u32 = 6;
 pub const DISPATCH_INITIAL_BACKOFF_MS: u64 = 250;
 pub const DISPATCH_MAX_BACKOFF_MS: u64 = 5_000;
@@ -1022,18 +1019,15 @@ fn request_dispatcher<C: WriteRequestConsumer + 'static>(
                             break true;
                         }
                         Err(e) => {
-                            // MissingTokenError is a user error, not transient -- do not retry.
-                            let is_terminal_auth =
+                            let is_terminal_user_error =
                                 matches!(e, crate::consumer::ConsumerError::MissingTokenError);
                             let msg = format!("{e:?}");
                             last_err = Some(msg.clone());
-                            if is_terminal_auth || attempt >= DISPATCH_MAX_ATTEMPTS {
+                            if is_terminal_user_error || attempt >= DISPATCH_MAX_ATTEMPTS {
                                 break false;
                             }
                             let backoff_ms = (DISPATCH_INITIAL_BACKOFF_MS << (attempt - 1).min(20))
                                 .min(DISPATCH_MAX_BACKOFF_MS);
-                            // info-level so retries are visible in production logs but
-                            // do not flood at error level on every blip.
                             info!(
                                 "dispatcher consume attempt {} failed ({} points), \
                                  retrying in {} ms: {}",
