@@ -1,0 +1,100 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+    types:
+      - opened
+      - reopened
+      - synchronize
+      - ready_for_review
+      - converted_to_draft
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && format('{0}-{1}', github.workflow, github.event.pull_request.number) || format('{0}-{1}', github.workflow, github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  format:
+    name: format
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Rust Cache
+        uses: ./.github/actions/setup-rust-cache
+      - name: Cache Cargo Tools
+        uses: ./.github/actions/cache-cargo-tools
+      - name: Install tooling
+        run: |
+          source scripts/tooling.sh
+          ensure_nightly
+          ensure_taplo
+      - name: Format
+        run: ./scripts/fmt.sh --check
+
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Rust Cache
+        uses: ./.github/actions/setup-rust-cache
+      - name: Cache Cargo Tools
+        uses: ./.github/actions/cache-cargo-tools
+      - name: Install tooling
+        run: |
+          source scripts/tooling.sh
+          ensure_taplo
+          ensure_cargo_machete
+      - name: Lint
+        run: ./scripts/lint.sh
+
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Rust Cache
+        uses: ./.github/actions/setup-rust-cache
+      - name: Test
+        run: ./scripts/test.sh
+
+  build-gate:
+    name: build-gate
+    needs:
+      - format
+      - lint
+      - test
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify all upstream jobs succeeded
+        if: >-
+          ${{
+            contains(needs.*.result, 'failure')
+            || contains(needs.*.result, 'cancelled')
+            || contains(needs.*.result, 'skipped')
+          }}
+        run: |
+          echo "upstream results: ${{ join(needs.*.result, ', ') }}"
+          exit 1
