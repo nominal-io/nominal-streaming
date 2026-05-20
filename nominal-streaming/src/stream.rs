@@ -1065,8 +1065,17 @@ fn request_dispatcher<C: WriteRequestConsumer + 'static>(
 
                 if unflushed_points.load(Ordering::Acquire) == 0 && !running.load(Ordering::Acquire)
                 {
-                    info!("all points flushed, closing dispatcher thread");
-                    // notify the processor thread that all points have been flushed
+                    let points_lost_at_shutdown = dispatch_metrics
+                        .points_dropped_after_retries
+                        .load(Ordering::Relaxed);
+                    if points_lost_at_shutdown > 0 {
+                        info!(
+                            points_lost_at_shutdown,
+                            "dispatcher closing with points lost to retry exhaustion"
+                        );
+                    } else {
+                        info!("all points flushed, closing dispatcher thread");
+                    }
                     drop(request_rx);
                     break;
                 }
