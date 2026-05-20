@@ -112,6 +112,10 @@ pub static PRODUCTION_CLIENTS: LazyLock<NominalApiClients> =
     LazyLock::new(|| NominalApiClients::from_uri(PRODUCTION_API_URL));
 
 pub fn async_conjure_streaming_client(uri: Url) -> Result<Client, Error> {
+    // Hermeus 2026-05: bumped from 1s/2s/2s -> 5s/15s/15s. The customer's
+    // flight-test network has latency spikes that exhausted the prior tight
+    // timeouts, which then cascaded into batch loss because the dispatcher
+    // does not retry on consumer error.
     Client::builder()
         .service("core-streaming-rs")
         .user_agent(UserAgent::new(Agent::new(
@@ -119,11 +123,11 @@ pub fn async_conjure_streaming_client(uri: Url) -> Result<Client, Error> {
             env!("CARGO_PKG_VERSION"),
         )))
         .uri(uri)
-        .connect_timeout(std::time::Duration::from_secs(1))
-        .read_timeout(std::time::Duration::from_secs(2))
-        .write_timeout(std::time::Duration::from_secs(2))
-        .backoff_slot_size(std::time::Duration::from_millis(10))
-        .max_num_retries(2)
+        .connect_timeout(std::time::Duration::from_secs(5))
+        .read_timeout(std::time::Duration::from_secs(15))
+        .write_timeout(std::time::Duration::from_secs(15))
+        .backoff_slot_size(std::time::Duration::from_millis(50))
+        .max_num_retries(3)
         // enables retries for POST endpoints like the streaming ingest one
         .idempotency(Idempotency::Always)
         .build()
