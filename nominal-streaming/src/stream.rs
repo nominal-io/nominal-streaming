@@ -1032,8 +1032,10 @@ fn request_dispatcher<C: WriteRequestConsumer + 'static>(
                                 }
                                 break false;
                             }
-                            let backoff_ms = (DISPATCH_INITIAL_BACKOFF_MS << (attempt - 1).min(20))
-                                .min(DISPATCH_MAX_BACKOFF_MS);
+                            let backoff_scale = (f64::from(attempt) + 1.0).log2();
+                            let backoff_ms = ((DISPATCH_INITIAL_BACKOFF_MS as f64) * backoff_scale)
+                                .min(DISPATCH_MAX_BACKOFF_MS as f64)
+                                as u64;
                             info!(
                                 "dispatcher consume attempt {} failed ({} points), \
                                  retrying in {} ms: {}",
