@@ -143,6 +143,12 @@ impl IntoTimestamp for Duration {
     }
 }
 
+impl IntoTimestamp for Timestamp {
+    fn into_timestamp(self) -> Timestamp {
+        self
+    }
+}
+
 impl<T: chrono::TimeZone> IntoTimestamp for chrono::DateTime<T> {
     fn into_timestamp(self) -> Timestamp {
         Timestamp {
