@@ -21,6 +21,7 @@ use conjure_runtime_rustls_platform_verifier::Idempotency;
 use conjure_runtime_rustls_platform_verifier::ResponseBody;
 use conjure_runtime_rustls_platform_verifier::UserAgent;
 use nominal_api::clients::ingest::api::AsyncIngestServiceClient;
+use nominal_api::clients::storage::writer::api::AsyncNominalChannelWriterServiceClient;
 use nominal_api::clients::upload::api::AsyncUploadServiceClient;
 use nominal_api::objects::api::rids::NominalDataSourceOrDatasetRid;
 use nominal_api::objects::api::rids::WorkspaceRid;
@@ -66,6 +67,7 @@ impl AuthProvider for TokenAndWorkspaceRid {
 #[derive(Clone)]
 pub struct NominalApiClients {
     pub streaming: Client,
+    pub writer: AsyncNominalChannelWriterServiceClient<Client>,
     pub upload: AsyncUploadServiceClient<Client>,
     pub ingest: AsyncIngestServiceClient<Client>,
 }
@@ -74,6 +76,7 @@ impl Debug for NominalApiClients {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("NominalApiClients")
             .field("streaming", &"Client")
+            .field("writer", &"NominalChannelWriterServiceAsyncClient<Client>")
             .field("upload", &"UploadServiceAsyncClient<Client>")
             .field("ingest", &"IngestServiceAsyncClient<Client>")
             .finish()
@@ -97,6 +100,7 @@ impl NominalApiClients {
         runtime: &Arc<ConjureRuntime>,
     ) -> Self {
         Self {
+            writer: AsyncNominalChannelWriterServiceClient::new(streaming.clone(), runtime),
             streaming,
             upload: AsyncUploadServiceClient::new(services.clone(), runtime),
             ingest: AsyncIngestServiceClient::new(services, runtime),
@@ -177,61 +181,4 @@ pub fn encode_request<'a, 'b>(
             "/storage/writer/v1/nominal/{dataSourceRid}",
         ));
     Ok(request)
-}
-
-pub fn encode_nominal_columnar_request<'b>(
-    write_request_bytes: Vec<u8>,
-    api_key: &BearerToken,
-) -> std::io::Result<WriteRequest<'b>> {
-    let mut encoder = FrameEncoder::new(Vec::with_capacity(write_request_bytes.len()));
-
-    encoder.write_all(&write_request_bytes)?;
-
-    let mut request = Request::new(AsyncRequestBody::Fixed(
-        encoder.into_inner().unwrap().into(),
-    ));
-
-    let headers = request.headers_mut();
-    headers.insert(CONTENT_TYPE, "application/x-protobuf".parse().unwrap());
-    headers.insert(CONTENT_ENCODING, "x-snappy-framed".parse().unwrap());
-
-    *request.method_mut() = conjure_http::private::http::Method::POST;
-    let mut path = conjure_http::private::UriBuilder::new();
-    path.push_literal("/storage/writer/v1/nominal-columnar");
-
-    *request.uri_mut() = path.build();
-    conjure_http::private::encode_header_auth(&mut request, api_key);
-    request
-        .extensions_mut()
-        .insert(conjure_http::client::Endpoint::new(
-            "NominalChannelWriterService",
-            None,
-            "writeNominalColumnarBatches",
-            "/storage/writer/v1/nominal-columnar",
-        ));
-    Ok(request)
-}
-
-#[cfg(test)]
-mod tests {
-    use conjure_object::BearerToken;
-
-    use super::*;
-
-    #[test]
-    fn encode_nominal_columnar_request_targets_columnar_writer_endpoint() {
-        let token = BearerToken::new("token").unwrap();
-        let request = encode_nominal_columnar_request(vec![1, 2, 3], &token).unwrap();
-
-        assert_eq!(request.method(), conjure_http::private::http::Method::POST);
-        assert_eq!(request.uri().path(), "/storage/writer/v1/nominal-columnar");
-        assert_eq!(
-            request.headers().get(CONTENT_TYPE).unwrap(),
-            "application/x-protobuf"
-        );
-        assert_eq!(
-            request.headers().get(CONTENT_ENCODING).unwrap(),
-            "x-snappy-framed"
-        );
-    }
 }

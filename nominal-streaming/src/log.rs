@@ -10,24 +10,22 @@ use std::time::Duration;
 
 use conjure_object::BearerToken;
 use conjure_object::ResourceIdentifier;
+use conjure_object::SafeLong;
+use nominal_api::clients::storage::writer::api::AsyncNominalChannelWriterService;
+use nominal_api::objects::api::rids::NominalDataSourceOrDatasetRid;
+use nominal_api::objects::api::Channel as CoreChannel;
+use nominal_api::objects::api::Timestamp as CoreTimestamp;
+use nominal_api::objects::storage::writer::api::LogPoint as CoreLogPoint;
+use nominal_api::objects::storage::writer::api::LogValue as CoreLogValue;
+use nominal_api::objects::storage::writer::api::WriteLogsRequest;
 use nominal_api::tonic::google::protobuf::Timestamp;
-use nominal_api::tonic::nominal::direct_channel_writer::v2::points::Points as ColumnarPointsType;
-use nominal_api::tonic::nominal::direct_channel_writer::v2::LogPoint as ColumnarLogPoint;
-use nominal_api::tonic::nominal::direct_channel_writer::v2::LogPoints as ColumnarLogPoints;
-use nominal_api::tonic::nominal::direct_channel_writer::v2::LogValue as ColumnarLogValue;
-use nominal_api::tonic::nominal::direct_channel_writer::v2::Points as ColumnarPoints;
-use nominal_api::tonic::nominal::direct_channel_writer::v2::RecordsBatch;
-use nominal_api::tonic::nominal::direct_channel_writer::v2::WriteBatchesRequest;
-use nominal_api::tonic::nominal::types::time::Timestamp as ColumnarTimestamp;
 use parking_lot::Mutex;
-use prost::Message;
 use tracing::debug;
 use tracing::error;
 use tracing::warn;
 
 use crate::client::NominalApiClients;
 use crate::client::PRODUCTION_API_URL;
-use crate::client::{self};
 use crate::consumer::ConsumerError;
 use crate::consumer::ConsumerResult;
 use crate::types::AuthProvider;
@@ -157,14 +155,17 @@ impl<T: AuthProvider + 'static> LogConsumer for NominalCoreLogConsumer<T> {
             .auth_provider
             .token()
             .ok_or(ConsumerError::MissingTokenError)?;
-        let request = entries_to_write_batches_request(&self.data_source_rid, entries);
-        let write_request =
-            client::encode_nominal_columnar_request(request.encode_to_vec(), &token)?;
+        let requests = entries_to_write_logs_requests(entries)?;
+        let data_source_rid = NominalDataSourceOrDatasetRid(self.data_source_rid.clone());
         self.handle.block_on(async {
-            self.client
-                .send(write_request)
-                .await
-                .map_err(|e| ConsumerError::RequestError(format!("{e:?}")))
+            for request in requests {
+                self.client
+                    .writer
+                    .write_logs(&token, &data_source_rid, &request)
+                    .await
+                    .map_err(|e| ConsumerError::RequestError(format!("{e:?}")))?;
+            }
+            Ok::<(), ConsumerError>(())
         })?;
         Ok(())
     }
@@ -638,56 +639,54 @@ fn log_request_dispatcher<C: LogConsumer + 'static>(
     debug!("log request dispatcher thread exiting");
 }
 
-fn entries_to_write_batches_request(
-    data_source_rid: &ResourceIdentifier,
-    entries: &[LogEntry],
-) -> WriteBatchesRequest {
-    let mut groups: BTreeMap<(String, BTreeMap<String, String>), Vec<&LogEntry>> = BTreeMap::new();
+fn entries_to_write_logs_requests(entries: &[LogEntry]) -> ConsumerResult<Vec<WriteLogsRequest>> {
+    let mut groups: BTreeMap<String, Vec<&LogEntry>> = BTreeMap::new();
     for entry in entries {
-        groups
-            .entry((entry.channel.clone(), entry.tags.clone()))
-            .or_default()
-            .push(entry);
+        groups.entry(entry.channel.clone()).or_default().push(entry);
     }
 
-    let batches = groups
+    groups
         .into_iter()
-        .map(|((channel, tags), entries)| {
-            let mut timestamps = Vec::with_capacity(entries.len());
-            let mut points = Vec::with_capacity(entries.len());
-
-            for entry in entries {
-                timestamps.push(timestamp_to_columnar(entry.timestamp));
-                points.push(ColumnarLogPoint {
-                    value: Some(ColumnarLogValue {
-                        message: entry.message.clone(),
-                        args: entry.args.clone().into_iter().collect(),
-                    }),
-                });
-            }
-
-            RecordsBatch {
-                channel,
-                tags: tags.into_iter().collect(),
-                points: Some(ColumnarPoints {
-                    timestamps,
-                    points: Some(ColumnarPointsType::LogPoints(ColumnarLogPoints { points })),
-                }),
-            }
+        .map(|(channel, entries)| {
+            let logs = entries
+                .into_iter()
+                .map(entry_to_log_point)
+                .collect::<ConsumerResult<Vec<_>>>()?;
+            Ok(WriteLogsRequest::builder()
+                .logs(logs)
+                .channel(CoreChannel::from(channel))
+                .build())
         })
-        .collect();
-
-    WriteBatchesRequest {
-        batches,
-        data_source_rid: data_source_rid.to_string(),
-    }
+        .collect()
 }
 
-fn timestamp_to_columnar(timestamp: Timestamp) -> ColumnarTimestamp {
-    ColumnarTimestamp {
-        seconds: Some(timestamp.seconds),
-        nanos: Some(timestamp.nanos as i64),
-    }
+fn entry_to_log_point(entry: &LogEntry) -> ConsumerResult<CoreLogPoint> {
+    let mut args = entry.args.clone();
+    args.extend(entry.tags.clone());
+
+    Ok(CoreLogPoint::new(
+        timestamp_to_core(entry.timestamp)?,
+        CoreLogValue::builder()
+            .message(entry.message.clone())
+            .args(args)
+            .build(),
+    ))
+}
+
+fn timestamp_to_core(timestamp: Timestamp) -> ConsumerResult<CoreTimestamp> {
+    let seconds = SafeLong::new(timestamp.seconds).map_err(|_| {
+        ConsumerError::RequestError(format!(
+            "timestamp seconds value {} exceeds safe integer range",
+            timestamp.seconds
+        ))
+    })?;
+    let nanos = SafeLong::new(timestamp.nanos as i64).map_err(|_| {
+        ConsumerError::RequestError(format!(
+            "timestamp nanos value {} exceeds safe integer range",
+            timestamp.nanos
+        ))
+    })?;
+    Ok(CoreTimestamp::new(seconds, nanos))
 }
 
 #[cfg(test)]
@@ -734,32 +733,25 @@ mod tests {
     }
 
     #[test]
-    fn builds_tagged_columnar_log_request() {
-        let rid = ResourceIdentifier::new("ri.catalog.main.dataset.logs").unwrap();
-        let request =
-            entries_to_write_batches_request(&rid, &[log_entry("ignition"), log_entry("liftoff")]);
+    fn builds_write_logs_requests_with_args_and_tags() {
+        let requests =
+            entries_to_write_logs_requests(&[log_entry("ignition"), log_entry("liftoff")]).unwrap();
 
-        assert_eq!(request.data_source_rid, rid.to_string());
-        assert_eq!(request.batches.len(), 1);
+        assert_eq!(requests.len(), 1);
+        let request = &requests[0];
+        assert_eq!(request.channel().unwrap().as_ref(), "events");
+        assert_eq!(request.logs().len(), 2);
 
-        let batch = &request.batches[0];
-        assert_eq!(batch.channel, "events");
-        assert_eq!(batch.tags.get("vehicle").unwrap(), "alpha");
-        assert_eq!(batch.tags.get("run").unwrap(), "17");
+        let point = &request.logs()[0];
+        assert_eq!(*point.timestamp().seconds(), 123);
+        assert_eq!(*point.timestamp().nanos(), 456);
 
-        let points = batch.points.as_ref().unwrap();
-        assert_eq!(points.timestamps.len(), 2);
-        assert_eq!(points.timestamps[0].seconds, Some(123));
-        assert_eq!(points.timestamps[0].nanos, Some(456));
-
-        let Some(ColumnarPointsType::LogPoints(log_points)) = &points.points else {
-            panic!("expected log points");
-        };
-        assert_eq!(log_points.points.len(), 2);
-        let value = log_points.points[0].value.as_ref().unwrap();
-        assert_eq!(value.message, "ignition");
-        assert_eq!(value.args.get("phase").unwrap(), "boost");
-        assert_eq!(value.args.get("attempt").unwrap(), "2");
+        let value = point.value();
+        assert_eq!(value.message(), "ignition");
+        assert_eq!(value.args().get("phase").unwrap(), "boost");
+        assert_eq!(value.args().get("attempt").unwrap(), "2");
+        assert_eq!(value.args().get("vehicle").unwrap(), "alpha");
+        assert_eq!(value.args().get("run").unwrap(), "17");
     }
 
     #[test]
