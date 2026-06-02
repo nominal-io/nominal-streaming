@@ -21,6 +21,7 @@ use conjure_runtime_rustls_platform_verifier::Idempotency;
 use conjure_runtime_rustls_platform_verifier::ResponseBody;
 use conjure_runtime_rustls_platform_verifier::UserAgent;
 use nominal_api::clients::ingest::api::AsyncIngestServiceClient;
+use nominal_api::clients::storage::writer::api::AsyncNominalChannelWriterServiceClient;
 use nominal_api::clients::upload::api::AsyncUploadServiceClient;
 use nominal_api::objects::api::rids::NominalDataSourceOrDatasetRid;
 use nominal_api::objects::api::rids::WorkspaceRid;
@@ -66,6 +67,7 @@ impl AuthProvider for TokenAndWorkspaceRid {
 #[derive(Clone)]
 pub struct NominalApiClients {
     pub streaming: Client,
+    pub writer: AsyncNominalChannelWriterServiceClient<Client>,
     pub upload: AsyncUploadServiceClient<Client>,
     pub ingest: AsyncIngestServiceClient<Client>,
 }
@@ -74,6 +76,7 @@ impl Debug for NominalApiClients {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("NominalApiClients")
             .field("streaming", &"Client")
+            .field("writer", &"NominalChannelWriterServiceAsyncClient<Client>")
             .field("upload", &"UploadServiceAsyncClient<Client>")
             .field("ingest", &"IngestServiceAsyncClient<Client>")
             .finish()
@@ -97,6 +100,7 @@ impl NominalApiClients {
         runtime: &Arc<ConjureRuntime>,
     ) -> Self {
         Self {
+            writer: AsyncNominalChannelWriterServiceClient::new(streaming.clone(), runtime),
             streaming,
             upload: AsyncUploadServiceClient::new(services.clone(), runtime),
             ingest: AsyncIngestServiceClient::new(services, runtime),
