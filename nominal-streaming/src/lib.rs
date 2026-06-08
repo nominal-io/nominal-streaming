@@ -211,9 +211,14 @@ mod tests {
     use nominal_api::tonic::io::nominal::scout::api::proto::array_points::ArrayType;
     use nominal_api::tonic::io::nominal::scout::api::proto::ArrayPoints;
     use nominal_api::tonic::io::nominal::scout::api::proto::IntegerPoint;
+    use nominal_api::tonic::io::nominal::scout::api::proto::Points;
 
     use crate::client::PRODUCTION_API_URL;
     use crate::consumer::ConsumerResult;
+    use crate::consumer::SimulatedNetworkConfig;
+    use crate::consumer::SimulatedNetworkConsumer;
+    use crate::consumer::SimulatedNetworkFailure;
+    use crate::consumer::SimulatedRetryPolicy;
     use crate::consumer::WriteRequestConsumer;
     use crate::prelude::*;
 
@@ -233,10 +238,22 @@ mod tests {
         let test_consumer = Arc::new(TestDatasourceStream {
             requests: Mutex::new(vec![]),
         });
+        let stream = create_stream_with_consumer(test_consumer.clone(), 1000);
+
+        (test_consumer, stream)
+    }
+
+    fn create_stream_with_consumer<C>(
+        consumer: C,
+        max_points_per_record: usize,
+    ) -> NominalDatasetStream
+    where
+        C: WriteRequestConsumer + 'static,
+    {
         let stream = NominalDatasetStream::new_with_consumer(
-            test_consumer.clone(),
+            consumer,
             NominalStreamOpts {
-                max_points_per_record: 1000,
+                max_points_per_record,
                 max_request_delay: Duration::from_millis(100),
                 max_buffered_requests: 2,
                 request_dispatcher_tasks: 4,
@@ -244,7 +261,29 @@ mod tests {
             },
         );
 
-        (test_consumer, stream)
+        stream
+    }
+
+    fn total_double_points(requests: &[WriteRequestNominal], channel_name: &str) -> usize {
+        requests
+            .iter()
+            .flat_map(|request| request.series.iter())
+            .filter(|series| {
+                series
+                    .channel
+                    .as_ref()
+                    .is_some_and(|channel| channel.name == channel_name)
+            })
+            .map(|series| {
+                let Some(Points {
+                    points_type: Some(PointsType::DoublePoints(points)),
+                }) = series.points.as_ref()
+                else {
+                    return 0;
+                };
+                points.points.len()
+            })
+            .sum()
     }
 
     #[test_log::test]
@@ -502,6 +541,51 @@ mod tests {
         let requests = test_consumer.requests.lock().unwrap();
         dbg!(&requests);
         assert_eq!(requests.len(), 2);
+    }
+
+    #[test_log::test]
+    fn simulated_network_retries_transient_failures_and_delivers_data() {
+        let test_consumer = Arc::new(TestDatasourceStream {
+            requests: Mutex::new(vec![]),
+        });
+        let simulated_network = SimulatedNetworkConsumer::new(
+            test_consumer.clone(),
+            SimulatedNetworkConfig::default()
+                .with_latency(Duration::from_micros(10), Duration::from_micros(10))
+                .with_bandwidth_limit(32 * 1024 * 1024)
+                .with_failure_pattern(SimulatedNetworkFailure::FailFirstAttemptsPerRequest {
+                    attempts: 1,
+                })
+                .with_failure_pattern(SimulatedNetworkFailure::InitialOutageAttempts {
+                    attempts: 1,
+                })
+                .with_retry_policy(
+                    SimulatedRetryPolicy::new(2, Duration::from_micros(10))
+                        .with_jitter(Duration::from_micros(10)),
+                ),
+        );
+        let stats = simulated_network.stats();
+        let stream = create_stream_with_consumer(simulated_network, 4);
+
+        let cd = ChannelDescriptor::new("networked_double");
+        let mut writer = stream.double_writer(cd);
+        for i in 0..12 {
+            writer.push(UNIX_EPOCH.elapsed().unwrap(), i as f64);
+        }
+
+        drop(writer);
+        drop(stream);
+
+        let requests = test_consumer.requests.lock().unwrap();
+        assert_eq!(total_double_points(&requests, "networked_double"), 12);
+
+        let stats = stats.snapshot();
+        assert_eq!(stats.successful_requests as usize, requests.len());
+        assert_eq!(stats.simulated_failures, stats.successful_requests);
+        assert_eq!(stats.retries, stats.simulated_failures);
+        assert!(stats.attempts > stats.successful_requests);
+        assert!(stats.delivered_bytes > 0);
+        assert!(stats.simulated_sleep >= Duration::from_micros(stats.attempts * 10));
     }
 
     #[test_log::test]
