@@ -47,6 +47,25 @@ use crate::types::ChannelDescriptor;
 use crate::types::IntoPoints;
 use crate::types::IntoTimestamp;
 
+/// Observability counters for the request-dispatcher retry loop.
+///
+/// Exposed via [`NominalDatasetStream::dispatch_metrics`] so callers can poll
+/// these atomics and emit periodic summary logs. All counters are monotonic
+/// for the lifetime of the stream.
+#[derive(Debug, Default)]
+pub struct DispatchMetrics {
+    /// Requests that ultimately succeeded (possibly after retries).
+    pub requests_sent: AtomicU64,
+    /// Requests that needed at least one retry to succeed.
+    pub requests_recovered_via_retry: AtomicU64,
+    /// Total retry attempts across all requests (sum of attempts - 1 per request).
+    pub retry_attempts: AtomicU64,
+    /// Requests that were dropped because all retries failed.
+    pub requests_dropped_after_retries: AtomicU64,
+    /// Total points dropped in those failed requests.
+    pub points_dropped_after_retries: AtomicU64,
+}
+
 #[derive(Debug, Clone)]
 pub struct NominalStreamOpts {
     pub max_points_per_record: usize,
@@ -254,6 +273,7 @@ pub struct NominalDatasetStream {
     secondary_buffer: Arc<SeriesBuffer>,
     primary_handle: thread::JoinHandle<()>,
     secondary_handle: thread::JoinHandle<()>,
+    dispatch_metrics: Arc<DispatchMetrics>,
     /// Records the total time spent processing batches on background threads.
     ///
     /// This field is only available when the `instrument` feature is enabled.
@@ -335,6 +355,7 @@ impl NominalDatasetStream {
             .unwrap();
 
         let consumer = Arc::new(consumer);
+        let dispatch_metrics = Arc::new(DispatchMetrics::default());
 
         for i in 0..opts.request_dispatcher_tasks {
             thread::Builder::new()
@@ -344,6 +365,7 @@ impl NominalDatasetStream {
                     let unflushed_points = Arc::clone(&unflushed_points);
                     let rx = request_rx.clone();
                     let consumer = consumer.clone();
+                    let dispatch_metrics = Arc::clone(&dispatch_metrics);
                     #[cfg(feature = "instrument")]
                     let disp_ns = Arc::clone(&dispatcher_ns);
                     move || {
@@ -353,6 +375,7 @@ impl NominalDatasetStream {
                             unflushed_points,
                             rx,
                             consumer,
+                            dispatch_metrics,
                             #[cfg(feature = "instrument")]
                             disp_ns,
                         );
@@ -369,11 +392,17 @@ impl NominalDatasetStream {
             secondary_buffer,
             primary_handle,
             secondary_handle,
+            dispatch_metrics,
             #[cfg(feature = "instrument")]
             batch_processor_ns,
             #[cfg(feature = "instrument")]
             dispatcher_ns,
         }
+    }
+
+    /// Snapshot of dispatcher retry/drop counters; never resets.
+    pub fn dispatch_metrics(&self) -> Arc<DispatchMetrics> {
+        Arc::clone(&self.dispatch_metrics)
     }
 
     pub fn double_writer(&self, channel_descriptor: ChannelDescriptor) -> NominalDoubleWriter<'_> {
@@ -946,11 +975,18 @@ impl Drop for NominalDatasetStream {
     }
 }
 
+/// Without bounded retries here the dispatcher loses an entire batch
+/// (all channels carried in it) on the first transient consumer error.
+pub const DISPATCH_MAX_ATTEMPTS: u32 = 6;
+pub const DISPATCH_INITIAL_BACKOFF_MS: u64 = 250;
+pub const DISPATCH_MAX_BACKOFF_MS: u64 = 5_000;
+
 fn request_dispatcher<C: WriteRequestConsumer + 'static>(
     running: Arc<AtomicBool>,
     unflushed_points: Arc<AtomicUsize>,
     request_rx: crossbeam_channel::Receiver<(WriteRequestNominal, usize)>,
     consumer: Arc<C>,
+    dispatch_metrics: Arc<DispatchMetrics>,
     #[cfg(feature = "instrument")] disp_ns: Arc<AtomicU64>,
 ) {
     let mut total_request_time = 0;
@@ -959,15 +995,77 @@ fn request_dispatcher<C: WriteRequestConsumer + 'static>(
             Ok((request, point_count)) => {
                 debug!("received writerequest from channel");
                 let req_start = Instant::now();
-                match consumer.consume(&request) {
-                    Ok(_) => {
-                        let time = req_start.elapsed().as_millis();
-                        debug!("request of {} points sent in {} ms", point_count, time);
-                        total_request_time += time as u64;
+
+                let mut last_err: Option<String> = None;
+                let mut attempt: u32 = 0;
+                let succeeded = loop {
+                    attempt += 1;
+                    match consumer.consume(&request) {
+                        Ok(_) => {
+                            let time = req_start.elapsed().as_millis();
+                            debug!(
+                                "request of {} points sent in {} ms on attempt {}",
+                                point_count, time, attempt,
+                            );
+                            total_request_time += time as u64;
+                            dispatch_metrics
+                                .requests_sent
+                                .fetch_add(1, Ordering::Relaxed);
+                            if attempt > 1 {
+                                dispatch_metrics
+                                    .requests_recovered_via_retry
+                                    .fetch_add(1, Ordering::Relaxed);
+                            }
+                            break true;
+                        }
+                        Err(e) => {
+                            let is_terminal_user_error = e.is_terminal();
+                            let msg = format!("{e:?}");
+                            last_err = Some(msg.clone());
+                            if is_terminal_user_error || attempt >= DISPATCH_MAX_ATTEMPTS {
+                                if is_terminal_user_error {
+                                    error!(
+                                        attempt,
+                                        point_count,
+                                        "dispatcher: terminal consume error, not retrying: {msg}"
+                                    );
+                                }
+                                break false;
+                            }
+                            let backoff_scale = (f64::from(attempt) + 1.0).log2();
+                            let backoff_ms = ((DISPATCH_INITIAL_BACKOFF_MS as f64) * backoff_scale)
+                                .min(DISPATCH_MAX_BACKOFF_MS as f64)
+                                as u64;
+                            info!(
+                                "dispatcher consume attempt {} failed ({} points), \
+                                 retrying in {} ms: {}",
+                                attempt, point_count, backoff_ms, msg,
+                            );
+                            dispatch_metrics
+                                .retry_attempts
+                                .fetch_add(1, Ordering::Relaxed);
+                            thread::sleep(Duration::from_millis(backoff_ms));
+                        }
                     }
-                    Err(e) => {
-                        error!("Failed to send request: {e:?}");
-                    }
+                };
+                if !succeeded {
+                    let dropped = dispatch_metrics
+                        .requests_dropped_after_retries
+                        .fetch_add(1, Ordering::Relaxed)
+                        + 1;
+                    let points_lost = dispatch_metrics
+                        .points_dropped_after_retries
+                        .fetch_add(point_count as u64, Ordering::Relaxed)
+                        + point_count as u64;
+                    error!(
+                        "Failed to send request after {} attempts; dropping batch of {} points \
+                         (dispatcher cumulative: {} batches / {} points dropped). last_error={}",
+                        attempt,
+                        point_count,
+                        dropped,
+                        points_lost,
+                        last_err.as_deref().unwrap_or("<unknown>"),
+                    );
                 }
                 #[cfg(feature = "instrument")]
                 disp_ns.fetch_add(req_start.elapsed().as_nanos() as u64, Ordering::Relaxed);
@@ -975,8 +1073,17 @@ fn request_dispatcher<C: WriteRequestConsumer + 'static>(
 
                 if unflushed_points.load(Ordering::Acquire) == 0 && !running.load(Ordering::Acquire)
                 {
-                    info!("all points flushed, closing dispatcher thread");
-                    // notify the processor thread that all points have been flushed
+                    let points_lost_at_shutdown = dispatch_metrics
+                        .points_dropped_after_retries
+                        .load(Ordering::Relaxed);
+                    if points_lost_at_shutdown > 0 {
+                        info!(
+                            points_lost_at_shutdown,
+                            "dispatcher closing with points lost to retry exhaustion"
+                        );
+                    } else {
+                        info!("all points flushed, closing dispatcher thread");
+                    }
                     drop(request_rx);
                     break;
                 }
