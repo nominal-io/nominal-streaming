@@ -87,6 +87,8 @@ impl Default for SimulatedRetryPolicy {
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum SimulatedNetworkFailure {
+    /// Every request attempt times out after the configured network delay.
+    AllRequestsTimeout,
     /// The first `attempts` attempts for each request fail before the request
     /// can reach the wrapped consumer.
     FailFirstAttemptsPerRequest { attempts: usize },
@@ -105,6 +107,7 @@ pub enum SimulatedNetworkFailure {
 impl SimulatedNetworkFailure {
     fn should_fail(&self, request_id: u64, request_attempt: usize, global_attempt: u64) -> bool {
         match *self {
+            Self::AllRequestsTimeout => true,
             Self::FailFirstAttemptsPerRequest { attempts } => request_attempt < attempts,
             Self::FailEveryNthAttempt { every } => {
                 every != 0 && global_attempt != 0 && global_attempt.is_multiple_of(every)

@@ -215,6 +215,7 @@ mod tests {
 
     use crate::client::PRODUCTION_API_URL;
     use crate::consumer::ConsumerResult;
+    use crate::consumer::RequestConsumerWithFallback;
     use crate::consumer::SimulatedNetworkConfig;
     use crate::consumer::SimulatedNetworkConsumer;
     use crate::consumer::SimulatedNetworkFailure;
@@ -264,6 +265,16 @@ mod tests {
         stream
     }
 
+    fn create_stream_with_consumer_and_options<C>(
+        consumer: C,
+        opts: NominalStreamOpts,
+    ) -> NominalDatasetStream
+    where
+        C: WriteRequestConsumer + 'static,
+    {
+        NominalDatasetStream::new_with_consumer(consumer, opts)
+    }
+
     fn total_double_points(requests: &[WriteRequestNominal], channel_name: &str) -> usize {
         requests
             .iter()
@@ -284,6 +295,47 @@ mod tests {
                 points.points.len()
             })
             .sum()
+    }
+
+    fn point_counts_by_channel(
+        requests: &[WriteRequestNominal],
+    ) -> HashMap<String, (&'static str, usize)> {
+        let mut counts = HashMap::new();
+
+        for series in requests.iter().flat_map(|request| request.series.iter()) {
+            let channel_name = series
+                .channel
+                .as_ref()
+                .expect("series should have a channel")
+                .name
+                .clone();
+            let points_type = series
+                .points
+                .as_ref()
+                .and_then(|points| points.points_type.as_ref())
+                .expect("series should have points");
+
+            let (kind, point_count) = match points_type {
+                PointsType::DoublePoints(points) => ("double", points.points.len()),
+                PointsType::StringPoints(points) => ("string", points.points.len()),
+                PointsType::IntegerPoints(points) => ("int", points.points.len()),
+                PointsType::Uint64Points(points) => ("uint64", points.points.len()),
+                PointsType::StructPoints(points) => ("struct", points.points.len()),
+                PointsType::ArrayPoints(ArrayPoints {
+                    array_type: Some(ArrayType::DoubleArrayPoints(points)),
+                }) => ("double_array", points.points.len()),
+                PointsType::ArrayPoints(ArrayPoints {
+                    array_type: Some(ArrayType::StringArrayPoints(points)),
+                }) => ("string_array", points.points.len()),
+                PointsType::ArrayPoints(ArrayPoints { array_type: None }) => ("array", 0),
+            };
+
+            let entry = counts.entry(channel_name).or_insert((kind, 0));
+            assert_eq!(entry.0, kind, "mismatched point type for channel");
+            entry.1 += point_count;
+        }
+
+        counts
     }
 
     #[test_log::test]
@@ -589,6 +641,61 @@ mod tests {
     }
 
     #[test_log::test]
+    fn simulated_network_all_requests_timeout_falls_back_under_backpressure() {
+        let primary_destination = Arc::new(TestDatasourceStream {
+            requests: Mutex::new(vec![]),
+        });
+        let fallback_destination = Arc::new(TestDatasourceStream {
+            requests: Mutex::new(vec![]),
+        });
+        let timeout = Duration::from_millis(5);
+        let simulated_network = SimulatedNetworkConsumer::new(
+            primary_destination.clone(),
+            SimulatedNetworkConfig::default()
+                .with_latency(timeout, Duration::ZERO)
+                .with_failure_pattern(SimulatedNetworkFailure::AllRequestsTimeout),
+        );
+        let stats = simulated_network.stats();
+        let stream = create_stream_with_consumer_and_options(
+            RequestConsumerWithFallback::new(simulated_network, fallback_destination.clone()),
+            NominalStreamOpts {
+                max_points_per_record: 2,
+                max_request_delay: Duration::from_millis(20),
+                max_buffered_requests: 1,
+                request_dispatcher_tasks: 1,
+                base_api_url: PRODUCTION_API_URL.to_string(),
+            },
+        );
+
+        let cd = ChannelDescriptor::new("timeout_double");
+        let mut writer = stream.double_writer(cd);
+        for i in 0..12 {
+            writer.push(UNIX_EPOCH.elapsed().unwrap(), i as f64);
+        }
+
+        drop(writer);
+        drop(stream);
+
+        let primary_requests = primary_destination.requests.lock().unwrap();
+        assert!(primary_requests.is_empty());
+
+        let fallback_requests = fallback_destination.requests.lock().unwrap();
+        assert_eq!(fallback_requests.len(), 6);
+        assert_eq!(
+            total_double_points(&fallback_requests, "timeout_double"),
+            12
+        );
+
+        let stats = stats.snapshot();
+        assert_eq!(stats.attempts, 6);
+        assert_eq!(stats.simulated_failures, 6);
+        assert_eq!(stats.successful_requests, 0);
+        assert_eq!(stats.retries, 0);
+        assert_eq!(stats.delivered_bytes, 0);
+        assert!(stats.simulated_sleep >= timeout * stats.attempts as u32);
+    }
+
+    #[test_log::test]
     fn test_writer_types() {
         let (test_consumer, stream) = create_test_stream();
 
@@ -629,61 +736,14 @@ mod tests {
         drop(stream);
 
         let requests = test_consumer.requests.lock().unwrap();
+        let counts = point_counts_by_channel(&requests);
 
-        assert_eq!(requests.len(), 35);
-
-        let r = requests
-            .iter()
-            .flat_map(|r| r.series.clone())
-            .map(|s| {
-                (
-                    s.channel.unwrap().name,
-                    s.points.unwrap().points_type.unwrap(),
-                )
-            })
-            .collect::<HashMap<_, _>>();
-
-        let PointsType::DoublePoints(dp) = r.get("double").unwrap() else {
-            panic!("invalid double points type");
-        };
-
-        let PointsType::IntegerPoints(ip) = r.get("int").unwrap() else {
-            panic!("invalid int points type");
-        };
-
-        let PointsType::Uint64Points(up) = r.get("uint64").unwrap() else {
-            panic!("invalid uint64 points type");
-        };
-
-        let PointsType::StringPoints(sp) = r.get("string").unwrap() else {
-            panic!("invalid string points type");
-        };
-
-        let PointsType::StructPoints(stp) = r.get("struct").unwrap() else {
-            panic!("invalid struct points type");
-        };
-
-        let PointsType::ArrayPoints(ArrayPoints {
-            array_type: Some(ArrayType::DoubleArrayPoints(dap)),
-        }) = r.get("double_array").unwrap()
-        else {
-            panic!("invalid double array points type");
-        };
-
-        let PointsType::ArrayPoints(ArrayPoints {
-            array_type: Some(ArrayType::StringArrayPoints(sap)),
-        }) = r.get("string_array").unwrap()
-        else {
-            panic!("invalid string array points type");
-        };
-
-        // collect() overwrites into a single request per channel
-        assert_eq!(dp.points.len(), 1000);
-        assert_eq!(sp.points.len(), 1000);
-        assert_eq!(ip.points.len(), 1000);
-        assert_eq!(up.points.len(), 1000);
-        assert_eq!(stp.points.len(), 1000);
-        assert_eq!(dap.points.len(), 1000);
-        assert_eq!(sap.points.len(), 1000);
+        assert_eq!(counts.get("double"), Some(&("double", 5000)));
+        assert_eq!(counts.get("string"), Some(&("string", 5000)));
+        assert_eq!(counts.get("int"), Some(&("int", 5000)));
+        assert_eq!(counts.get("uint64"), Some(&("uint64", 5000)));
+        assert_eq!(counts.get("struct"), Some(&("struct", 5000)));
+        assert_eq!(counts.get("double_array"), Some(&("double_array", 5000)));
+        assert_eq!(counts.get("string_array"), Some(&("string_array", 5000)));
     }
 }
