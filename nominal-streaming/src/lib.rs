@@ -158,6 +158,8 @@ let stream = NominalDatasetStreamBuilder::new()
 pub mod client;
 pub mod consumer;
 pub mod listener;
+#[cfg(test)]
+mod simulated_consumer;
 pub mod stream;
 pub mod types;
 pub mod upload;
@@ -216,12 +218,12 @@ mod tests {
     use crate::client::PRODUCTION_API_URL;
     use crate::consumer::ConsumerResult;
     use crate::consumer::RequestConsumerWithFallback;
-    use crate::consumer::SimulatedNetworkConfig;
-    use crate::consumer::SimulatedNetworkConsumer;
-    use crate::consumer::SimulatedNetworkFailure;
-    use crate::consumer::SimulatedRetryPolicy;
     use crate::consumer::WriteRequestConsumer;
     use crate::prelude::*;
+    use crate::simulated_consumer::SimulatedNetworkConfig;
+    use crate::simulated_consumer::SimulatedNetworkConsumer;
+    use crate::simulated_consumer::SimulatedNetworkFailure;
+    use crate::simulated_consumer::SimulatedRetryPolicy;
 
     #[derive(Debug)]
     struct TestDatasourceStream {
