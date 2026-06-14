@@ -10,11 +10,19 @@ repository = "https://github.com/nominal-io/nominal-streaming"
 [lib]
 # This becomes the *module* name on the Python side unless overridden by tool.maturin.module-name
 name = "_nominal_streaming"
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+# `extension-module` is required for the maturin-built wheel but MUST NOT be
+# enabled during `cargo test` — the feature tells PyO3 not to link against
+# libpython (since the final link happens when Python loads the .so), which
+# makes `cargo test`'s test binaries fail with missing-symbol errors.
+# Maturin enables it via `[tool.maturin].features` in pyproject.toml.
+extension-module = ["pyo3/extension-module"]
 
 [dependencies]
 # PyO3 with a stable ABI across Python 3.10+.
-pyo3 = { version = "0.26", features = ["extension-module", "abi3-py310", "time"] }
+pyo3 = { version = "0.26", features = ["abi3-py310", "time"] }
 
 nominal-api = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "time"] }
@@ -27,9 +35,28 @@ openssl = { version = "0.10", features = ["vendored"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 
-# Depend on the Rust core crate in the repository root
-nominal-streaming = { workspace = true, features = ["logging"] }
+# Depend on the Rust core crate in the repository root.
+# `polars` feature enables the pure-Rust `AvroWriter::write_dataframe`
+# method — this crate adds the Python FFI (polars_ffi.rs) on top.
+nominal-streaming = { workspace = true, features = ["logging", "polars"] }
 
 anyhow = "1"
 crossbeam-channel = "0.5"
 tokio-util = "0.7"
+parking_lot = { workspace = true }
+thiserror = { workspace = true }
+apache-avro = { workspace = true }
+serde_json = { workspace = true }
+
+# Polars Rust crate for write_dataframe — dtype inspection + column iteration.
+# We use the Arrow C Data Interface (_export_arrow_to_c on Python's _s object)
+# to transfer data from Python polars → Rust polars without requiring pyarrow.
+polars = { version = "0.52", default-features = false, features = [
+    "dtype-struct",
+    "dtype-array",
+] }
+polars-arrow = { version = "0.52", default-features = false }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+test-log = { workspace = true }
