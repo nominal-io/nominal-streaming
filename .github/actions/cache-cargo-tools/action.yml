@@ -1,0 +1,23 @@
+name: "Cache Cargo Tools"
+description: "Cache cargo tools and nightly toolchain from tooling.sh"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Read tool versions
+      id: versions
+      shell: bash
+      run: |
+        source scripts/tooling.sh
+        echo "nightly=$NIGHTLY_TOOLCHAIN" >> "$GITHUB_OUTPUT"
+        echo "host-triple=$(rustc -vV | sed -n 's/^host: //p')" >> "$GITHUB_OUTPUT"
+    - name: Cache cargo tools
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/bin/taplo
+          ~/.cargo/bin/cargo-machete
+          ~/.cargo/bin/wasm-bindgen
+          ~/.cargo/bin/wasm-pack
+          ~/.rustup/toolchains/${{ steps.versions.outputs.nightly }}-${{ steps.versions.outputs.host-triple }}
+        key: cargo-tools-${{ github.job }}-${{ runner.arch }}-${{ hashFiles('scripts/tooling.sh') }}

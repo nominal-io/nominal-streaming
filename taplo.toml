@@ -1,0 +1,19 @@
+exclude = [".venv/**"]
+
+[formatting]
+allowed_blank_lines = 1
+reorder_keys = true
+
+# Preserve conventional key order in [package] tables (name, version, edition, ...)
+[[rule]]
+keys = ["package"]
+
+[rule.formatting]
+reorder_keys = false
+
+# Preserve grouping in crate-level [dependencies] (local path deps separated from workspace)
+[[rule]]
+keys = ["dependencies", "dev-dependencies", "build-dependencies"]
+
+[rule.formatting]
+reorder_keys = false
