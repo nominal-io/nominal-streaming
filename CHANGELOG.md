@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.2](https://github.com/nominal-io/nominal-streaming/compare/v0.9.1...v0.9.2) - 2026-07-14
+
+### Added
+
+- add simulated network consumer ([#280](https://github.com/nominal-io/nominal-streaming/pull/280))
+
 ## [0.9.1](https://github.com/nominal-io/nominal-streaming/compare/v0.9.0...v0.9.1) - 2026-05-16
 
 ### Other
