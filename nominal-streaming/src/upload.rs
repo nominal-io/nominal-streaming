@@ -278,6 +278,7 @@ impl FileObjectStoreUploader {
         token: BearerToken,
         upload_id: String,
         key: String,
+        bucket: String,
         part_number: i32,
         chunk: Vec<u8>,
         max_retries: usize,
@@ -292,6 +293,7 @@ impl FileObjectStoreUploader {
                 &token,
                 &upload_id,
                 &key,
+                &bucket,
                 part_number,
                 chunk.clone(),
             )
@@ -309,17 +311,19 @@ impl FileObjectStoreUploader {
         }
     }
 
+    #[expect(clippy::too_many_arguments)]
     async fn try_upload_part(
         client: AsyncUploadServiceClient<Client>,
         http_client: reqwest::Client,
         token: &BearerToken,
         upload_id: &str,
         key: &str,
+        bucket: &str,
         part_number: i32,
         chunk: Vec<u8>,
     ) -> Result<Part, UploaderError> {
         let response = client
-            .sign_part(token, upload_id, key, part_number)
+            .sign_part(token, upload_id, key, part_number, Some(bucket))
             .await
             .map_err(|e| UploaderError::Conjure(format!("{e:?}")))?;
 
@@ -354,6 +358,7 @@ impl FileObjectStoreUploader {
         reader: R,
         key: &str,
         upload_id: &str,
+        bucket: &str,
     ) -> Result<CompleteMultipartUploadResponse, UploaderError>
     where
         R: Read + Send + 'static,
@@ -372,6 +377,7 @@ impl FileObjectStoreUploader {
             let token = token.clone();
             let key = key.to_string();
             let upload_id = upload_id.to_string();
+            let bucket = bucket.to_string();
             let parallel_part_uploads = Arc::clone(&parallel_part_uploads);
             let client = self.upload_client.clone();
             let http_client = self.http_client.clone();
@@ -385,6 +391,7 @@ impl FileObjectStoreUploader {
                     token,
                     upload_id,
                     key,
+                    bucket,
                     part_number,
                     chunk,
                     max_retries,
@@ -403,7 +410,7 @@ impl FileObjectStoreUploader {
 
         let response = self
             .upload_client
-            .complete_multipart_upload(token, upload_id, key, &part_responses)
+            .complete_multipart_upload(token, upload_id, key, Some(bucket), &part_responses)
             .await
             .map_err(|e| UploaderError::Conjure(format!("{e:?}")))?;
 
@@ -463,8 +470,11 @@ impl FileObjectStoreUploader {
             .await?;
         let upload_id = initiate_response.upload_id();
         let key = initiate_response.key();
+        let bucket = initiate_response.bucket();
 
-        let response = self.upload_parts(token, reader, key, upload_id).await?;
+        let response = self
+            .upload_parts(token, reader, key, upload_id, bucket)
+            .await?;
 
         let s3_path = response.location().ok_or_else(|| {
             UploaderError::Other("Upload response did not contain a location".to_string())
