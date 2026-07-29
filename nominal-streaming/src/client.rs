@@ -119,11 +119,11 @@ pub fn async_conjure_streaming_client(uri: Url) -> Result<Client, Error> {
             env!("CARGO_PKG_VERSION"),
         )))
         .uri(uri)
-        .connect_timeout(std::time::Duration::from_secs(1))
-        .read_timeout(std::time::Duration::from_secs(2))
-        .write_timeout(std::time::Duration::from_secs(2))
-        .backoff_slot_size(std::time::Duration::from_millis(10))
-        .max_num_retries(2)
+        .connect_timeout(std::time::Duration::from_secs(5))
+        .read_timeout(std::time::Duration::from_secs(15))
+        .write_timeout(std::time::Duration::from_secs(15))
+        .backoff_slot_size(std::time::Duration::from_millis(50))
+        .max_num_retries(3)
         // enables retries for POST endpoints like the streaming ingest one
         .idempotency(Idempotency::Always)
         .build()
