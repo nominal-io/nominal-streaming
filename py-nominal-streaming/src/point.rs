@@ -89,9 +89,9 @@ fn extract_vec_generic<'py, T>(
     typename_for_error: &'static str,
 ) -> PyResult<Vec<T>>
 where
-    T: FromPyObject<'py>,
+    T: FromPyObjectOwned<'py>,
 {
-    let seq = values.downcast::<PySequence>()?;
+    let seq = values.cast::<PySequence>()?;
     let len = seq.len()?;
     let mut out = Vec::with_capacity(len);
     for i in 0..len {
@@ -214,7 +214,7 @@ pub enum ValueKind {
 /// Peek the first element to decide the homogeneous value kind.
 /// (Full extraction to Vec<T> will still enforce homogeneity.)
 pub fn classify_values(values: &Bound<'_, PyAny>) -> PyResult<ValueKind> {
-    let seq = values.downcast::<PySequence>()?;
+    let seq = values.cast::<PySequence>()?;
     let len = seq.len()?;
     if len == 0 {
         return Err(pyo3::exceptions::PyValueError::new_err(
