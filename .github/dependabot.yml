@@ -4,6 +4,10 @@ updates:
     directory: "/"
     schedule:
       interval: "daily"
+    # Wait a week before proposing a newly published version: a freshly released crate can be
+    # malicious or simply unstable, and this repo pulls updates daily.
+    cooldown:
+      default-days: 7
     groups:
       external-deps:
         exclude-patterns: ["nominal-api"]
