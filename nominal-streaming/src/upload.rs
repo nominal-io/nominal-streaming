@@ -318,8 +318,11 @@ impl FileObjectStoreUploader {
         part_number: i32,
         chunk: Vec<u8>,
     ) -> Result<Part, UploaderError> {
+        // `bucket` is None: we never set a `destination` on the initiate request, so the server
+        // opens the upload in (and resolves these follow-up calls against) the default uploads
+        // bucket. Thread `initiate_response.bucket()` through if we ever request FILE_STORE.
         let response = client
-            .sign_part(token, upload_id, key, part_number)
+            .sign_part(token, upload_id, key, part_number, None)
             .await
             .map_err(|e| UploaderError::Conjure(format!("{e:?}")))?;
 
@@ -403,7 +406,7 @@ impl FileObjectStoreUploader {
 
         let response = self
             .upload_client
-            .complete_multipart_upload(token, upload_id, key, &part_responses)
+            .complete_multipart_upload(token, upload_id, key, None, &part_responses)
             .await
             .map_err(|e| UploaderError::Conjure(format!("{e:?}")))?;
 
