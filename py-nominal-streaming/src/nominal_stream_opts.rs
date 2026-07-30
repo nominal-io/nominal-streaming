@@ -6,7 +6,10 @@ use std::time::Duration;
 use nominal_streaming::stream::NominalStreamOpts;
 use pyo3::prelude::*;
 
-#[pyclass]
+// `from_py_object` opts in to the derived `FromPyObject`, which pyo3 0.29 deprecates as an
+// implicit behaviour for `Clone` pyclasses. It is required here: `NominalDatasetStream` takes
+// this class by value (see `nominal_dataset_stream.rs`).
+#[pyclass(from_py_object)]
 #[derive(Debug, Clone)]
 pub struct PyNominalStreamOpts {
     pub inner: NominalStreamOpts,
