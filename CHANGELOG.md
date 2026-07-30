@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.3](https://github.com/nominal-io/nominal-streaming/compare/v0.9.2...v0.9.3) - 2026-07-30
+
+### Other
+
+- *(deps)* bump nominal-api from 0.1218.0 to 0.1349.0 ([#302](https://github.com/nominal-io/nominal-streaming/pull/302))
+
 ## [0.9.2](https://github.com/nominal-io/nominal-streaming/compare/v0.9.1...v0.9.2) - 2026-07-14
 
 ### Added
