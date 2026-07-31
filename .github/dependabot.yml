@@ -4,6 +4,10 @@ updates:
     directory: "/"
     schedule:
       interval: "daily"
+    # Wait a week before proposing a newly published version: a freshly released crate can be
+    # malicious or simply unstable, and this repo pulls updates daily.
+    cooldown:
+      default-days: 7
     groups:
       external-deps:
         exclude-patterns: ["nominal-api"]
@@ -11,3 +15,11 @@ updates:
         update-types:
           - "minor"
           - "patch"
+    ignore:
+      # Every published nominal-api-proto requires prost ^0.13.5 (and tonic ^0.13.1), and we
+      # call encode_to_vec() on its generated types -- so our prost has to resolve to the same
+      # 0.13.x. A second prost in the graph means a second, incompatible `Message` trait, which
+      # fails to compile (see #283). 0.13.x updates are still allowed.
+      # Remove this once nominal-api moves to prost 0.14.
+      - dependency-name: "prost"
+        versions: [">= 0.14"]
