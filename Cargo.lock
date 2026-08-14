@@ -1596,9 +1596,9 @@ dependencies = [
 
 [[package]]
 name = "nominal-api"
-version = "0.1349.0"
+version = "0.1372.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "449e939b5d3ecc4855daa54b281b64c3530465e8c8c2a798e231d09fe9d63c71"
+checksum = "d5607c934ef82cf1ea30c0a944e55e2600e4028bc2dd5e53f6622f7bbb04047e"
 dependencies = [
  "nominal-api-conjure",
  "nominal-api-proto",
@@ -1606,9 +1606,9 @@ dependencies = [
 
 [[package]]
 name = "nominal-api-conjure"
-version = "0.1349.0"
+version = "0.1372.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "db9298c341c06c614435bb001e21c903ace4b39c30e5aa2aecf053bec7598aa8"
+checksum = "57e0a3e985157e44cbebc9c0359006e67ebd451c3b34177d7ed58ddb41362960"
 dependencies = [
  "conjure-error",
  "conjure-http",
@@ -1617,9 +1617,9 @@ dependencies = [
 
 [[package]]
 name = "nominal-api-proto"
-version = "0.1349.0"
+version = "0.1372.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6a97d9a46f6b2cd86c52ae5e36b36579e33336d119396f5b541f55b51ecac6b4"
+checksum = "68a67e9b35fcb9b3d21a3cebfd72808f702807d12b1c88bb1d384a3fc64a8dea"
 dependencies = [
  "prost",
  "tonic",
