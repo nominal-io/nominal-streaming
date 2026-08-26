@@ -204,11 +204,15 @@ class NominalDatasetStream:
         self._opened = True
 
         if threading.current_thread() is threading.main_thread():
-            # Map Ctrl+C → fast cancel; keep handler tiny and re-raise KeyboardInterrupt.
+            # Map Ctrl+C → refuse further writes, then let the ordinary teardown drain what is
+            # already enqueued. Refusing first is what makes the drain converge: otherwise it
+            # races a producer loop that has not noticed the interrupt yet. The drain itself
+            # happens in `close`, reached via `__exit__` as KeyboardInterrupt unwinds, or via the
+            # stream's own destructor if the caller is not using a context manager.
             def _on_sigint(signum, frame):  # type: ignore[no-untyped-def]
-                logger.debug("Cancelling underlying stream")
+                logger.info("Interrupt received; refusing further writes, flushing what is buffered")
                 try:
-                    self._impl.cancel()
+                    self._impl.stop_accepting_writes()
                 finally:
                     raise KeyboardInterrupt
 

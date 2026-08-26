@@ -75,6 +75,11 @@ pub struct PyNominalDatasetStream {
     runtime_task: Option<JoinHandle<()>>,
     runtime: Option<StreamRuntime>,
     is_open: Arc<AtomicBool>,
+    /// Cleared to refuse further writes while the stream drains.
+    ///
+    /// Separate from `is_open` because it has to be settable from a shared reference: shutdown
+    /// begins on whichever thread caught the signal, while other threads may be mid-`enqueue`.
+    accepting_writes: Arc<AtomicBool>,
 }
 
 impl PyNominalDatasetStream {
@@ -96,8 +101,20 @@ impl PyNominalDatasetStream {
             .ok_or_else(|| PyRuntimeError::new_err("NOMINAL_TOKEN not set and no token provided"))
     }
 
+    /// Refuse a write once shutdown has begun, so the drain converges instead of chasing a
+    /// producer that keeps feeding it.
+    #[inline]
+    fn check_accepting(&self) -> PyResult<()> {
+        if self.accepting_writes.load(Ordering::Acquire) {
+            Ok(())
+        } else {
+            Err(PyRuntimeError::new_err("stream is shutting down"))
+        }
+    }
+
     /// Push one channel's points into the stream, releasing the GIL for the call.
     fn push_one(&self, py: Python<'_>, ch: ChannelDescriptor, points: PointsType) -> PyResult<()> {
+        self.check_accepting()?;
         let stream = self.stream()?;
         py.detach(|| stream.enqueue(&ch, points));
         Ok(())
@@ -112,6 +129,7 @@ impl PyNominalDatasetStream {
         py: Python<'_>,
         entries: Vec<(ChannelDescriptor, PointsType)>,
     ) -> PyResult<()> {
+        self.check_accepting()?;
         let stream = self.stream()?;
         py.detach(|| {
             for (ch, points) in entries {
@@ -136,6 +154,7 @@ impl PyNominalDatasetStream {
             runtime_task: None,
             runtime: None,
             is_open: Arc::new(AtomicBool::new(false)),
+            accepting_writes: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -210,12 +229,25 @@ impl PyNominalDatasetStream {
 
         self.runtime_task = Some(runtime_task);
         self.runtime = Some(runtime);
+        self.accepting_writes.store(true, Ordering::SeqCst);
         Ok(())
+    }
+
+    /// Refuse further writes without tearing anything down.
+    ///
+    /// Takes `&self` so a signal handler can call it while other threads are inside `enqueue`;
+    /// `close` needs `&mut self` and would fail to borrow in that situation. Everything already
+    /// enqueued is still drained and uploaded by the subsequent `close`.
+    #[pyo3(text_signature = "(self)")]
+    pub fn stop_accepting_writes(&self) {
+        info!("Refusing further writes; already-enqueued data will still be flushed");
+        self.accepting_writes.store(false, Ordering::SeqCst);
     }
 
     /// Graceful drain and teardown (releases GIL while draining and joining)
     #[pyo3(text_signature = "(self)")]
     pub fn close(&mut self, py: Python<'_>) -> PyResult<()> {
+        self.accepting_writes.store(false, Ordering::SeqCst);
         if let Some(StreamRuntime {
             stream,
             shutdown_tx,
