@@ -848,8 +848,14 @@ impl SeriesBuffer {
                 };
                 Series {
                     channel: Some(channel),
+                    // the protobuf `Series` owns its tags, so the shared map is copied out here --
+                    // once per channel per flush, rather than once per channel per write
                     tags: tags
-                        .map(|tags| tags.into_iter().collect())
+                        .map(|tags| {
+                            tags.iter()
+                                .map(|(key, value)| (key.clone(), value.clone()))
+                                .collect()
+                        })
                         .unwrap_or_default(),
                     points: Some(points_obj),
                 }
