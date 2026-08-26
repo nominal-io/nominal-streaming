@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use nominal_api::tonic::google::protobuf::Timestamp;
 use nominal_streaming::prelude::*;
@@ -26,11 +27,13 @@ pub fn parse_timestamp(timestamp: u64) -> Timestamp {
 /// with `tags={}` lands in one series rather than splitting into two. Both encode to an empty tag
 /// map on the wire, so this is purely about keying the buffer consistently.
 ///
-/// Callers writing many channels at once should call this once and clone the result, rather than
-/// rebuilding the map per channel.
-pub fn into_tag_map(tags: Option<HashMap<String, String>>) -> Option<BTreeMap<String, String>> {
+/// Callers writing many channels at once should call this once and clone the result: the clone is
+/// a refcount bump, so every channel in a wide record can share one map.
+pub fn into_tag_map(
+    tags: Option<HashMap<String, String>>,
+) -> Option<Arc<BTreeMap<String, String>>> {
     tags.filter(|tags| !tags.is_empty())
-        .map(|tags| tags.into_iter().collect())
+        .map(|tags| Arc::new(tags.into_iter().collect()))
 }
 
 /// Build a ChannelDescriptor from channel name and optional tags.
