@@ -5,7 +5,6 @@
 //! synchronous -- a buffer lock and a `Vec` push -- so python threads call it directly and the
 //! runtime is only ever used by the uploader to issue requests.
 
-use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::thread::{self};
 
@@ -23,7 +22,10 @@ use crate::lazy_dataset_stream_builder::LazyDatasetStreamBuilder;
 pub struct StreamRuntime {
     /// The underlying stream. Points are pushed straight into this from whichever python thread
     /// called `enqueue`.
-    pub stream: Arc<NominalDatasetStream>,
+    ///
+    /// Owned rather than shared on purpose: dropping this drains every buffered point, so sole
+    /// ownership is what makes `close` a drain rather than a silent no-op.
+    pub stream: NominalDatasetStream,
     /// Fire to let the runtime thread drop its tokio runtime and exit.
     ///
     /// Must not be fired until `stream` has been dropped: the uploader issues its requests on that
@@ -59,7 +61,7 @@ pub fn spawn_runtime_worker(
         match builder.build(runtime.handle().clone()) {
             Ok(stream) => {
                 let _ = rt_info_tx.send(Ok(StreamRuntime {
-                    stream: Arc::new(stream),
+                    stream,
                     shutdown_tx,
                 }));
             }

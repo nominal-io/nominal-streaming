@@ -80,7 +80,7 @@ pub struct PyNominalDatasetStream {
 impl PyNominalDatasetStream {
     /// Borrow the underlying stream or raise a python error if it hasn't started
     #[inline]
-    fn stream(&self) -> PyResult<&Arc<NominalDatasetStream>> {
+    fn stream(&self) -> PyResult<&NominalDatasetStream> {
         self.runtime
             .as_ref()
             .map(|rt| &rt.stream)
@@ -215,7 +215,8 @@ impl PyNominalDatasetStream {
         }) = self.runtime.take()
         {
             // Drop the stream first: its own `Drop` waits for every buffered point to be uploaded,
-            // and those uploads run on the runtime we are about to shut down.
+            // and those uploads run on the runtime we are about to shut down. `stream` is owned, so
+            // this is always the last reference and the drain always happens.
             info!("Dropping stream to drain buffered points");
             py.detach(|| drop(stream));
 

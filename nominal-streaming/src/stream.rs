@@ -436,15 +436,48 @@ impl NominalDatasetStream {
         });
     }
 
-    /// Enqueues points for many channels as one unit, blocking while both buffers are full.
+    /// Enqueues points for many channels, blocking while both buffers are full.
     ///
-    /// This reserves capacity and takes the buffer lock once for the whole batch, where the
-    /// equivalent run of [`enqueue`](Self::enqueue) calls would do both once per channel. For a
-    /// wide record -- thousands of channels sharing a timestamp -- that is the difference between
-    /// one buffer insertion and thousands of them.
+    /// This reserves capacity and takes the buffer lock once per batch, where the equivalent run of
+    /// [`enqueue`](Self::enqueue) calls would do both once per channel. For a wide record --
+    /// thousands of channels sharing a timestamp -- that is the difference between one buffer
+    /// insertion and thousands of them.
+    ///
+    /// A batch larger than `max_points_per_record` is admitted in several pieces rather than all at
+    /// once, so that one call can neither build a request larger than that limit nor hold the buffer
+    /// lock for longer than a full record's worth of work. A batch that already fits -- the case
+    /// this exists for -- is admitted whole, and its channels are guaranteed to share a request.
     pub fn enqueue_many(&self, entries: Vec<(ChannelDescriptor, PointsType)>) {
-        let new_count = entries.iter().map(|(_, points)| points_len(points)).sum();
+        let total: usize = entries.iter().map(|(_, points)| points_len(points)).sum();
 
+        if total <= self.opts.max_points_per_record {
+            self.enqueue_chunk(entries, total);
+            return;
+        }
+
+        let mut chunk: Vec<(ChannelDescriptor, PointsType)> = Vec::new();
+        let mut chunk_count = 0;
+
+        for (channel_descriptor, points) in entries {
+            let count = points_len(&points);
+
+            if chunk_count > 0 && chunk_count + count > self.opts.max_points_per_record {
+                self.enqueue_chunk(std::mem::take(&mut chunk), chunk_count);
+                chunk_count = 0;
+            }
+
+            // A single entry over the limit still goes through whole: the buffer admits an oversized
+            // batch into an empty buffer rather than splitting one channel's points across requests.
+            chunk_count += count;
+            chunk.push((channel_descriptor, points));
+        }
+
+        if !chunk.is_empty() {
+            self.enqueue_chunk(chunk, chunk_count);
+        }
+    }
+
+    fn enqueue_chunk(&self, entries: Vec<(ChannelDescriptor, PointsType)>, new_count: usize) {
         self.when_capacity(new_count, move |mut sb| {
             for (channel_descriptor, points) in entries {
                 sb.extend(&channel_descriptor, points)

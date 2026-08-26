@@ -278,6 +278,25 @@ mod tests {
         NominalDatasetStream::new_with_consumer(consumer, opts)
     }
 
+    /// Total double points in each request, in request order.
+    fn request_point_counts(requests: &[WriteRequestNominal]) -> Vec<usize> {
+        requests
+            .iter()
+            .map(|request| {
+                request
+                    .series
+                    .iter()
+                    .map(|series| {
+                        match series.points.as_ref().and_then(|p| p.points_type.as_ref()) {
+                            Some(PointsType::DoublePoints(points)) => points.points.len(),
+                            _ => 0,
+                        }
+                    })
+                    .sum::<usize>()
+            })
+            .collect()
+    }
+
     fn total_double_points(requests: &[WriteRequestNominal], channel_name: &str) -> usize {
         requests
             .iter()
@@ -422,6 +441,74 @@ mod tests {
                 "channel wide_{i} should have exactly one point"
             );
         }
+    }
+
+    #[test_log::test]
+    fn enqueue_many_splits_batches_larger_than_one_record() {
+        // create_test_stream caps a record at 1000 points; this batch is 2500
+        let (test_consumer, stream) = create_test_stream();
+
+        let entries: Vec<(ChannelDescriptor, PointsType)> = (0..250)
+            .map(|i| {
+                (
+                    ChannelDescriptor::new(format!("split_{i}")),
+                    (0..10)
+                        .map(|n| DoublePoint {
+                            timestamp: Some(Timestamp {
+                                seconds: 1_700_000_000,
+                                nanos: n,
+                            }),
+                            value: i as f64,
+                        })
+                        .collect::<Vec<_>>()
+                        .into_points(),
+                )
+            })
+            .collect();
+
+        stream.enqueue_many(entries);
+
+        drop(stream); // wait for points to flush
+
+        let requests = test_consumer.requests.lock().unwrap();
+        let counts = request_point_counts(&requests);
+
+        assert_eq!(counts.iter().sum::<usize>(), 2500, "no points may be lost");
+        assert!(
+            counts.len() > 1,
+            "an oversized batch should not arrive as one request"
+        );
+        for count in &counts {
+            assert!(
+                *count <= 1000,
+                "request of {count} points exceeds the 1000 point record limit: {counts:?}"
+            );
+        }
+    }
+
+    #[test_log::test]
+    fn enqueue_many_keeps_a_single_oversized_channel_whole() {
+        // one channel carrying more than a record's worth is not split: the buffer takes an
+        // oversized batch into an empty buffer rather than dividing one channel across requests
+        let (test_consumer, stream) = create_test_stream();
+
+        let points: Vec<DoublePoint> = (0..2500)
+            .map(|n| DoublePoint {
+                timestamp: Some(Timestamp {
+                    seconds: 1_700_000_000,
+                    nanos: n,
+                }),
+                value: n as f64,
+            })
+            .collect();
+
+        stream.enqueue_many(vec![(ChannelDescriptor::new("big"), points.into_points())]);
+
+        drop(stream); // wait for points to flush
+
+        let requests = test_consumer.requests.lock().unwrap();
+        assert_eq!(total_double_points(&requests, "big"), 2500);
+        assert_eq!(request_point_counts(&requests), vec![2500]);
     }
 
     #[test_log::test]
