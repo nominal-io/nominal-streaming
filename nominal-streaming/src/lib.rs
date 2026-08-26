@@ -192,6 +192,7 @@ pub mod prelude {
     pub use nominal_api::tonic::io::nominal::scout::api::proto::WriteRequestNominal;
 
     pub use crate::consumer::NominalCoreConsumer;
+    pub use crate::stream::Cancelled;
     pub use crate::stream::NominalDatasetStream;
     #[expect(deprecated)]
     pub use crate::stream::NominalDatasourceStream;

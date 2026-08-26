@@ -99,8 +99,8 @@ impl PyNominalDatasetStream {
     /// Push one channel's points into the stream, releasing the GIL for the call.
     fn push_one(&self, py: Python<'_>, ch: ChannelDescriptor, points: PointsType) -> PyResult<()> {
         let stream = self.stream()?;
-        py.detach(|| stream.enqueue(&ch, points));
-        Ok(())
+        py.detach(|| stream.try_enqueue(&ch, points))
+            .map_err(|_| PyRuntimeError::new_err("cancelled or closed"))
     }
 
     /// Push many channels' points into the stream as one unit, releasing the GIL for the call.
@@ -110,8 +110,8 @@ impl PyNominalDatasetStream {
         entries: Vec<(ChannelDescriptor, PointsType)>,
     ) -> PyResult<()> {
         let stream = self.stream()?;
-        py.detach(|| stream.enqueue_many(entries));
-        Ok(())
+        py.detach(|| stream.try_enqueue_many(entries))
+            .map_err(|_| PyRuntimeError::new_err("cancelled or closed"))
     }
 }
 
@@ -236,13 +236,16 @@ impl PyNominalDatasetStream {
         Ok(())
     }
 
-    /// Teardown used by the SIGINT handler.
+    /// Fast teardown (used by the SIGINT handler).
     ///
-    /// NOTE: this still drains buffered points -- it is currently just `close`. Interrupting a
-    /// drain in progress needs cancellation support in the underlying stream.
+    /// Abandons buffered points rather than waiting for them to upload, and releases any thread
+    /// blocked in `enqueue` waiting on backpressure.
     #[pyo3(text_signature = "(self)")]
     pub fn cancel(&mut self, py: Python<'_>) -> PyResult<()> {
-        if self.runtime.is_none() {
+        if let Some(rt) = &self.runtime {
+            info!("Cancel requested; abandoning buffered points");
+            rt.stream.cancel();
+        } else {
             warn!("Cancel requested, but stream not open...");
         }
 

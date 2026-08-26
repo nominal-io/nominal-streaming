@@ -246,9 +246,29 @@ impl NominalDatasetStreamBuilder {
 #[deprecated]
 pub type NominalDatasourceStream = NominalDatasetStream;
 
+/// Returned when the stream was [cancelled](NominalDatasetStream::cancel) before the points could
+/// be buffered. The points were dropped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Cancelled;
+
+impl std::fmt::Display for Cancelled {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("stream was cancelled")
+    }
+}
+
+impl std::error::Error for Cancelled {}
+
+/// How long a writer blocked on backpressure sleeps before re-checking for cancellation.
+///
+/// A flush notifies waiters directly, so this only bounds how long a writer stays blocked when no
+/// flush is ever going to come -- which is exactly the case cancellation exists to escape.
+const CANCEL_POLL_INTERVAL: Duration = Duration::from_millis(50);
+
 pub struct NominalDatasetStream {
     opts: NominalStreamOpts,
     running: Arc<AtomicBool>,
+    cancelled: Arc<AtomicBool>,
     unflushed_points: Arc<AtomicUsize>,
     primary_buffer: Arc<SeriesBuffer>,
     secondary_buffer: Arc<SeriesBuffer>,
@@ -286,6 +306,7 @@ impl NominalDatasetStream {
             crossbeam_channel::bounded::<(WriteRequestNominal, usize)>(opts.max_buffered_requests);
 
         let running = Arc::new(AtomicBool::new(true));
+        let cancelled = Arc::new(AtomicBool::new(false));
         let unflushed_points = Arc::new(AtomicUsize::new(0));
 
         #[cfg(feature = "instrument")]
@@ -298,12 +319,14 @@ impl NominalDatasetStream {
             .spawn({
                 let points_buffer = Arc::clone(&primary_buffer);
                 let running = running.clone();
+                let cancelled = cancelled.clone();
                 let tx = request_tx.clone();
                 #[cfg(feature = "instrument")]
                 let bp_ns = Arc::clone(&batch_processor_ns);
                 move || {
                     batch_processor(
                         running,
+                        cancelled,
                         points_buffer,
                         tx,
                         opts.max_request_delay,
@@ -319,11 +342,13 @@ impl NominalDatasetStream {
             .spawn({
                 let secondary_buffer = Arc::clone(&secondary_buffer);
                 let running = running.clone();
+                let cancelled = cancelled.clone();
                 #[cfg(feature = "instrument")]
                 let bp_ns = Arc::clone(&batch_processor_ns);
                 move || {
                     batch_processor(
                         running,
+                        cancelled,
                         secondary_buffer,
                         request_tx,
                         opts.max_request_delay,
@@ -364,6 +389,7 @@ impl NominalDatasetStream {
         NominalDatasetStream {
             opts,
             running,
+            cancelled,
             unflushed_points,
             primary_buffer,
             secondary_buffer,
@@ -427,13 +453,24 @@ impl NominalDatasetStream {
         }
     }
 
+    /// Points are dropped if the stream has been [cancelled](Self::cancel); use
+    /// [`try_enqueue`](Self::try_enqueue) to observe that.
     pub fn enqueue(&self, channel_descriptor: &ChannelDescriptor, new_points: impl IntoPoints) {
+        let _ = self.try_enqueue(channel_descriptor, new_points);
+    }
+
+    /// As [`enqueue`](Self::enqueue), but reports whether the points were accepted.
+    pub fn try_enqueue(
+        &self,
+        channel_descriptor: &ChannelDescriptor,
+        new_points: impl IntoPoints,
+    ) -> Result<(), Cancelled> {
         let new_points = new_points.into_points();
         let new_count = points_len(&new_points);
 
         self.when_capacity(new_count, |mut sb| {
             sb.extend(channel_descriptor, new_points)
-        });
+        })
     }
 
     /// Enqueues points for many channels as one unit, blocking while both buffers are full.
@@ -442,17 +479,57 @@ impl NominalDatasetStream {
     /// equivalent run of [`enqueue`](Self::enqueue) calls would do both once per channel. For a
     /// wide record -- thousands of channels sharing a timestamp -- that is the difference between
     /// one buffer insertion and thousands of them.
+    /// Points are dropped if the stream has been [cancelled](Self::cancel); use
+    /// [`try_enqueue_many`](Self::try_enqueue_many) to observe that.
     pub fn enqueue_many(&self, entries: Vec<(ChannelDescriptor, PointsType)>) {
+        let _ = self.try_enqueue_many(entries);
+    }
+
+    /// As [`enqueue_many`](Self::enqueue_many), but reports whether the points were accepted.
+    pub fn try_enqueue_many(
+        &self,
+        entries: Vec<(ChannelDescriptor, PointsType)>,
+    ) -> Result<(), Cancelled> {
         let new_count = entries.iter().map(|(_, points)| points_len(points)).sum();
 
         self.when_capacity(new_count, move |mut sb| {
             for (channel_descriptor, points) in entries {
                 sb.extend(&channel_descriptor, points)
             }
-        });
+        })
     }
 
-    fn when_capacity(&self, new_count: usize, callback: impl FnOnce(SeriesBufferGuard)) {
+    /// Releases any writer blocked in [`enqueue`](Self::enqueue) and abandons buffered points.
+    ///
+    /// Unlike dropping the stream -- which waits for everything buffered to be uploaded -- this
+    /// gives up on the backlog. It exists for interactive teardown (Ctrl+C), where waiting out the
+    /// upload queue is worse than losing it.
+    pub fn cancel(&self) {
+        info!("cancelling stream; buffered points will not be flushed");
+        self.cancelled.store(true, Ordering::Release);
+        self.running.store(false, Ordering::Release);
+
+        // wake everything that might be parked so it observes the flags promptly
+        self.primary_handle.thread().unpark();
+        self.secondary_handle.thread().unpark();
+        self.primary_buffer.notify_all();
+        self.secondary_buffer.notify_all();
+    }
+
+    /// Whether [`cancel`](Self::cancel) has been called.
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Acquire)
+    }
+
+    fn when_capacity(
+        &self,
+        new_count: usize,
+        callback: impl FnOnce(SeriesBufferGuard),
+    ) -> Result<(), Cancelled> {
+        if self.cancelled.load(Ordering::Acquire) {
+            return Err(Cancelled);
+        }
+
         self.unflushed_points
             .fetch_add(new_count, Ordering::Release);
 
@@ -475,8 +552,16 @@ impl NominalDatasetStream {
                 &self.secondary_buffer
             };
 
-            buf.on_notify(callback);
+            if let Err(cancelled) = buf.on_notify(&self.cancelled, callback) {
+                // The points never reached a buffer, so give back the reservation made above --
+                // otherwise `drop` waits forever on points that will never be flushed.
+                self.unflushed_points
+                    .fetch_sub(new_count, Ordering::Release);
+                return Err(cancelled);
+            }
         }
+
+        Ok(())
     }
 }
 
@@ -530,11 +615,13 @@ where
             self.channel,
             self.unflushed.len()
         );
-        self.stream.when_capacity(self.unflushed.len(), |mut buf| {
+        // On cancellation the callback never runs, so `unflushed` is left intact and the points
+        // are abandoned along with the stream.
+        let _ = self.stream.when_capacity(self.unflushed.len(), |mut buf| {
             let to_flush: Vec<T> = self.unflushed.drain(..).collect();
             buf.extend(&self.channel, to_flush);
             self.last_flushed_at = Instant::now();
-        })
+        });
     }
 }
 
@@ -876,12 +963,34 @@ impl SeriesBuffer {
         self.count.load(Ordering::Acquire)
     }
 
-    fn on_notify(&self, on_notify: impl FnOnce(SeriesBufferGuard)) {
+    /// Waits for this buffer to be flushed, then runs `on_notify` with the buffer lock held.
+    ///
+    /// Returns `Err(Cancelled)` if `cancelled` is set while waiting, so that a writer blocked on
+    /// backpressure is released during teardown rather than waiting on a flush that is not coming.
+    fn on_notify(
+        &self,
+        cancelled: &AtomicBool,
+        on_notify: impl FnOnce(SeriesBufferGuard),
+    ) -> Result<(), Cancelled> {
         let mut points_lock = self.points.lock();
         // concurrency bug without this - the buffer could have been emptied since we
         // checked the count, so this will wait forever & block any new points from entering
         if !points_lock.is_empty() {
-            self.condvar.wait(&mut points_lock);
+            loop {
+                if cancelled.load(Ordering::Acquire) {
+                    debug!("cancelled while waiting for buffer to flush");
+                    return Err(Cancelled);
+                }
+                // Wait in bounded steps: a flush notifies us directly, so the timeout only decides
+                // how soon a cancellation is noticed when no flush is coming.
+                if !self
+                    .condvar
+                    .wait_for(&mut points_lock, CANCEL_POLL_INTERVAL)
+                    .timed_out()
+                {
+                    break;
+                }
+            }
         } else {
             debug!("buffer emptied since last check, skipping condvar wait");
         }
@@ -889,15 +998,21 @@ impl SeriesBuffer {
             sb: points_lock,
             count: &self.count,
         });
+        Ok(())
     }
 
     fn notify(&self) -> bool {
         self.condvar.notify_one()
     }
+
+    fn notify_all(&self) -> usize {
+        self.condvar.notify_all()
+    }
 }
 
 fn batch_processor(
     running: Arc<AtomicBool>,
+    cancelled: Arc<AtomicBool>,
     points_buffer: Arc<SeriesBuffer>,
     request_chan: crossbeam_channel::Sender<(WriteRequestNominal, usize)>,
     max_request_delay: Duration,
@@ -905,6 +1020,11 @@ fn batch_processor(
 ) {
     loop {
         debug!("starting processor loop");
+        if cancelled.load(Ordering::Acquire) {
+            debug!("batch processor thread exiting due to cancellation");
+            drop(request_chan);
+            break;
+        }
         if points_buffer.is_empty() {
             if !running.load(Ordering::Acquire) {
                 debug!("batch processor thread exiting due to running flag");
@@ -954,6 +1074,10 @@ impl Drop for NominalDatasetStream {
     fn drop(&mut self) {
         debug!("starting drop for NominalDatasetStream");
         self.running.store(false, Ordering::Release);
+        if self.cancelled.load(Ordering::Acquire) {
+            debug!("stream was cancelled; dropping without waiting for buffered points");
+            return;
+        }
         loop {
             let count = self.unflushed_points.load(Ordering::Acquire);
             if count == 0 {
