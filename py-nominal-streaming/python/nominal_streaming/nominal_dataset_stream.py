@@ -277,7 +277,14 @@ class NominalDatasetStream:
             value: Value to write to the specified channel.
             tags: Key-value tags associated with the data being uploaded.
         """
-        self._impl.enqueue(channel_name, _parse_timestamp(timestamp), value, {**tags} if tags else None)
+        # `type(...) is int` inline rather than calling _parse_timestamp: at ~0.1us per enqueue,
+        # the function call itself is a measurable share of the write.
+        self._impl.enqueue(
+            channel_name,
+            timestamp if type(timestamp) is int else _parse_timestamp(timestamp),
+            value,
+            {**tags} if tags else None,
+        )
 
     def enqueue_batch(
         self,
@@ -300,9 +307,18 @@ class NominalDatasetStream:
             values: Values to write to the specified channel.
             tags: Key-value tags associated with the data being uploaded.
         """
-        self._impl.enqueue_batch(
-            channel_name, [_parse_timestamp(ts) for ts in timestamps], values, {**tags} if tags else None
-        )
+        normalized_tags = {**tags} if tags else None
+        try:
+            # Fast path: a sequence of integral nanoseconds needs no work here, and Rust already
+            # validates every element while extracting it. Rebuilding the sequence in Python costs
+            # more than the rest of the call at any real batch size.
+            # The ignore is the point of the fast path: we hand Rust the caller's sequence and use
+            # its type check as ours, rather than paying for a second one in Python.
+            self._impl.enqueue_batch(channel_name, timestamps, values, normalized_tags)  # type: ignore[arg-type]
+        except TypeError:
+            # Some timestamp (or value) was not integral; normalize and let Rust re-check. Nothing
+            # was enqueued by the attempt above -- extraction happens before anything is written.
+            self._impl.enqueue_batch(channel_name, [_parse_timestamp(ts) for ts in timestamps], values, normalized_tags)
 
     def enqueue_from_dict(
         self,
@@ -320,7 +336,13 @@ class NominalDatasetStream:
             channel_values: A dictionary mapping channel names to their respective values.
             tags: Key-value tags associated with the data being uploaded.
         """
-        self._impl.enqueue_from_dict(_parse_timestamp(timestamp), {**channel_values}, {**tags} if tags else None)
+        # A wide record can carry thousands of channels, so copying the mapping would cost more
+        # than the write itself. Plain dicts go straight through; other Mappings still need one.
+        self._impl.enqueue_from_dict(
+            timestamp if type(timestamp) is int else _parse_timestamp(timestamp),
+            channel_values if type(channel_values) is dict else {**channel_values},
+            {**tags} if tags else None,
+        )
 
     def enqueue_struct(
         self,
@@ -344,7 +366,7 @@ class NominalDatasetStream:
         """
         self._impl.enqueue_struct(
             channel_name,
-            _parse_timestamp(timestamp),
+            timestamp if type(timestamp) is int else _parse_timestamp(timestamp),
             value,
             {**tags} if tags else None,
         )
@@ -368,7 +390,7 @@ class NominalDatasetStream:
         """
         self._impl.enqueue_float_array(
             channel_name,
-            _parse_timestamp(timestamp),
+            timestamp if type(timestamp) is int else _parse_timestamp(timestamp),
             value,
             {**tags} if tags else None,
         )
@@ -390,7 +412,7 @@ class NominalDatasetStream:
         """
         self._impl.enqueue_string_array(
             channel_name,
-            _parse_timestamp(timestamp),
+            timestamp if type(timestamp) is int else _parse_timestamp(timestamp),
             value,
             {**tags} if tags else None,
         )
