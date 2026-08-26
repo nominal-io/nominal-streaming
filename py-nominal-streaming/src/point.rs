@@ -1,9 +1,11 @@
 //! Helpers for translating Python arguments into nominal_streaming types.
 
+use std::collections::BTreeMap;
 use std::collections::HashMap;
 
 use nominal_api::tonic::google::protobuf::Timestamp;
 use nominal_streaming::prelude::*;
+use nominal_streaming::types::IntoPoints;
 use pyo3::exceptions::PyTypeError;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
@@ -18,44 +20,28 @@ pub fn parse_timestamp(timestamp: u64) -> Timestamp {
     Timestamp { seconds, nanos }
 }
 
+/// Convert python tags into the descriptor's tag representation.
+///
+/// Absent and empty tags both become `None` so that the same channel written with `tags=None` and
+/// with `tags={}` lands in one series rather than splitting into two. Both encode to an empty tag
+/// map on the wire, so this is purely about keying the buffer consistently.
+///
+/// Callers writing many channels at once should call this once and clone the result, rather than
+/// rebuilding the map per channel.
+pub fn into_tag_map(tags: Option<HashMap<String, String>>) -> Option<BTreeMap<String, String>> {
+    tags.filter(|tags| !tags.is_empty())
+        .map(|tags| tags.into_iter().collect())
+}
+
 /// Build a ChannelDescriptor from channel name and optional tags.
 pub fn description_with_tags(
     name: &str,
     tags: Option<HashMap<String, String>>,
 ) -> ChannelDescriptor {
-    ChannelDescriptor::with_tags(
-        name.to_string(),
-        tags.map_or_else(Vec::new, |t| t.into_iter().collect()),
-    )
-}
-
-/// The typed payload that crosses the sync => async boundary.
-#[derive(Clone, Debug)]
-pub enum EnqueueItem {
-    Doubles {
-        ch: ChannelDescriptor,
-        points: Vec<DoublePoint>,
-    },
-    Ints {
-        ch: ChannelDescriptor,
-        points: Vec<IntegerPoint>,
-    },
-    Strings {
-        ch: ChannelDescriptor,
-        points: Vec<StringPoint>,
-    },
-    Structs {
-        ch: ChannelDescriptor,
-        points: Vec<StructPoint>,
-    },
-    DoubleArrays {
-        ch: ChannelDescriptor,
-        points: Vec<DoubleArrayPoint>,
-    },
-    StringArrays {
-        ch: ChannelDescriptor,
-        points: Vec<StringArrayPoint>,
-    },
+    ChannelDescriptor {
+        name: name.to_string(),
+        tags: into_tag_map(tags),
+    }
 }
 
 /// Ensure the given lists of timestamps and values have the same length
@@ -106,101 +92,78 @@ where
 
 // ---- Single-point constructors ----------------------------------------------
 
-pub fn single_double(ch: ChannelDescriptor, ts: Timestamp, v: f64) -> EnqueueItem {
-    EnqueueItem::Doubles {
-        ch,
-        points: vec![DoublePoint {
-            timestamp: Some(ts),
-            value: v,
-        }],
-    }
-}
-pub fn single_int(ch: ChannelDescriptor, ts: Timestamp, v: i64) -> EnqueueItem {
-    EnqueueItem::Ints {
-        ch,
-        points: vec![IntegerPoint {
-            timestamp: Some(ts),
-            value: v,
-        }],
-    }
-}
-pub fn single_string(ch: ChannelDescriptor, ts: Timestamp, v: String) -> EnqueueItem {
-    EnqueueItem::Strings {
-        ch,
-        points: vec![StringPoint {
-            timestamp: Some(ts),
-            value: v,
-        }],
-    }
-}
-pub fn single_struct(ch: ChannelDescriptor, ts: Timestamp, json_string: String) -> EnqueueItem {
-    EnqueueItem::Structs {
-        ch,
-        points: vec![StructPoint {
-            timestamp: Some(ts),
-            json_string,
-        }],
-    }
+pub fn single_double(ts: Timestamp, v: f64) -> PointsType {
+    vec![DoublePoint {
+        timestamp: Some(ts),
+        value: v,
+    }]
+    .into_points()
 }
 
-pub fn single_double_array(ch: ChannelDescriptor, ts: Timestamp, value: Vec<f64>) -> EnqueueItem {
-    EnqueueItem::DoubleArrays {
-        ch,
-        points: vec![DoubleArrayPoint {
-            timestamp: Some(ts),
-            value,
-        }],
-    }
+pub fn single_int(ts: Timestamp, v: i64) -> PointsType {
+    vec![IntegerPoint {
+        timestamp: Some(ts),
+        value: v,
+    }]
+    .into_points()
 }
 
-pub fn single_string_array(
-    ch: ChannelDescriptor,
-    ts: Timestamp,
-    value: Vec<String>,
-) -> EnqueueItem {
-    EnqueueItem::StringArrays {
-        ch,
-        points: vec![StringArrayPoint {
-            timestamp: Some(ts),
-            value,
-        }],
-    }
+pub fn single_string(ts: Timestamp, v: String) -> PointsType {
+    vec![StringPoint {
+        timestamp: Some(ts),
+        value: v,
+    }]
+    .into_points()
+}
+
+pub fn single_struct(ts: Timestamp, json_string: String) -> PointsType {
+    vec![StructPoint {
+        timestamp: Some(ts),
+        json_string,
+    }]
+    .into_points()
+}
+
+pub fn single_double_array(ts: Timestamp, value: Vec<f64>) -> PointsType {
+    vec![DoubleArrayPoint {
+        timestamp: Some(ts),
+        value,
+    }]
+    .into_points()
+}
+
+pub fn single_string_array(ts: Timestamp, value: Vec<String>) -> PointsType {
+    vec![StringArrayPoint {
+        timestamp: Some(ts),
+        value,
+    }]
+    .into_points()
 }
 
 // ---- Series (timestamps + values) constructors ------------------------------
 
-pub fn series_doubles(
-    ch: ChannelDescriptor,
-    tss: Vec<Timestamp>,
-    vals: Vec<f64>,
-) -> PyResult<EnqueueItem> {
-    let points = make_points(tss, vals, |ts, v| DoublePoint {
+pub fn series_doubles(tss: Vec<Timestamp>, vals: Vec<f64>) -> PyResult<PointsType> {
+    Ok(make_points(tss, vals, |ts, v| DoublePoint {
         timestamp: Some(ts),
         value: v,
-    })?;
-    Ok(EnqueueItem::Doubles { ch, points })
+    })?
+    .into_points())
 }
-pub fn series_ints(
-    ch: ChannelDescriptor,
-    tss: Vec<Timestamp>,
-    vals: Vec<i64>,
-) -> PyResult<EnqueueItem> {
-    let points = make_points(tss, vals, |ts, v| IntegerPoint {
+
+pub fn series_ints(tss: Vec<Timestamp>, vals: Vec<i64>) -> PyResult<PointsType> {
+    Ok(make_points(tss, vals, |ts, v| IntegerPoint {
         timestamp: Some(ts),
         value: v,
-    })?;
-    Ok(EnqueueItem::Ints { ch, points })
+    })?
+    .into_points())
 }
-pub fn series_strings(
-    ch: ChannelDescriptor,
-    tss: Vec<Timestamp>,
-    vals: Vec<String>,
-) -> PyResult<EnqueueItem> {
-    let points = make_points(tss, vals, |ts, v| StringPoint {
+
+pub fn series_strings(tss: Vec<Timestamp>, vals: Vec<String>) -> PyResult<PointsType> {
+    Ok(make_points(tss, vals, |ts, v| StringPoint {
         timestamp: Some(ts),
         value: v,
-    })?;
-    Ok(EnqueueItem::Strings { ch, points })
+    })?
+    .into_points())
 }
 
 // ---- Python collection helpers ----------------------------------------------

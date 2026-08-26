@@ -224,6 +224,7 @@ mod tests {
     use crate::simulated_consumer::SimulatedNetworkConsumer;
     use crate::simulated_consumer::SimulatedNetworkFailure;
     use crate::simulated_consumer::SimulatedRetryPolicy;
+    use crate::types::IntoPoints;
 
     #[derive(Debug)]
     struct TestDatasourceStream {
@@ -378,6 +379,91 @@ mod tests {
         } else {
             panic!("unexpected data type");
         }
+    }
+
+    #[test_log::test]
+    fn enqueue_many_writes_every_channel_in_one_batch() {
+        let (test_consumer, stream) = create_test_stream();
+
+        let timestamp = Timestamp {
+            seconds: 1_700_000_000,
+            nanos: 0,
+        };
+
+        // a wide record: many channels sharing one timestamp, written as a single unit
+        let entries: Vec<(ChannelDescriptor, PointsType)> = (0..250)
+            .map(|i| {
+                (
+                    ChannelDescriptor::new(format!("wide_{i}")),
+                    vec![DoublePoint {
+                        timestamp: Some(timestamp),
+                        value: i as f64,
+                    }]
+                    .into_points(),
+                )
+            })
+            .collect();
+
+        stream.enqueue_many(entries);
+
+        drop(stream); // wait for points to flush
+
+        let requests = test_consumer.requests.lock().unwrap();
+        let series: Vec<_> = requests
+            .iter()
+            .flat_map(|request| request.series.iter())
+            .collect();
+
+        assert_eq!(series.len(), 250, "every channel should be represented");
+        for i in 0..250 {
+            assert_eq!(
+                total_double_points(&requests, &format!("wide_{i}")),
+                1,
+                "channel wide_{i} should have exactly one point"
+            );
+        }
+    }
+
+    #[test_log::test]
+    fn enqueue_many_appends_to_channels_already_buffered() {
+        let (test_consumer, stream) = create_test_stream();
+
+        let channel = ChannelDescriptor::with_tags("shared", [("site", "a1")]);
+        let point = |nanos| {
+            vec![DoublePoint {
+                timestamp: Some(Timestamp {
+                    seconds: 1_700_000_000,
+                    nanos,
+                }),
+                value: nanos as f64,
+            }]
+            .into_points()
+        };
+
+        // the same channel, reached once through enqueue and once through enqueue_many, must land
+        // in one series rather than splitting
+        stream.enqueue(&channel, point(1));
+        stream.enqueue_many(vec![(channel.clone(), point(2))]);
+
+        drop(stream); // wait for points to flush
+
+        let requests = test_consumer.requests.lock().unwrap();
+        assert_eq!(total_double_points(&requests, "shared"), 2);
+        let series: Vec<_> = requests
+            .iter()
+            .flat_map(|request| request.series.iter())
+            .filter(|series| {
+                series
+                    .channel
+                    .as_ref()
+                    .is_some_and(|channel| channel.name == "shared")
+            })
+            .collect();
+        assert_eq!(series.len(), 1, "points should share one series");
+        assert_eq!(
+            series[0].tags,
+            HashMap::from([("site".to_string(), "a1".to_string())])
+        );
     }
 
     #[test_log::test]

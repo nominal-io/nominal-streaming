@@ -436,6 +436,22 @@ impl NominalDatasetStream {
         });
     }
 
+    /// Enqueues points for many channels as one unit, blocking while both buffers are full.
+    ///
+    /// This reserves capacity and takes the buffer lock once for the whole batch, where the
+    /// equivalent run of [`enqueue`](Self::enqueue) calls would do both once per channel. For a
+    /// wide record -- thousands of channels sharing a timestamp -- that is the difference between
+    /// one buffer insertion and thousands of them.
+    pub fn enqueue_many(&self, entries: Vec<(ChannelDescriptor, PointsType)>) {
+        let new_count = entries.iter().map(|(_, points)| points_len(points)).sum();
+
+        self.when_capacity(new_count, move |mut sb| {
+            for (channel_descriptor, points) in entries {
+                sb.extend(&channel_descriptor, points)
+            }
+        });
+    }
+
     fn when_capacity(&self, new_count: usize, callback: impl FnOnce(SeriesBufferGuard)) {
         self.unflushed_points
             .fetch_add(new_count, Ordering::Release);
