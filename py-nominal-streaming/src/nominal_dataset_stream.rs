@@ -120,10 +120,7 @@ impl PyNominalDatasetStream {
         Ok(())
     }
 
-    /// Push many channels' points into the stream, releasing the GIL for the whole run.
-    ///
-    /// One `detach` for the batch rather than one per channel: the per-channel cost is a buffer
-    /// lock and a map insert, so re-acquiring the GIL between them would dominate.
+    /// Push many channels' points into the stream as one unit, releasing the GIL for the call.
     fn push_many(
         &self,
         py: Python<'_>,
@@ -131,11 +128,7 @@ impl PyNominalDatasetStream {
     ) -> PyResult<()> {
         self.check_accepting()?;
         let stream = self.stream()?;
-        py.detach(|| {
-            for (ch, points) in entries {
-                stream.enqueue(&ch, points);
-            }
-        });
+        py.detach(|| stream.enqueue_many(entries));
         Ok(())
     }
 }
