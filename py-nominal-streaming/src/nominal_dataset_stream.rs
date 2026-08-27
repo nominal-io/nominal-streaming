@@ -34,18 +34,14 @@ fn json_dumps<'py>(py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
     Ok(cached.bind(py).clone())
 }
 
-fn extract_single_enqueue_item(
-    channel_descriptor: ChannelDescriptor,
-    timestamp: Timestamp,
-    value: &Bound<'_, PyAny>,
-) -> Result<EnqueueItem, PyErr> {
+fn extract_single_points(timestamp: Timestamp, value: &Bound<'_, PyAny>) -> PyResult<PointsType> {
     // Try extractions in order: float → int → string
     if let Ok(v) = value.extract::<f64>() {
-        Ok(single_double(channel_descriptor, timestamp, v))
+        Ok(single_double(timestamp, v))
     } else if let Ok(v) = value.extract::<i64>() {
-        Ok(single_int(channel_descriptor, timestamp, v))
+        Ok(single_int(timestamp, v))
     } else if let Ok(v) = value.extract::<String>() {
-        Ok(single_string(channel_descriptor, timestamp, v))
+        Ok(single_string(timestamp, v))
     } else {
         Err(pyo3::exceptions::PyTypeError::new_err(
             "value must be float, int, or str",
@@ -53,40 +49,47 @@ fn extract_single_enqueue_item(
     }
 }
 
-fn extract_series_enqueue_item(
-    channel_descriptor: ChannelDescriptor,
+fn extract_series_points(
     timestamps: Vec<Timestamp>,
     values: &Bound<'_, PyAny>,
-) -> Result<EnqueueItem, PyErr> {
+) -> PyResult<PointsType> {
     match classify_values(values)? {
-        ValueKind::Floats => {
-            series_doubles(channel_descriptor, timestamps, extract_vec_f64(values)?)
-        }
-        ValueKind::Ints => series_ints(channel_descriptor, timestamps, extract_vec_i64(values)?),
-        ValueKind::Strings => {
-            series_strings(channel_descriptor, timestamps, extract_vec_string(values)?)
-        }
+        ValueKind::Floats => series_doubles(timestamps, extract_vec_f64(values)?),
+        ValueKind::Ints => series_ints(timestamps, extract_vec_i64(values)?),
+        ValueKind::Strings => series_strings(timestamps, extract_vec_string(values)?),
     }
 }
 
 /// The PyNominalDatasetStream is a thin layer bound to python that handles two main concerns:
 /// - Configuring and managing a tokio runtime for running streaming code
 /// - Passing data from python, converting it to standard rust types, and pushing into streaming code.
+///
+/// Enqueued points go straight into the underlying stream from the calling python thread.
+/// `NominalDatasetStream::enqueue` is synchronous and `Sync`, so there is nothing to hand off to the
+/// runtime -- it exists only for the uploader. The GIL is released around each call, both so that
+/// other python threads run while the uploader is caught up with and so that several python threads
+/// can enqueue concurrently, contending only on the stream's own buffer lock.
 #[pyclass]
 pub struct PyNominalDatasetStream {
     builder: LazyDatasetStreamBuilder,
     runtime_task: Option<JoinHandle<()>>,
     runtime: Option<StreamRuntime>,
     is_open: Arc<AtomicBool>,
+    /// Cleared to refuse further writes while the stream drains.
+    ///
+    /// Separate from `is_open` because it has to be settable from a shared reference: shutdown
+    /// begins on whichever thread caught the signal, while other threads may be mid-`enqueue`.
+    accepting_writes: Arc<AtomicBool>,
 }
 
 impl PyNominalDatasetStream {
-    /// Borrow the active runtime or raise a python error if it hasn't started
+    /// Borrow the underlying stream or raise a python error if it hasn't started
     #[inline]
-    fn runtime(&self) -> PyResult<&StreamRuntime> {
+    fn stream(&self) -> PyResult<&NominalDatasetStream> {
         self.runtime
             .as_ref()
-            .ok_or_else(|| PyRuntimeError::new_err("runtime not started"))
+            .map(|rt| &rt.stream)
+            .ok_or_else(|| PyRuntimeError::new_err("stream not open"))
     }
 
     /// Extract nominal api token from env or overridden by argument
@@ -98,33 +101,42 @@ impl PyNominalDatasetStream {
             .ok_or_else(|| PyRuntimeError::new_err("NOMINAL_TOKEN not set and no token provided"))
     }
 
-    fn send_one(&self, py: Python<'_>, item: EnqueueItem) -> PyResult<()> {
-        let runtime = self.runtime()?;
-        py.detach(|| {
-            runtime.runtime_handle.block_on(async move {
-                tokio::select! {
-                    _ = runtime.cancel_token.cancelled() => Err(()),        // cancelled
-                    r = runtime.ingest_tx.send(item) => r.map_err(|_| ()),  // sent or cancelled
-                }
-            })
-        })
-        .map_err(|_| PyRuntimeError::new_err("cancelled or closed"))
+    /// Refuse a write once shutdown has begun, so the drain converges instead of chasing a
+    /// producer that keeps feeding it.
+    #[inline]
+    fn check_accepting(&self) -> PyResult<()> {
+        if self.accepting_writes.load(Ordering::Acquire) {
+            Ok(())
+        } else {
+            Err(PyRuntimeError::new_err("stream is shutting down"))
+        }
     }
 
-    fn send_many(&self, py: Python<'_>, items: Vec<EnqueueItem>) -> PyResult<()> {
-        let runtime = self.runtime()?;
+    /// Push one channel's points into the stream, releasing the GIL for the call.
+    fn push_one(&self, py: Python<'_>, ch: ChannelDescriptor, points: PointsType) -> PyResult<()> {
+        self.check_accepting()?;
+        let stream = self.stream()?;
+        py.detach(|| stream.enqueue(&ch, points));
+        Ok(())
+    }
+
+    /// Push many channels' points into the stream, releasing the GIL for the whole run.
+    ///
+    /// One `detach` for the batch rather than one per channel: the per-channel cost is a buffer
+    /// lock and a map insert, so re-acquiring the GIL between them would dominate.
+    fn push_many(
+        &self,
+        py: Python<'_>,
+        entries: Vec<(ChannelDescriptor, PointsType)>,
+    ) -> PyResult<()> {
+        self.check_accepting()?;
+        let stream = self.stream()?;
         py.detach(|| {
-            runtime.runtime_handle.block_on(async move {
-                for item in items {
-                    tokio::select! {
-                        _ = runtime.cancel_token.cancelled() => return Err(()), // cancelled
-                        r = runtime.ingest_tx.send(item) => r.map_err(|_| ())?, // sent or cancelled
-                    }
-                }
-                Ok::<(), ()>(())
-            })
-        })
-        .map_err(|_| PyRuntimeError::new_err("cancelled or closed"))
+            for (ch, points) in entries {
+                stream.enqueue(&ch, points);
+            }
+        });
+        Ok(())
     }
 }
 
@@ -142,6 +154,7 @@ impl PyNominalDatasetStream {
             runtime_task: None,
             runtime: None,
             is_open: Arc::new(AtomicBool::new(false)),
+            accepting_writes: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -205,35 +218,48 @@ impl PyNominalDatasetStream {
             .validate()
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
 
-        let (runtime_task, runtime) = spawn_runtime_worker(self.builder.clone())
-            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        let (runtime_task, runtime) = match spawn_runtime_worker(self.builder.clone()) {
+            Ok(parts) => parts,
+            Err(e) => {
+                // leave the stream closed so that a failed open can be retried
+                self.is_open.store(false, Ordering::SeqCst);
+                return Err(PyRuntimeError::new_err(e.to_string()));
+            }
+        };
 
         self.runtime_task = Some(runtime_task);
         self.runtime = Some(runtime);
+        self.accepting_writes.store(true, Ordering::SeqCst);
         Ok(())
     }
 
-    /// Graceful drain and teardown (releases GIL while joining)
+    /// Refuse further writes without tearing anything down.
+    ///
+    /// Takes `&self` so a signal handler can call it while other threads are inside `enqueue`;
+    /// `close` needs `&mut self` and would fail to borrow in that situation. Everything already
+    /// enqueued is still drained and uploaded by the subsequent `close`.
+    #[pyo3(text_signature = "(self)")]
+    pub fn stop_accepting_writes(&self) {
+        info!("Refusing further writes; already-enqueued data will still be flushed");
+        self.accepting_writes.store(false, Ordering::SeqCst);
+    }
+
+    /// Graceful drain and teardown (releases GIL while draining and joining)
     #[pyo3(text_signature = "(self)")]
     pub fn close(&mut self, py: Python<'_>) -> PyResult<()> {
-        // Take ownership of the runtime parts so we can drop the sender
-        if let Some(rt) = self.runtime.take() {
-            let StreamRuntime {
-                runtime_handle: _,
-                cancel_token: _,
-                ingest_tx,
-                runtime_exited_rx,
-            } = rt;
+        self.accepting_writes.store(false, Ordering::SeqCst);
+        if let Some(StreamRuntime {
+            stream,
+            shutdown_tx,
+        }) = self.runtime.take()
+        {
+            // Drop the stream first: its own `Drop` waits for every buffered point to be uploaded,
+            // and those uploads run on the runtime we are about to shut down.
+            info!("Dropping stream to drain buffered points");
+            py.detach(|| drop(stream));
 
-            // Close the data path so the worker's recv() returns None and exits
-            info!("Signalling shutdown: dropping ingest sender to initiate drain");
-            drop(ingest_tx);
-
-            // Wait for the async worker to finish draining (releases GIL)
-            info!("Awaiting async worker exit");
-            py.detach(|| {
-                let _ = runtime_exited_rx.blocking_recv();
-            });
+            info!("Signalling runtime thread to shut down");
+            let _ = shutdown_tx.send(());
         }
 
         // Join the runtime thread (releases GIL)
@@ -249,15 +275,14 @@ impl PyNominalDatasetStream {
         Ok(())
     }
 
-    /// Fast cancellation (used by SIGINT handler)
+    /// Teardown used by the SIGINT handler.
+    ///
+    /// NOTE: this still drains buffered points -- it is currently just `close`. Interrupting a
+    /// drain in progress needs cancellation support in the underlying stream.
     #[pyo3(text_signature = "(self)")]
     pub fn cancel(&mut self, py: Python<'_>) -> PyResult<()> {
-        // Tell async worker to quickly cancel
-        if let Some(rt) = &self.runtime {
-            info!("Cancel requested; signalling cancellation token");
-            rt.cancel_token.cancel();
-        } else {
-            warn!("Cancel requested, but runtime  not open...");
+        if self.runtime.is_none() {
+            warn!("Cancel requested, but stream not open...");
         }
 
         self.close(py)
@@ -274,7 +299,7 @@ impl PyNominalDatasetStream {
     ) -> PyResult<()> {
         let ts = parse_timestamp(timestamp);
         let ch = description_with_tags(channel_name, tags);
-        self.send_one(py, extract_single_enqueue_item(ch, ts, value)?)
+        self.push_one(py, ch, extract_single_points(ts, value)?)
     }
 
     #[pyo3(signature = (channel_name, timestamps, values, tags=None), text_signature = "(self, channel_name, timestamps, values, tags=None)")]
@@ -288,7 +313,7 @@ impl PyNominalDatasetStream {
     ) -> PyResult<()> {
         let tss = extract_vec_ts(timestamps);
         let ch = description_with_tags(channel_name, tags);
-        self.send_one(py, extract_series_enqueue_item(ch, tss, values)?)
+        self.push_one(py, ch, extract_series_points(tss, values)?)
     }
 
     #[pyo3(signature = (timestamp, channel_values, tags=None), text_signature = "(self, timestamp, channel_values, tags=None)")]
@@ -300,15 +325,20 @@ impl PyNominalDatasetStream {
         tags: Option<HashMap<String, String>>,
     ) -> PyResult<()> {
         let ts = parse_timestamp(timestamp);
-        let mut items: Vec<EnqueueItem> = Vec::with_capacity(channel_values.len());
+        // built once for the whole record rather than per channel
+        let tags = into_tag_map(tags);
+        let mut entries: Vec<(ChannelDescriptor, PointsType)> =
+            Vec::with_capacity(channel_values.len());
 
         for (k, v) in channel_values {
-            let ch_name: String = k.extract()?;
-            let ch = description_with_tags(ch_name.as_str(), tags.clone()); // same tags for all entries
-            items.push(extract_single_enqueue_item(ch, ts, &v)?);
+            let ch = ChannelDescriptor {
+                name: k.extract()?,
+                tags: tags.clone(),
+            };
+            entries.push((ch, extract_single_points(ts, &v)?));
         }
 
-        self.send_many(py, items)
+        self.push_many(py, entries)
     }
 
     #[pyo3(
@@ -329,7 +359,7 @@ impl PyNominalDatasetStream {
 
         let ts = parse_timestamp(timestamp);
         let ch = description_with_tags(channel_name, tags);
-        self.send_one(py, single_struct(ch, ts, json_string))
+        self.push_one(py, ch, single_struct(ts, json_string))
     }
 
     #[pyo3(
@@ -346,7 +376,7 @@ impl PyNominalDatasetStream {
     ) -> PyResult<()> {
         let ts = parse_timestamp(timestamp);
         let ch = description_with_tags(channel_name, tags);
-        self.send_one(py, single_double_array(ch, ts, value))
+        self.push_one(py, ch, single_double_array(ts, value))
     }
 
     #[pyo3(
@@ -363,7 +393,7 @@ impl PyNominalDatasetStream {
     ) -> PyResult<()> {
         let ts = parse_timestamp(timestamp);
         let ch = description_with_tags(channel_name, tags);
-        self.send_one(py, single_string_array(ch, ts, value))
+        self.push_one(py, ch, single_string_array(ts, value))
     }
 
     fn __enter__<'py>(mut slf: PyRefMut<'py, Self>) -> PyResult<PyRefMut<'py, Self>> {
@@ -378,5 +408,23 @@ impl PyNominalDatasetStream {
         _tb: Py<PyAny>,
     ) -> PyResult<()> {
         self.close(py)
+    }
+}
+
+impl Drop for PyNominalDatasetStream {
+    /// Tear the stream down if the caller never did.
+    ///
+    /// Dropping the stream drains it, which blocks until the uploader has sent everything buffered.
+    /// pyclass deallocation runs with the GIL held, so doing that implicitly would stall every
+    /// python thread for the length of the drain; `close` releases the GIL around it.
+    fn drop(&mut self) {
+        if self.runtime.is_none() && self.runtime_task.is_none() {
+            return;
+        }
+        Python::attach(|py| {
+            if let Err(e) = self.close(py) {
+                warn!("Error closing stream during drop: {e}");
+            }
+        });
     }
 }

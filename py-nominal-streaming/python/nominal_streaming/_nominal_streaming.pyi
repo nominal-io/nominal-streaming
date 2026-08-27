@@ -313,6 +313,13 @@ class PyNominalDatasetStream:
         NOTE: Intended for signal handlers or rapid shutdown paths.
         """
 
+    def stop_accepting_writes(self) -> None:
+        """Refuse further writes without tearing the stream down.
+
+        Data already enqueued is still flushed by a subsequent `close()`. Used by the SIGINT
+        handler so that the drain is not racing a producer that has not stopped yet.
+        """
+
     def enqueue(
         self,
         channel_name: str,
