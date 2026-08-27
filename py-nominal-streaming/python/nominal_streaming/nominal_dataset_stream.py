@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import datetime
 import logging
+import operator
 import pathlib
 import signal
 import threading
@@ -62,11 +63,21 @@ def _parse_timestamp(ts: str | int | datetime.datetime) -> int:
     elif isinstance(ts, datetime.datetime):
         secs = ts.astimezone(datetime.timezone.utc).timestamp()
         return int(secs * 1e9)
-    else:
+    elif isinstance(ts, str):
         # TODO(drake): by involving dateutil, this chops off any nano level precision provided
         #              in the timestamp. Update to not lose precision when converting to absolute nanos.
         secs = dateutil.parser.parse(ts).astimezone(datetime.timezone.utc).timestamp()
         return int(secs * 1e9)
+
+    # numpy integers are the common case here: `np.int64` is not an `int` subclass (unlike
+    # `np.float64`, which does subclass `float`), so the isinstance check above misses it.
+    # Anything implementing __index__ is an integer by Python's own definition.
+    try:
+        return operator.index(ts)
+    except TypeError:
+        raise TypeError(
+            f"timestamp must be integral nanoseconds, a datetime, or a string; got {type(ts).__name__}"
+        ) from None
 
 
 class NominalDatasetStream:
@@ -320,9 +331,19 @@ class NominalDatasetStream:
             # its type check as ours, rather than paying for a second one in Python.
             self._impl.enqueue_batch(channel_name, timestamps, values, normalized_tags)  # type: ignore[arg-type]
         except TypeError:
-            # Some timestamp (or value) was not integral; normalize and let Rust re-check. Nothing
-            # was enqueued by the attempt above -- extraction happens before anything is written.
-            self._impl.enqueue_batch(channel_name, [_parse_timestamp(ts) for ts in timestamps], values, normalized_tags)
+            # Some argument was not directly usable. Nothing was enqueued by the attempt above --
+            # extraction happens before anything is written -- so it is safe to normalize the
+            # timestamps and retry.
+            #
+            # Normalizing gets its own try block on purpose: a `values` problem also lands here, and
+            # without this the retry would surface whatever the timestamps happened to raise,
+            # naming the wrong argument entirely.
+            try:
+                normalized_timestamps = [_parse_timestamp(ts) for ts in timestamps]
+            except (TypeError, ValueError) as error:
+                raise TypeError(f"could not interpret `timestamps`: {error}") from error
+
+            self._impl.enqueue_batch(channel_name, normalized_timestamps, values, normalized_tags)
 
     def enqueue_from_dict(
         self,
