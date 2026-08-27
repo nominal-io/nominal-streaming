@@ -316,6 +316,15 @@ class NominalDatasetStream:
         NOTE: assumes that all values have the same type as the first value in the batch--
               ensure that any provided value arrays are homogenously typed
 
+        Lists, tuples and numpy arrays are all accepted for either argument. Numpy arrays are
+        roughly 2x slower than the equivalent list, because each element has to be boxed and
+        converted individually; if throughput matters, pass `arr.tolist()` rather than `arr`.
+
+        Numpy arrays whose elements would be silently reinterpreted are rejected rather than
+        written: `datetime64`/`timedelta64` values (which would become raw epoch counts) and
+        masked arrays with masked elements (which would become NaN). Convert explicitly if that
+        is what you want.
+
         Args:
             channel_name: Name of the channel to upload data for.
             timestamps: Absolute UTC timestamps of the data being uploaded.

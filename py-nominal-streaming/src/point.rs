@@ -9,6 +9,7 @@ use nominal_streaming::prelude::*;
 use nominal_streaming::types::IntoPoints;
 use pyo3::exceptions::PyTypeError;
 use pyo3::exceptions::PyValueError;
+use pyo3::intern;
 use pyo3::prelude::*;
 use pyo3::types::PyAny;
 use pyo3::types::PyAnyMethods;
@@ -206,11 +207,55 @@ pub enum ValueKind {
 
 /// Peek the first element to decide the homogeneous value kind.
 /// (Full extraction to Vec<T> will still enforce homogeneity.)
+/// Reject array-likes whose elements would be silently reinterpreted rather than written.
+///
+/// Only reachable for objects carrying numpy's attributes; a list or tuple has neither, and the
+/// caller skips this for them. Both cases below otherwise succeed and write plausible, wrong data,
+/// which is worse than refusing.
+fn reject_lossy_arrays(values: &Bound<'_, PyAny>) -> PyResult<()> {
+    if let Ok(dtype) = values.getattr(intern!(values.py(), "dtype")) {
+        if let Ok(kind) = dtype.getattr(intern!(values.py(), "kind")) {
+            let kind: String = kind.extract().unwrap_or_default();
+            // 'M' is datetime64, 'm' is timedelta64. Both convert to a number, so passing one as
+            // values stores an epoch count and looks like it worked.
+            if kind == "M" || kind == "m" {
+                return Err(PyTypeError::new_err(
+                    "values has a datetime64/timedelta64 dtype; these would be written as raw \
+                     epoch counts. Pass the timestamps as the `timestamps` argument, or convert \
+                     explicitly with `.astype('int64')` if the count is what you want.",
+                ));
+            }
+        }
+    }
+
+    // A masked array converts masked elements to NaN on read, so a gap becomes a real data point.
+    if let Ok(mask) = values.getattr(intern!(values.py(), "mask")) {
+        let any_masked = mask
+            .call_method0(intern!(values.py(), "any"))
+            .and_then(|m| m.extract::<bool>())
+            .unwrap_or(false);
+        if any_masked {
+            return Err(PyTypeError::new_err(
+                "values is a masked array with masked elements, which would be written as NaN. \
+                 Choose explicitly: `.filled(float('nan'))` to write NaN, or `.compressed()` with \
+                 matching timestamps to drop them.",
+            ));
+        }
+    }
+
+    Ok(())
+}
+
 pub fn classify_values(values: &Bound<'_, PyAny>) -> PyResult<ValueKind> {
     if indexable_len(values)? == 0 {
         return Err(pyo3::exceptions::PyValueError::new_err(
             "values cannot be empty",
         ));
+    }
+    // Lists and tuples cannot be either hazard, and this is the hot path, so skip the attribute
+    // lookups for them.
+    if values.cast::<PySequence>().is_err() {
+        reject_lossy_arrays(values)?;
     }
     let first = values.get_item(0)?;
     if first.extract::<f64>().is_ok() {
