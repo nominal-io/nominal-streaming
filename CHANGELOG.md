@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.6](https://github.com/nominal-io/nominal-streaming/compare/v0.9.5...v0.9.6) - 2026-08-28
+
+### Other
+
+- compress streaming write requests with zstd instead of snappy ([#329](https://github.com/nominal-io/nominal-streaming/pull/329))
+
 ## [0.9.5](https://github.com/nominal-io/nominal-streaming/compare/v0.9.4...v0.9.5) - 2026-08-27
 
 ### Added
