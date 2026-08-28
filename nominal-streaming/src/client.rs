@@ -1,5 +1,4 @@
 use std::fmt::Debug;
-use std::io::Write;
 use std::sync::Arc;
 use std::sync::LazyLock;
 
@@ -24,7 +23,6 @@ use nominal_api::clients::ingest::api::AsyncIngestServiceClient;
 use nominal_api::clients::upload::api::AsyncUploadServiceClient;
 use nominal_api::objects::api::rids::NominalDataSourceOrDatasetRid;
 use nominal_api::objects::api::rids::WorkspaceRid;
-use snap::write::FrameEncoder;
 use url::Url;
 
 use crate::types::AuthProvider;
@@ -142,22 +140,25 @@ pub fn async_conjure_client(service: &'static str, uri: Url) -> Result<Client, E
 
 pub type WriteRequest<'a> = Request<AsyncRequestBody<'a, BodyWriter>>;
 
+/// Zstd compression level for request bodies.
+///
+/// Level 1 compresses at snappy-like speed while producing a body 25-80% smaller than snappy did
+/// (snappy has no entropy coder), and every byte saved feeds straight into per-request upload
+/// time. Higher levels shrink telemetry payloads little further and cost disproportionate CPU.
+const ZSTD_LEVEL: i32 = 1;
+
 pub fn encode_request<'a, 'b>(
     write_request_bytes: Vec<u8>,
     api_key: &'a BearerToken,
     data_source_rid: &'a ResourceIdentifier,
 ) -> std::io::Result<WriteRequest<'b>> {
-    let mut encoder = FrameEncoder::new(Vec::with_capacity(write_request_bytes.len()));
+    let body = zstd::encode_all(write_request_bytes.as_slice(), ZSTD_LEVEL)?;
 
-    encoder.write_all(&write_request_bytes)?;
-
-    let mut request = Request::new(AsyncRequestBody::Fixed(
-        encoder.into_inner().unwrap().into(),
-    ));
+    let mut request = Request::new(AsyncRequestBody::Fixed(body.into()));
 
     let headers = request.headers_mut();
     headers.insert(CONTENT_TYPE, "application/x-protobuf".parse().unwrap());
-    headers.insert(CONTENT_ENCODING, "x-snappy-framed".parse().unwrap());
+    headers.insert(CONTENT_ENCODING, "zstd".parse().unwrap());
 
     *request.method_mut() = conjure_http::private::http::Method::POST;
     let mut path = conjure_http::private::UriBuilder::new();
@@ -177,4 +178,35 @@ pub fn encode_request<'a, 'b>(
             "/storage/writer/v1/nominal/{dataSourceRid}",
         ));
     Ok(request)
+}
+
+#[cfg(test)]
+mod tests {
+    use conjure_http::client::AsyncRequestBody;
+
+    use super::*;
+
+    #[test]
+    fn request_body_is_zstd_and_round_trips() {
+        let payload: Vec<u8> = (0..100_000u32).flat_map(|i| i.to_le_bytes()).collect();
+        let token = BearerToken::new("test-token-abc123").unwrap();
+        let rid = ResourceIdentifier::new("ri.catalog.main.dataset.abc123").unwrap();
+
+        let request = encode_request(payload.clone(), &token, &rid).unwrap();
+
+        assert_eq!(request.headers()[CONTENT_ENCODING.as_str()], "zstd");
+        assert_eq!(
+            request.headers()[CONTENT_TYPE.as_str()],
+            "application/x-protobuf"
+        );
+
+        let AsyncRequestBody::Fixed(body) = request.body() else {
+            panic!("expected a fixed body");
+        };
+        assert!(
+            body.len() < payload.len(),
+            "compressed body should be smaller than the payload"
+        );
+        assert_eq!(zstd::decode_all(&body[..]).unwrap(), payload);
+    }
 }
