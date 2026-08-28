@@ -142,17 +142,17 @@ pub type WriteRequest<'a> = Request<AsyncRequestBody<'a, BodyWriter>>;
 
 /// Zstd compression level for request bodies.
 ///
-/// Level 1 compresses at snappy-like speed while producing a body 25-80% smaller than snappy did
+/// Level 1 compresses at speeds comparable to snappy while producing a substantially smaller body
 /// (snappy has no entropy coder), and every byte saved feeds straight into per-request upload
 /// time. Higher levels shrink telemetry payloads little further and cost disproportionate CPU.
 const ZSTD_LEVEL: i32 = 1;
 
-pub fn encode_request<'a, 'b>(
-    write_request_bytes: Vec<u8>,
-    api_key: &'a BearerToken,
-    data_source_rid: &'a ResourceIdentifier,
-) -> std::io::Result<WriteRequest<'b>> {
-    let body = zstd::encode_all(write_request_bytes.as_slice(), ZSTD_LEVEL)?;
+pub fn encode_request(
+    write_request_bytes: &[u8],
+    api_key: &BearerToken,
+    data_source_rid: &ResourceIdentifier,
+) -> std::io::Result<WriteRequest<'static>> {
+    let body = zstd::encode_all(write_request_bytes, ZSTD_LEVEL)?;
 
     let mut request = Request::new(AsyncRequestBody::Fixed(body.into()));
 
@@ -192,7 +192,7 @@ mod tests {
         let token = BearerToken::new("test-token-abc123").unwrap();
         let rid = ResourceIdentifier::new("ri.catalog.main.dataset.abc123").unwrap();
 
-        let request = encode_request(payload.clone(), &token, &rid).unwrap();
+        let request = encode_request(&payload, &token, &rid).unwrap();
 
         assert_eq!(request.headers()[CONTENT_ENCODING.as_str()], "zstd");
         assert_eq!(

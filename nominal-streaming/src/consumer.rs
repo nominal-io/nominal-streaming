@@ -89,7 +89,7 @@ impl<T: AuthProvider + 'static> WriteRequestConsumer for NominalCoreConsumer<T> 
             .token()
             .ok_or(ConsumerError::MissingTokenError)?;
         let write_request =
-            client::encode_request(request.encode_to_vec(), &token, &self.data_source_rid)?;
+            client::encode_request(&request.encode_to_vec(), &token, &self.data_source_rid)?;
         self.handle.block_on(async {
             self.client
                 .send(write_request)

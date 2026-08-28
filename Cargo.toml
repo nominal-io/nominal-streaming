@@ -26,7 +26,9 @@ tokio = { version = "1", features = ["full", "tracing", "io-util"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 url = "2.5.8"
-zstd = "0.13"
+# default-features = false drops zstd's `legacy`, `arrays`, and `zdict_builder` features; the
+# request encoder needs none of them, and it trims the zstd-sys C build for every consumer.
+zstd = { version = "0.13", default-features = false }
 
 # Test dependencies
 test-log = { version = "0.2.20", features = ["trace"] }
