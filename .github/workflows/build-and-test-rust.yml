@@ -24,7 +24,7 @@ jobs:
       - name: Install Rust Problem Matcher
         run: echo "::add-matcher::.github/rust.json"
       - name: Install just
-        uses: extractions/setup-just@v3
+        uses: extractions/setup-just@v4
       - name: Install rust dependencies
         run: just rust::install
       - name: Build rust crates
