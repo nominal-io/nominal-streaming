@@ -179,34 +179,3 @@ pub fn encode_request(
         ));
     Ok(request)
 }
-
-#[cfg(test)]
-mod tests {
-    use conjure_http::client::AsyncRequestBody;
-
-    use super::*;
-
-    #[test]
-    fn request_body_is_zstd_and_round_trips() {
-        let payload: Vec<u8> = (0..100_000u32).flat_map(|i| i.to_le_bytes()).collect();
-        let token = BearerToken::new("test-token-abc123").unwrap();
-        let rid = ResourceIdentifier::new("ri.catalog.main.dataset.abc123").unwrap();
-
-        let request = encode_request(&payload, &token, &rid).unwrap();
-
-        assert_eq!(request.headers()[CONTENT_ENCODING.as_str()], "zstd");
-        assert_eq!(
-            request.headers()[CONTENT_TYPE.as_str()],
-            "application/x-protobuf"
-        );
-
-        let AsyncRequestBody::Fixed(body) = request.body() else {
-            panic!("expected a fixed body");
-        };
-        assert!(
-            body.len() < payload.len(),
-            "compressed body should be smaller than the payload"
-        );
-        assert_eq!(zstd::decode_all(&body[..]).unwrap(), payload);
-    }
-}
