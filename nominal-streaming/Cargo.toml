@@ -30,12 +30,12 @@ parking_lot = { workspace = true }
 prost = { workspace = true }
 reqwest = { workspace = true }
 serde_json = { workspace = true }
-snap = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, optional = true }
 url = { workspace = true }
+zstd = { workspace = true }
 
 [dev-dependencies]
 test-log = { workspace = true }
