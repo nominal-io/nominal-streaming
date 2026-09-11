@@ -32,7 +32,6 @@ use parking_lot::Mutex;
 use parking_lot::MutexGuard;
 use tracing::debug;
 use tracing::error;
-use tracing::info;
 
 use crate::client::NominalApiClients;
 use crate::client::PRODUCTION_API_URL;
@@ -499,11 +498,11 @@ impl NominalDatasetStream {
             callback(self.secondary_buffer.lock());
         } else {
             let buf = if self.primary_buffer < self.secondary_buffer {
-                info!("waiting for primary buffer to flush to append {new_count} points...");
+                debug!("waiting for primary buffer to flush to append {new_count} points...");
                 self.primary_handle.thread().unpark();
                 &self.primary_buffer
             } else {
-                info!("waiting for secondary buffer to flush to append {new_count} points...");
+                debug!("waiting for secondary buffer to flush to append {new_count} points...");
                 self.secondary_handle.thread().unpark();
                 &self.secondary_buffer
             };
@@ -1030,7 +1029,7 @@ fn request_dispatcher<C: WriteRequestConsumer + 'static>(
 
                 if unflushed_points.load(Ordering::Acquire) == 0 && !running.load(Ordering::Acquire)
                 {
-                    info!("all points flushed, closing dispatcher thread");
+                    debug!("all points flushed, closing dispatcher thread");
                     // notify the processor thread that all points have been flushed
                     drop(request_rx);
                     break;
