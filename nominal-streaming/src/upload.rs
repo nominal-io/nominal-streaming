@@ -32,6 +32,7 @@ use nominal_api::objects::ingest::api::InitiateMultipartUploadResponse;
 use nominal_api::objects::ingest::api::Part;
 use nominal_api::objects::ingest::api::S3IngestSource;
 use tokio::sync::Semaphore;
+use tracing::debug;
 use tracing::error;
 use tracing::info;
 
@@ -267,7 +268,7 @@ impl FileObjectStoreUploader {
             .await
             .map_err(|e| UploaderError::Conjure(format!("{e:?}")))?;
 
-        info!("Initiated multipart upload for file: {}", file_name);
+        debug!("Initiated multipart upload for file: {}", file_name);
         Ok(response)
     }
 
