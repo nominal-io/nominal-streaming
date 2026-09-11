@@ -61,18 +61,24 @@ bounds cover all scalar, array, and struct point types, regardless of point orde
 missing timestamps and the seven metric channels are excluded. Empty batches and
 metric-only batches do not generate request metrics.
 
-Each successful data request produces one additional HTTP request containing its
-five metrics, sent directly to the same dataset. This adds network traffic and
-occupies the same dispatcher until completion. Metrics uploads never generate
-more metrics or feed back into the bounded data queue. Graceful stream shutdown
-waits for these uploads with the outstanding data request.
+Completed request metrics piggyback on the next data request prepared for the same
+session and dataset, preserving their original measurement timestamps. No additional
+HTTP requests are sent for request metrics, including at idle or shutdown. The last
+request's measurements are discarded if no later data request arrives.
 
-Request-metric uploads are best-effort: failures are logged and do not fail or
-replay an already successful data write. Failed data requests produce no request
-metrics and retain normal fallback behavior. Request metrics are sent only to
-Core; they are not copied to the dual-write file or file fallback. File-only
-streams have no HTTP request metrics. These delivery choices avoid the reference
-backend's feedback loop from routing request metrics back through its item queue.
+The pending buffer is shared across dispatcher threads and consumer clones. It holds
+at most 64 completed measurements (320 points), dropping the oldest on overflow.
+Concurrent requests already in flight cannot carry measurements that complete later;
+a subsequent data request takes all matching pending measurements. Encoding and
+network I/O run outside the buffer lock. Metrics do not affect latency bounds or
+feed back into the stream's batching queue.
+
+Delivery is best-effort. Measurements attached to a request that fails encoding or
+upload are discarded; failed data requests produce no new measurements. The original
+user request remains unchanged for listeners, dual-write files, and file fallback.
+Normal HTTP retries resend the same encoded data-plus-metrics payload. Request metrics
+are not copied to files, and file-only streams have no HTTP request metrics. The two
+dictionary metrics continue to use ordinary batching as described above.
 
 The seven channel names are reserved for this feature. Metrics have no tags,
 matching the reference implementation.

@@ -55,7 +55,7 @@ pub struct NominalCoreConsumer<A: AuthProvider> {
     handle: tokio::runtime::Handle,
     auth_provider: A,
     data_source_rid: ResourceIdentifier,
-    track_metrics: bool,
+    metrics: Option<Arc<crate::metrics::PendingMetrics>>,
 }
 
 impl<A: AuthProvider> NominalCoreConsumer<A> {
@@ -70,14 +70,18 @@ impl<A: AuthProvider> NominalCoreConsumer<A> {
             handle,
             auth_provider,
             data_source_rid,
-            track_metrics: false,
+            metrics: None,
         }
     }
 
-    /// Emit request runtime metrics to the same dataset after successful writes.
-    /// Metrics uploads are best-effort and do not generate further metrics.
+    /// Piggyback completed request metrics on later data requests to the same dataset.
+    /// Pending metrics are bounded and best-effort; no extra requests are sent.
     pub fn with_track_metrics(mut self, enabled: bool) -> Self {
-        self.track_metrics = enabled;
+        if enabled {
+            self.metrics.get_or_insert_with(Default::default);
+        } else {
+            self.metrics = None;
+        }
         self
     }
 }
@@ -97,9 +101,11 @@ impl<T: AuthProvider + 'static> WriteRequestConsumer for NominalCoreConsumer<T> 
             .auth_provider
             .token()
             .ok_or(ConsumerError::MissingTokenError)?;
-        let write_request =
-            client::encode_request(request.encode_to_vec(), &token, &self.data_source_rid)?;
-        let send = || {
+        let encode = |request: &WriteRequestNominal| {
+            client::encode_request(request.encode_to_vec(), &token, &self.data_source_rid)
+                .map_err(ConsumerError::from)
+        };
+        let send = |write_request| {
             self.handle.block_on(async {
                 self.client
                     .send(write_request)
@@ -108,12 +114,10 @@ impl<T: AuthProvider + 'static> WriteRequestConsumer for NominalCoreConsumer<T> 
                     .map_err(|e| ConsumerError::RequestError(format!("{e:?}")))
             })
         };
-        if self.track_metrics {
-            crate::metrics::consume_with_metrics(request, send, |metrics| {
-                self.clone().with_track_metrics(false).consume(metrics)
-            })
+        if let Some(metrics) = &self.metrics {
+            metrics.consume(request, encode, send)
         } else {
-            send()
+            send(encode(request)?)
         }
     }
 }

@@ -56,8 +56,9 @@ pub struct NominalStreamOpts {
     pub base_api_url: String,
     /// Emit request runtime metrics from the builder's Core consumer. Disabled by default.
     ///
-    /// Each successful data request sends five metric points in one additional,
-    /// best-effort request to the same dataset. File-only streams are unaffected.
+    /// Completed request metrics piggyback on later data requests to the same dataset.
+    /// Pending metrics are bounded and discarded on shutdown; no extra requests are sent.
+    /// File-only streams are unaffected.
     /// Configure manually supplied consumers separately.
     pub track_metrics: bool,
 }

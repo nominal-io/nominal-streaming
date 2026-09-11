@@ -1,5 +1,6 @@
 //! Runtime metric channels compatible with nominal-client's experimental backend.
 
+use std::collections::VecDeque;
 use std::time::Instant;
 use std::time::UNIX_EPOCH;
 
@@ -12,6 +13,7 @@ use nominal_api::tonic::io::nominal::scout::api::proto::DoublePoints;
 use nominal_api::tonic::io::nominal::scout::api::proto::Points;
 use nominal_api::tonic::io::nominal::scout::api::proto::Series;
 use nominal_api::tonic::io::nominal::scout::api::proto::WriteRequestNominal;
+use parking_lot::Mutex;
 
 use crate::consumer::ConsumerResult;
 
@@ -125,27 +127,60 @@ fn metric_request(
     }
 }
 
-/// Called after serialization, immediately around the HTTP send (including retries).
-/// A failed metrics upload must not turn a successful data write into a fallback write.
-pub(crate) fn consume_with_metrics(
-    request: &WriteRequestNominal,
-    send: impl FnOnce() -> ConsumerResult<()>,
-    upload_metrics: impl FnOnce(&WriteRequestNominal) -> ConsumerResult<()>,
-) -> ConsumerResult<()> {
-    let Some((oldest, newest)) = timestamp_bounds(request) else {
-        return send();
-    };
-    let before = UNIX_EPOCH.elapsed().unwrap().as_nanos() as i128;
-    let start = Instant::now();
-    send()?;
-    let rtt = start.elapsed().as_secs_f64();
-    let after = UNIX_EPOCH.elapsed().unwrap().as_nanos() as i128;
-    let mut metrics = metric_request(oldest, newest, before, after, rtt);
-    metrics.session_name = request.session_name.clone();
-    if let Err(error) = upload_metrics(&metrics) {
-        tracing::warn!("Failed to upload runtime metrics: {error}");
+// At most 320 metric points are retained, regardless of dispatcher concurrency.
+const MAX_PENDING_REQUESTS: usize = 64;
+
+#[derive(Debug, Default)]
+pub(crate) struct PendingMetrics {
+    pending: Mutex<VecDeque<WriteRequestNominal>>,
+}
+
+impl PendingMetrics {
+    /// Attach completed measurements before encoding, then measure only the send.
+    /// Never holds the pending lock during encoding or network I/O.
+    pub(crate) fn consume<T>(
+        &self,
+        request: &WriteRequestNominal,
+        encode: impl FnOnce(&WriteRequestNominal) -> ConsumerResult<T>,
+        send: impl FnOnce(T) -> ConsumerResult<()>,
+    ) -> ConsumerResult<()> {
+        let Some((oldest, newest)) = timestamp_bounds(request) else {
+            return send(encode(request)?);
+        };
+        let attached = {
+            let mut pending = self.pending.lock();
+            let mut attached = Vec::new();
+            pending.retain(|metrics| {
+                if metrics.session_name == request.session_name {
+                    attached.extend(metrics.series.iter().cloned());
+                    false
+                } else {
+                    true
+                }
+            });
+            attached
+        };
+        let encoded = if attached.is_empty() {
+            encode(request)?
+        } else {
+            let mut combined = request.clone();
+            combined.series.extend(attached);
+            encode(&combined)?
+        };
+        let before = UNIX_EPOCH.elapsed().unwrap().as_nanos() as i128;
+        let start = Instant::now();
+        send(encoded)?;
+        let rtt = start.elapsed().as_secs_f64();
+        let after = UNIX_EPOCH.elapsed().unwrap().as_nanos() as i128;
+        let mut metrics = metric_request(oldest, newest, before, after, rtt);
+        metrics.session_name = request.session_name.clone();
+        let mut pending = self.pending.lock();
+        if pending.len() == MAX_PENDING_REQUESTS {
+            pending.pop_front();
+        }
+        pending.push_back(metrics);
+        Ok(())
     }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -258,53 +293,165 @@ mod tests {
     }
 
     #[test]
-    fn successful_write_emits_once_and_metric_failure_preserves_success() {
-        let mut sends = 0;
-        let mut uploads = 0;
-        consume_with_metrics(
+    fn metrics_piggyback_on_next_data_request_without_extra_sends() {
+        let metrics = PendingMetrics::default();
+        let original = data_request();
+        let mut sent = Vec::new();
+        metrics
+            .consume(
+                &original,
+                |r| Ok(r.clone()),
+                |r| {
+                    sent.push(r);
+                    Ok(())
+                },
+            )
+            .unwrap();
+        let expected = metrics.pending.lock()[0].series.clone();
+        assert_eq!(sent, vec![original.clone()]);
+        metrics
+            .consume(
+                &original,
+                |r| Ok(r.clone()),
+                |r| {
+                    sent.push(r);
+                    Ok(())
+                },
+            )
+            .unwrap();
+        assert_eq!(sent.len(), 2);
+        assert_eq!(&sent[1].series[1..], expected.as_slice());
+        assert_eq!(timestamp_bounds(&sent[1]), timestamp_bounds(&original));
+        assert_eq!(original.series.len(), 1);
+        assert_eq!(metrics.pending.lock().len(), 1);
+        // Dropping the buffer performs no send, including the final measurement.
+        drop(metrics);
+        assert_eq!(sent.len(), 2);
+    }
+
+    #[test]
+    fn failures_propagate_without_metrics_or_replaying_attached_samples() {
+        let metrics = PendingMetrics::default();
+        metrics
+            .consume(&data_request(), |_| Ok(()), |_| Ok(()))
+            .unwrap();
+        let result = metrics.consume(
             &data_request(),
-            || {
-                sends += 1;
+            |r| {
+                assert_eq!(r.series.len(), 6);
                 Ok(())
             },
-            |metrics| {
-                uploads += 1;
-                assert_eq!(metrics.series.len(), 5);
-                assert_eq!(timestamp_bounds(metrics), None);
-                Err(ConsumerError::RequestError("metrics unavailable".into()))
-            },
-        )
-        .unwrap();
-        assert_eq!((sends, uploads), (1, 1));
-    }
-
-    #[test]
-    fn failed_write_does_not_emit_metrics() {
-        let result = consume_with_metrics(
-            &data_request(),
-            || Err(ConsumerError::MissingTokenError),
-            |_| panic!("must not upload"),
+            |_| Err(ConsumerError::MissingTokenError),
         );
         assert!(matches!(result, Err(ConsumerError::MissingTokenError)));
+        assert!(metrics.pending.lock().is_empty());
+        metrics
+            .consume(&data_request(), |_| Ok(()), |_| Ok(()))
+            .unwrap();
+        let result = metrics.consume(
+            &data_request(),
+            |r| {
+                assert_eq!(r.series.len(), 6);
+                Err::<(), _>(ConsumerError::MissingTokenError)
+            },
+            |_| panic!("must not send"),
+        );
+        assert!(result.is_err());
+        assert!(metrics.pending.lock().is_empty());
     }
 
     #[test]
-    fn empty_and_metric_only_requests_do_not_emit_metrics() {
+    fn empty_and_metric_only_requests_leave_pending_metrics_untouched() {
+        let metrics = PendingMetrics::default();
+        metrics
+            .consume(&data_request(), |_| Ok(()), |_| Ok(()))
+            .unwrap();
         for request in [
             WriteRequestNominal::default(),
             metric_request(0, 0, 0, 0, 0.0),
         ] {
-            let mut sent = false;
-            consume_with_metrics(
+            metrics
+                .consume(
+                    &request,
+                    |r| {
+                        assert_eq!(r, &request);
+                        Ok(())
+                    },
+                    |_| Ok(()),
+                )
+                .unwrap();
+            assert_eq!(metrics.pending.lock().len(), 1);
+        }
+    }
+
+    #[test]
+    fn pending_metrics_are_bounded_and_keep_sessions_separate() {
+        let metrics = PendingMetrics::default();
+        for index in 0..MAX_PENDING_REQUESTS + 1 {
+            let mut request = data_request();
+            request.session_name = Some(index.to_string());
+            metrics
+                .consume(
+                    &request,
+                    |r| {
+                        assert_eq!(r.series.len(), 1);
+                        Ok(())
+                    },
+                    |_| Ok(()),
+                )
+                .unwrap();
+        }
+        assert_eq!(metrics.pending.lock().len(), MAX_PENDING_REQUESTS);
+        assert_eq!(metrics.pending.lock()[0].session_name.as_deref(), Some("1"));
+        let mut request = data_request();
+        request.session_name = Some("1".into());
+        metrics
+            .consume(
                 &request,
-                || {
-                    sent = true;
+                |r| {
+                    assert_eq!(r.series.len(), 6);
+                    assert_eq!(r.session_name, request.session_name);
                     Ok(())
                 },
-                |_| panic!("must not upload"),
+                |_| Ok(()),
             )
             .unwrap();
-            assert!(sent);
-        }
+        assert_eq!(metrics.pending.lock().len(), MAX_PENDING_REQUESTS);
+    }
+
+    #[test]
+    fn concurrent_sends_share_pending_metrics_without_holding_the_lock() {
+        let metrics = PendingMetrics::default();
+        let barrier = std::sync::Barrier::new(8);
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                let metrics = &metrics;
+                let barrier = &barrier;
+                scope.spawn(move || {
+                    metrics
+                        .consume(
+                            &data_request(),
+                            |_| Ok(()),
+                            |_| {
+                                barrier.wait();
+                                Ok(())
+                            },
+                        )
+                        .unwrap()
+                });
+            }
+        });
+        assert_eq!(metrics.pending.lock().len(), 8);
+        metrics
+            .consume(
+                &data_request(),
+                |r| {
+                    assert_eq!(r.series.len(), 41);
+                    Ok(())
+                },
+                |_| Ok(()),
+            )
+            .unwrap();
+        assert_eq!(metrics.pending.lock().len(), 1);
     }
 }
