@@ -144,7 +144,7 @@ async fn upload_and_ingest_file(
                             e
                         ))
                     } else {
-                        debug!("Removed file {}", file_path.display());
+                        info!("Removed file {}", file_path.display());
                         Ok(())
                     }
                 }
