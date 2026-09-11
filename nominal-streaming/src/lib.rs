@@ -139,6 +139,7 @@ NominalStreamOpts {
   max_request_delay: Duration,
   max_buffered_requests: usize,
   request_dispatcher_tasks: usize,
+  track_metrics: bool, // defaults to false
 }
 ```
 
@@ -158,6 +159,7 @@ let stream = NominalDatasetStreamBuilder::new()
 pub mod client;
 pub mod consumer;
 pub mod listener;
+mod metrics;
 #[cfg(test)]
 mod simulated_consumer;
 pub mod stream;
@@ -261,6 +263,7 @@ mod tests {
                 max_buffered_requests: 2,
                 request_dispatcher_tasks: 4,
                 base_api_url: PRODUCTION_API_URL.to_string(),
+                track_metrics: false,
             },
         );
 
@@ -666,6 +669,7 @@ mod tests {
                 max_buffered_requests: 1,
                 request_dispatcher_tasks: 1,
                 base_api_url: PRODUCTION_API_URL.to_string(),
+                track_metrics: false,
             },
         );
 

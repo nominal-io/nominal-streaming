@@ -55,6 +55,7 @@ pub struct NominalCoreConsumer<A: AuthProvider> {
     handle: tokio::runtime::Handle,
     auth_provider: A,
     data_source_rid: ResourceIdentifier,
+    track_metrics: bool,
 }
 
 impl<A: AuthProvider> NominalCoreConsumer<A> {
@@ -69,7 +70,15 @@ impl<A: AuthProvider> NominalCoreConsumer<A> {
             handle,
             auth_provider,
             data_source_rid,
+            track_metrics: false,
         }
+    }
+
+    /// Emit request runtime metrics to the same dataset after successful writes.
+    /// Metrics uploads are best-effort and do not generate further metrics.
+    pub fn with_track_metrics(mut self, enabled: bool) -> Self {
+        self.track_metrics = enabled;
+        self
     }
 }
 
@@ -90,13 +99,22 @@ impl<T: AuthProvider + 'static> WriteRequestConsumer for NominalCoreConsumer<T> 
             .ok_or(ConsumerError::MissingTokenError)?;
         let write_request =
             client::encode_request(request.encode_to_vec(), &token, &self.data_source_rid)?;
-        self.handle.block_on(async {
-            self.client
-                .send(write_request)
-                .await
-                .map_err(|e| ConsumerError::RequestError(format!("{e:?}")))
-        })?;
-        Ok(())
+        let send = || {
+            self.handle.block_on(async {
+                self.client
+                    .send(write_request)
+                    .await
+                    .map(|_| ())
+                    .map_err(|e| ConsumerError::RequestError(format!("{e:?}")))
+            })
+        };
+        if self.track_metrics {
+            crate::metrics::consume_with_metrics(request, send, |metrics| {
+                self.clone().with_track_metrics(false).consume(metrics)
+            })
+        } else {
+            send()
+        }
     }
 }
 

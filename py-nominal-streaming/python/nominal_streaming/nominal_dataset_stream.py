@@ -96,6 +96,7 @@ class NominalDatasetStream:
         max_buffered_requests: int = 4,
         num_upload_workers: int = 8,
         num_runtime_workers: int = 8,
+        track_metrics: bool = False,
     ) -> Self:
         """Factory constructor to build a NominalDatasetStream using optional overrides for configuration options
 
@@ -111,6 +112,7 @@ class NominalDatasetStream:
                 internet, but increase teardown time (e.g. when pressing ctrl + c)
             num_upload_workers: Overrides the default number of upload worker threads
                 NOTE: must be set as low as the number of runtime workers.
+            track_metrics: Emit runtime metric channels; disabled by default.
             num_runtime_workers: Overrides the default number of runtime worker threads
                 NOTE: must be set as high as the number of upload workers.
 
@@ -122,6 +124,7 @@ class NominalDatasetStream:
             num_upload_workers=num_upload_workers,
             num_runtime_workers=num_runtime_workers,
             base_api_url=base_api_url,
+            track_metrics=track_metrics,
         )
         return cls(auth_header, opts)
 

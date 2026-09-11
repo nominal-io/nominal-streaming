@@ -54,6 +54,12 @@ pub struct NominalStreamOpts {
     pub max_buffered_requests: usize,
     pub request_dispatcher_tasks: usize,
     pub base_api_url: String,
+    /// Emit request runtime metrics from the builder's Core consumer. Disabled by default.
+    ///
+    /// Each successful data request sends five metric points in one additional,
+    /// best-effort request to the same dataset. File-only streams are unaffected.
+    /// Configure manually supplied consumers separately.
+    pub track_metrics: bool,
 }
 
 impl Default for NominalStreamOpts {
@@ -64,6 +70,7 @@ impl Default for NominalStreamOpts {
             max_buffered_requests: 4,
             request_dispatcher_tasks: 8,
             base_api_url: PRODUCTION_API_URL.to_string(),
+            track_metrics: false,
         }
     }
 }
@@ -215,6 +222,7 @@ impl NominalDatasetStreamBuilder {
                     auth_provider.clone(),
                     dataset.clone(),
                 )
+                .with_track_metrics(self.opts.track_metrics)
             })
     }
 
