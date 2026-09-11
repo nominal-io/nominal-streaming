@@ -558,7 +558,7 @@ where
         if self.unflushed.is_empty() {
             return;
         }
-        info!(
+        debug!(
             "flushing writer for {:?} with {} points",
             self.channel,
             self.unflushed.len()
@@ -576,7 +576,7 @@ where
     Vec<T>: IntoPoints,
 {
     fn drop(&mut self) {
-        info!("flushing then dropping writer for: {:?}", self.channel);
+        debug!("flushing then dropping writer for: {:?}", self.channel);
         self.flush();
     }
 }
