@@ -490,3 +490,127 @@ fn excessive_retry_after_backs_up_without_retrying_early() {
     assert_eq!(stats.retries, 0);
     assert_eq!(stats.backed_up_records, 1);
 }
+
+#[test]
+fn serialized_limit_splits_unicode_and_arguments_independently_of_memory_budget() {
+    let transport = target(0, true);
+    let opts = LogStreamOptions {
+        max_request_bytes: 512,
+        ..fast_options()
+    };
+    let stream =
+        NominalLogStream::start(opts, Some(transport.clone()), "fixture".into(), None).unwrap();
+    let records: Vec<_> = (0..40)
+        .map(|i| {
+            LogRecord::new(
+                -1 - i,
+                "🚀".repeat(30),
+                HashMap::from([
+                    (String::new(), String::new()),
+                    ("属性".into(), "é".repeat(45)),
+                ]),
+            )
+        })
+        .collect();
+    stream.enqueue_batch("channel", records).unwrap();
+    assert_eq!(stream.close().unwrap().acknowledged_records, 40);
+    let requests = transport.requests.lock().unwrap();
+    assert!(requests.len() > 1);
+    assert!(requests.iter().all(|r| r.encoded_len() <= 512));
+}
+
+#[test]
+fn serialized_oversized_singleton_rejects_entire_input() {
+    let transport = target(0, true);
+    let opts = LogStreamOptions {
+        max_request_bytes: 512,
+        ..fast_options()
+    };
+    let stream =
+        NominalLogStream::start(opts, Some(transport.clone()), "fixture".into(), None).unwrap();
+    assert!(stream
+        .enqueue_batch("channel", vec![record("small"), record(&"x".repeat(512))])
+        .is_err());
+    assert_eq!(stream.close().unwrap().accepted_records, 0);
+    assert!(transport.requests.lock().unwrap().is_empty());
+}
+
+#[test]
+fn admission_reserves_encoding_capacity_before_accepting() {
+    let input = record(&"x".repeat(2048));
+    let record_only = input.accounted_bytes("a");
+    let transport = target(0, true);
+    let opts = LogStreamOptions {
+        max_batch_bytes: record_only,
+        max_buffered_bytes: record_only,
+        ..fast_options()
+    };
+    let stream =
+        NominalLogStream::start(opts, Some(transport.clone()), "fixture".into(), None).unwrap();
+    assert!(stream.enqueue("a", input).is_err());
+    assert_eq!(stream.close().unwrap().accepted_records, 0);
+    assert!(transport.requests.lock().unwrap().is_empty());
+}
+
+#[test]
+fn request_limit_includes_multiple_channels_and_dataset_envelope() {
+    let transport = target(0, true);
+    let opts = LogStreamOptions {
+        max_request_bytes: 512,
+        max_request_delay: Duration::from_secs(60),
+        ..fast_options()
+    };
+    let stream =
+        NominalLogStream::start(opts, Some(transport.clone()), "r".repeat(250), None).unwrap();
+    for i in 0..80 {
+        stream
+            .enqueue(&format!("channel-{i}"), record("small"))
+            .unwrap();
+    }
+    assert_eq!(stream.close().unwrap().acknowledged_records, 80);
+    let requests = transport.requests.lock().unwrap();
+    assert!(requests.len() > 1);
+    assert!(requests.iter().all(|r| r.encoded_len() <= 512));
+    assert_eq!(requests.iter().map(|r| r.batches.len()).sum::<usize>(), 80);
+}
+
+#[test]
+fn encoder_rejects_oversize_before_encoding_and_preserves_roundtrip() {
+    let mut batch = super::batch::Batch::default();
+    let record = record(&"abcdef".repeat(200));
+    let size = super::batch::RecordSize::new(&record);
+    batch.push("channel", record, size, 0);
+    let request = batch.into_request("fixture");
+    let limit = request.encoded_len();
+    assert!(transport::encode(&request, limit - 1).is_err());
+    let body = transport::encode(&request, limit).unwrap();
+    assert_eq!(
+        request,
+        wire::WriteBatchesRequest::decode(zstd::decode_all(body.as_ref()).unwrap().as_slice())
+            .unwrap()
+    );
+}
+
+#[test]
+fn exactly_full_serialized_batch_dispatches_without_waiting_for_timer() {
+    let input = record(&"x".repeat(600));
+    let limit = super::batch::RecordSize::new(&input).singleton_len("channel", "fixture");
+    let transport = target(0, true);
+    let opts = LogStreamOptions {
+        max_request_bytes: limit,
+        max_request_delay: Duration::from_secs(60),
+        ..fast_options()
+    };
+    let stream =
+        NominalLogStream::start(opts, Some(transport.clone()), "fixture".into(), None).unwrap();
+    stream.enqueue("channel", input).unwrap();
+    for _ in 0..100 {
+        if transport.attempts.load(Ordering::Relaxed) != 0 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    let sent_without_close = transport.attempts.load(Ordering::Relaxed) != 0;
+    stream.close().unwrap();
+    assert!(sent_without_close);
+}

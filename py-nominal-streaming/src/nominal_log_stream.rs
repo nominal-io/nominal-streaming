@@ -33,12 +33,13 @@ pub struct PyNominalLogStreamOpts {
 #[pymethods]
 impl PyNominalLogStreamOpts {
     #[new]
-    #[pyo3(signature = (*, max_batch_bytes=16*1024*1024, max_buffered_bytes=64*1024*1024,
-        max_records_per_batch=50_000, max_request_delay_secs=0.25, num_upload_workers=4,
+    #[pyo3(signature = (*, max_request_bytes=8*1024*1024, max_batch_bytes=16*1024*1024, max_buffered_bytes=64*1024*1024,
+        max_records_per_batch=10_000, max_request_delay_secs=0.25, num_upload_workers=4,
         base_api_url="https://api.gov.nominal.io/api", request_timeout_secs=30.0,
         max_retries=3, initial_backoff_secs=0.1, max_backoff_secs=5.0, max_retry_after_secs=30.0))]
     #[allow(clippy::too_many_arguments)]
     fn new(
+        max_request_bytes: usize,
         max_batch_bytes: usize,
         max_buffered_bytes: usize,
         max_records_per_batch: usize,
@@ -53,6 +54,7 @@ impl PyNominalLogStreamOpts {
     ) -> PyResult<Self> {
         Ok(Self {
             inner: LogStreamOptions {
+                max_request_bytes,
                 max_batch_bytes,
                 max_buffered_bytes,
                 max_records_per_batch,

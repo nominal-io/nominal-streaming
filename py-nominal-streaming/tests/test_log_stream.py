@@ -102,6 +102,20 @@ class LogStreamTests(unittest.TestCase):
             self.assertEqual(rescued.failed_records, 0)
             stream.close()
 
+    def test_serialized_byte_limit_rejects_atomically_and_splits(self):
+        with tempfile.TemporaryDirectory() as directory:
+            opts = PyNominalLogStreamOpts(max_request_bytes=512)
+            stream = NominalLogStream(opts=opts).to_file(Path(directory)).open()
+            with self.assertRaisesRegex(RuntimeError, "max_request_bytes"):
+                stream.enqueue_batch("channel", [0, 1], ["small", "🚀" * 128])
+            self.assertEqual(stream.stats().accepted_records, 0)
+            stream.enqueue_batch("channel", list(range(20)), ["🚀" * 60] * 20)
+            stream.close()
+            files = list(Path(directory).glob("*.jsonl"))
+            self.assertGreater(len(files), 1)
+            self.assertEqual(sum(len(p.read_text().splitlines()) for p in files), 20)
+            self.assertEqual(stream.stats().backed_up_records, 20)
+
     def test_bad_duration_is_python_exception(self):
         for value in [float("nan"), float("inf"), -1.0]:
             with self.assertRaises(ValueError):

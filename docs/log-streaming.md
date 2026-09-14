@@ -10,7 +10,8 @@ from nominal_streaming import NominalLogStream, PyNominalLogStreamOpts
 
 opts = PyNominalLogStreamOpts(
     base_api_url="https://api.gov.nominal.io/api",
-    max_batch_bytes=16 * 1024 * 1024,
+    max_request_bytes=8 * 1024 * 1024,  # Uncompressed protobuf, including framing
+    max_batch_bytes=16 * 1024 * 1024,  # Charged memory, including encoding reservations
     max_buffered_bytes=64 * 1024 * 1024,
 )
 with (
@@ -74,10 +75,20 @@ Supply a multi-thread Tokio runtime with I/O and timers enabled, and keep it ali
 - Python `close(wait=False)` stops acceptance and drains in a background native thread. Follow with `close(wait=True)` to wait and inspect the outcome. It does not cancel or deliberately discard accepted records. Explicit close is required before interpreter/process exit when delivery matters.
 - Stats distinguish accepted, acknowledged, backed-up and unpreserved failed records. `last_error` reports the most recent delivery/preservation error even if backup succeeded. A successful flush can therefore include backed-up records; it does not mean all records reached Core.
 
+## Serialized requests and memory budgets
+
+Defaults are **8 MiB uncompressed protobuf per request**, **10,000 messages**, **16 MiB charged memory per batch**, **64 MiB total charged memory**, **250 ms flush delay**, and **4 upload workers**. Any limit can close a batch early. A message count does not predict request size: argument keys and values and message text all count.
+
+The stream computes exact protobuf sizes incrementally, including timestamps, UTF-8 byte lengths, argument map entries, channel/dataset envelopes and changing length prefixes. It does not serialize the growing batch after every insertion. The encoder checks the generated request's actual size again before sending; an unexpected sizing error follows the normal unconfirmed-batch preservation path.
+
+Memory admission charges record allocations and reserves capacity for both raw protobuf and the worst-case zstd output. Those reservations remain charged through retries and until ACK, successful backup or rescue. Compression uses a pre-sized bounded output buffer. This is a conservative allocation budget, **not a process RSS cap**: caller-owned input awaiting acceptance, allocator bookkeeping/retained pages, thread stacks, HTTP/TLS and codec context overhead are outside it. Codec work is limited by request size and worker count.
+
+A record that cannot fit by itself is rejected explicitly before any record in its enqueue call is accepted. Nothing is truncated. The public protobuf limit is not a promise about an internal Kafka encoding's size or backend availability.
+
 ## Configuring larger batches
 
 The default record and byte limits are configurable, not hard caps. A throughput-oriented
-configuration can raise `max_records_per_batch`, `max_batch_bytes`,
+configuration can raise `max_records_per_batch`, `max_request_bytes`, `max_batch_bytes`,
 `max_buffered_bytes`, `num_upload_workers`, and `max_request_delay` together
 (`max_request_delay_secs` in Python). A request closes at whichever batch limit it reaches
 first. Accounted bytes include allocation overhead, so 50,000 records may require much
@@ -137,3 +148,5 @@ assert file.ingest_status is IngestStatus.SUCCESS
 ```
 
 Retain the local segment until terminal success is verified. Importing it again can create duplicates. Backend-added internal ingest metadata is normal bookkeeping. Journal files are uncompressed JSONL for compatibility; zstd here describes wire content encoding, not a claim that `.jsonl.zst` file ingestion is supported.
+
+For the finite capacity example, `BENCH_POLICY=defaults` uses the actual library defaults (except staging URL). `stress` deliberately raises limits; result metadata records the effective request, memory, count, worker and flush-delay settings. Do not treat stress results as default-policy behavior.

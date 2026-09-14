@@ -1,5 +1,6 @@
 //! Bounded streaming of timestamped log messages.
 
+mod batch;
 mod journal;
 mod stream;
 mod transport;
@@ -52,7 +53,12 @@ impl LogRecord {
 /// Limits include ready and in-flight batches, so a stalled backend applies backpressure.
 #[derive(Clone, Debug)]
 pub struct LogStreamOptions {
+    /// Maximum uncompressed protobuf request size, including all framing.
+    pub max_request_bytes: usize,
+    /// Charged memory per batch, including raw/compressed encoding reservations.
     pub max_batch_bytes: usize,
+    /// Total charged memory for pending, queued, in-flight and retained failed records.
+    /// Excludes caller-owned input, allocator bookkeeping and per-worker codec/runtime overhead.
     pub max_buffered_bytes: usize,
     pub max_records_per_batch: usize,
     pub max_request_delay: Duration,
@@ -70,9 +76,10 @@ pub struct LogStreamOptions {
 impl Default for LogStreamOptions {
     fn default() -> Self {
         Self {
+            max_request_bytes: 8 * 1024 * 1024,
             max_batch_bytes: 16 * 1024 * 1024,
             max_buffered_bytes: 64 * 1024 * 1024,
-            max_records_per_batch: 50_000,
+            max_records_per_batch: 10_000,
             max_request_delay: Duration::from_millis(250),
             num_upload_workers: 4,
             base_api_url: crate::client::PRODUCTION_API_URL.into(),
@@ -87,7 +94,8 @@ impl Default for LogStreamOptions {
 
 impl LogStreamOptions {
     fn validate(&self) -> Result<(), LogStreamError> {
-        if self.max_batch_bytes < 512
+        if self.max_request_bytes < 512
+            || self.max_batch_bytes < 512
             || self.max_buffered_bytes < self.max_batch_bytes
             || self.max_records_per_batch == 0
             || self.num_upload_workers == 0

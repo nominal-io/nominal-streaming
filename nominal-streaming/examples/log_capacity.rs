@@ -113,17 +113,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .build()?;
     // Scale the accounted byte budgets with the optional richer fixture payload.
     // Total includes queued and in-flight work, capped at 6 GiB; the launcher checks available host memory.
-    let batch_bytes = batch * (4096 + extra_args * 256 + extra_message_bytes * 2);
+    let batch_bytes = batch * (4096 + extra_args * 512 + extra_message_bytes * 4);
     let buffer_bytes = (batch_bytes * (workers + 1)).min(6 * 1024 * 1024 * 1024);
-    let opts = LogStreamOptions {
-        base_api_url: url,
-        max_records_per_batch: batch,
-        max_batch_bytes: batch_bytes,
-        max_buffered_bytes: buffer_bytes,
-        max_request_delay: Duration::from_secs(2),
-        num_upload_workers: workers,
-        ..Default::default()
+    let policy = std::env::var("BENCH_POLICY").unwrap_or_else(|_| "stress".into());
+    let opts = match policy.as_str() {
+        "defaults" => LogStreamOptions {
+            base_api_url: url,
+            ..Default::default()
+        },
+        "stress" => LogStreamOptions {
+            base_api_url: url,
+            max_request_bytes: batch_bytes,
+            max_records_per_batch: batch,
+            max_batch_bytes: batch_bytes,
+            max_buffered_bytes: buffer_bytes,
+            max_request_delay: Duration::from_secs(2),
+            num_upload_workers: workers,
+            ..Default::default()
+        },
+        _ => return Err("BENCH_POLICY must be defaults or stress".into()),
     };
+    let batch = opts.max_records_per_batch;
+    let workers = opts.num_upload_workers;
+    let batch_bytes = opts.max_batch_bytes;
+    let buffer_bytes = opts.max_buffered_bytes;
+    let request_bytes = opts.max_request_bytes;
+    let flush_delay_ms = opts.max_request_delay.as_millis();
     let stream = Arc::new(
         NominalLogStreamBuilder::default()
             .with_options(opts)
@@ -172,7 +187,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let s = stream.stats();
     println!(
         "{}",
-        json!({"kind":"result","run":run,"phase":phase,"base_ns":base,"configured_records":count,"extra_args":extra_args,"extra_message_bytes":extra_message_bytes,"batch_records":batch,"workers":workers,"max_batch_bytes":batch_bytes,"max_buffered_bytes":buffer_bytes,"producer_seconds":producer_seconds,"total_seconds":total_seconds,"drain_seconds":total_seconds-producer_seconds,"ack_per_second":s.acknowledged_records as f64/total_seconds,"requests_per_second":s.requests as f64/total_seconds,"accepted":s.accepted_records,"acknowledged":s.acknowledged_records,"backed_up":s.backed_up_records,"failed":s.failed_records,"requests":s.requests,"retries":s.retries,"buffered_bytes":s.buffered_bytes,"last_error":s.last_error,"input_error":input_error,"close_error":close_error})
+        json!({"kind":"result","run":run,"phase":phase,"base_ns":base,"configured_records":count,"policy":policy,"max_request_bytes":request_bytes,"flush_delay_ms":flush_delay_ms,"extra_args":extra_args,"extra_message_bytes":extra_message_bytes,"batch_records":batch,"workers":workers,"max_batch_bytes":batch_bytes,"max_buffered_bytes":buffer_bytes,"producer_seconds":producer_seconds,"total_seconds":total_seconds,"drain_seconds":total_seconds-producer_seconds,"ack_per_second":s.acknowledged_records as f64/total_seconds,"requests_per_second":s.requests as f64/total_seconds,"accepted":s.accepted_records,"acknowledged":s.acknowledged_records,"backed_up":s.backed_up_records,"failed":s.failed_records,"requests":s.requests,"retries":s.retries,"buffered_bytes":s.buffered_bytes,"last_error":s.last_error,"input_error":input_error,"close_error":close_error})
     );
     if s.acknowledged_records != count as u64 || input_error.is_some() || close_error.is_some() {
         std::process::exit(2);

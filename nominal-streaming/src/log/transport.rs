@@ -173,9 +173,18 @@ fn parse_retry_after(value: &str) -> Option<Duration> {
         })
 }
 
-pub(super) fn encode(request: &wire::WriteBatchesRequest) -> std::io::Result<Bytes> {
+pub(super) fn encode(
+    request: &wire::WriteBatchesRequest,
+    max_request_bytes: usize,
+) -> std::io::Result<Bytes> {
+    if request.encoded_len() > max_request_bytes {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "protobuf request exceeds max_request_bytes",
+        ));
+    }
     let raw = request.encode_to_vec();
-    let compressed = zstd::encode_all(raw.as_slice(), 1)?;
+    let compressed = zstd::bulk::compress(raw.as_slice(), 1)?;
     #[cfg(feature = "instrument")]
     tracing::info!(target: "nominal_streaming::log::attempt", "{}", serde_json::json!({
         "event": "batch_encoded", "raw_bytes": raw.len(), "wire_bytes": compressed.len(),

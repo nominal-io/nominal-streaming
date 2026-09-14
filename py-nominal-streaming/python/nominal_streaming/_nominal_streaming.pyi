@@ -451,8 +451,8 @@ class PyNominalDatasetStream:
 
 class PyNominalLogStreamOpts:
     def __init__(
-        self, *, max_batch_bytes: int = 4194304, max_buffered_bytes: int = 67108864,
-        max_records_per_batch: int = 50000, max_request_delay_secs: float = 0.25,
+        self, *, max_request_bytes: int = 8388608, max_batch_bytes: int = 16777216, max_buffered_bytes: int = 67108864,
+        max_records_per_batch: int = 10000, max_request_delay_secs: float = 0.25,
         num_upload_workers: int = 4, base_api_url: str = "https://api.gov.nominal.io/api",
         request_timeout_secs: float = 30.0, max_retries: int = 3,
         initial_backoff_secs: float = 0.1, max_backoff_secs: float = 5.0,

@@ -5,14 +5,14 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::thread::{self};
-use std::time::Instant;
 
 use conjure_object::ResourceIdentifier;
 use nominal_api::tonic::nominal::direct_channel_writer::v2 as wire;
-use nominal_api::tonic::nominal::types::time::Timestamp;
 use parking_lot::Condvar;
 use parking_lot::Mutex;
 
+use super::batch::Batch;
+use super::batch::RecordSize;
 use super::journal;
 use super::transport;
 use super::transport::CoreTarget;
@@ -79,51 +79,6 @@ impl NominalLogStreamBuilder {
             None => (None, String::new()),
         };
         NominalLogStream::start(self.opts, target, rid, self.backup)
-    }
-}
-
-#[derive(Default)]
-struct Batch {
-    channels: HashMap<String, Vec<LogRecord>>,
-    bytes: usize,
-    count: usize,
-    first_record: Option<Instant>,
-}
-
-impl Batch {
-    fn into_request(self, dataset_rid: &str) -> wire::WriteBatchesRequest {
-        let batches = self
-            .channels
-            .into_iter()
-            .map(|(channel, records)| {
-                let mut timestamps = Vec::with_capacity(records.len());
-                let mut points = Vec::with_capacity(records.len());
-                for record in records {
-                    timestamps.push(Timestamp {
-                        seconds: Some(record.timestamp_ns.div_euclid(1_000_000_000)),
-                        nanos: Some(record.timestamp_ns.rem_euclid(1_000_000_000)),
-                    });
-                    points.push(wire::LogPoint {
-                        value: Some(wire::LogValue {
-                            message: record.message,
-                            args: record.args,
-                        }),
-                    });
-                }
-                wire::RecordsBatch {
-                    channel,
-                    tags: HashMap::new(),
-                    points: Some(wire::Points {
-                        timestamps,
-                        points: Some(wire::points::Points::LogPoints(wire::LogPoints { points })),
-                    }),
-                }
-            })
-            .collect();
-        wire::WriteBatchesRequest {
-            batches,
-            data_source_rid: dataset_rid.into(),
-        }
     }
 }
 
@@ -225,6 +180,7 @@ impl NominalLogStream {
             return Err(LogStreamError::Invalid("channel must not be empty".into()));
         }
         let mut total_bytes = 0usize;
+        let mut sizes = Vec::with_capacity(records.len());
         for record in &records {
             if self.shared.backup.is_some()
                 && (record.args.contains_key("MESSAGE")
@@ -234,7 +190,18 @@ impl NominalLogStream {
                     "journal backups reserve MESSAGE and __REALTIME_TIMESTAMP argument keys".into(),
                 ));
             }
-            let bytes = record.accounted_bytes(channel);
+            let size = RecordSize::new(record);
+            if size.singleton_len(channel, &self.shared.dataset_rid)
+                > self.shared.opts.max_request_bytes
+            {
+                return Err(LogStreamError::Invalid(
+                    "log record exceeds max_request_bytes".into(),
+                ));
+            }
+            let bytes = record
+                .accounted_bytes(channel)
+                .saturating_add(size.encoding_reservation(channel, &self.shared.dataset_rid));
+            sizes.push((size, bytes));
             if bytes > self.shared.opts.max_batch_bytes {
                 return Err(LogStreamError::Invalid(
                     "log record exceeds max_batch_bytes".into(),
@@ -271,24 +238,22 @@ impl NominalLogStream {
         state.stats.accepted_records += records.len() as u64;
         state.unfinished += records.len();
         state.stats.buffered_bytes += total_bytes;
-        for record in records {
-            let bytes = record.accounted_bytes(channel);
+        for (record, (size, bytes)) in records.into_iter().zip(sizes) {
             if state.pending.count > 0
-                && (state.pending.bytes + bytes > self.shared.opts.max_batch_bytes
+                && (state.pending.bytes.saturating_add(bytes) > self.shared.opts.max_batch_bytes
+                    || state
+                        .pending
+                        .encoded_len_after(channel, size, &self.shared.dataset_rid)
+                        > self.shared.opts.max_request_bytes
                     || state.pending.count >= self.shared.opts.max_records_per_batch)
             {
                 queue_pending(&mut state);
             }
-            state.pending.first_record.get_or_insert_with(Instant::now);
-            state.pending.bytes += bytes;
-            state.pending.count += 1;
-            if let Some(records) = state.pending.channels.get_mut(channel) {
-                records.push(record);
-            } else {
-                state.pending.channels.insert(channel.into(), vec![record]);
-            }
+            state.pending.push(channel, record, size, bytes);
             if state.pending.count >= self.shared.opts.max_records_per_batch
                 || state.pending.bytes >= self.shared.opts.max_batch_bytes
+                || state.pending.encoded_len(&self.shared.dataset_rid)
+                    >= self.shared.opts.max_request_bytes
             {
                 queue_pending(&mut state);
             }
@@ -493,7 +458,7 @@ fn deliver(shared: &Shared, request: &wire::WriteBatchesRequest) -> Result<bool,
     #[cfg(feature = "instrument")]
     let _entered = span.enter();
     let error = if let Some(target) = &shared.target {
-        match transport::encode(request) {
+        match transport::encode(request, shared.opts.max_request_bytes) {
             Ok(body) => {
                 let mut delay = shared.opts.initial_backoff;
                 let mut last = String::new();
