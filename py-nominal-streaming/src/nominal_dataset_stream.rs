@@ -318,6 +318,12 @@ impl PyNominalDatasetStream {
         tags: Option<HashMap<String, String>>,
     ) -> PyResult<()> {
         let ts = parse_timestamp(timestamp);
+        let start = self
+            .builder
+            .opts
+            .as_ref()
+            .filter(|opts| opts.inner.track_metrics)
+            .map(|_| std::time::UNIX_EPOCH.elapsed().unwrap().as_nanos() as i128);
         // built once for the whole record rather than per channel
         let tags = into_tag_map(tags);
         let mut entries: Vec<(ChannelDescriptor, PointsType)> =
@@ -331,7 +337,24 @@ impl PyNominalDatasetStream {
             entries.push((ch, extract_single_points(ts, &v)?));
         }
 
-        self.push_many(py, entries)
+        self.push_many(py, entries)?;
+        if let Some(start) = start {
+            let end = std::time::UNIX_EPOCH.elapsed().unwrap().as_nanos() as i128;
+            self.push_many(
+                py,
+                vec![
+                    (
+                        ChannelDescriptor::new("enque_dict_start_staleness"),
+                        single_double(ts, (start - i128::from(timestamp)) as f64 / 1e9),
+                    ),
+                    (
+                        ChannelDescriptor::new("enque_dict_end_staleness"),
+                        single_double(ts, (end - i128::from(timestamp)) as f64 / 1e9),
+                    ),
+                ],
+            )?;
+        }
+        Ok(())
     }
 
     #[pyo3(

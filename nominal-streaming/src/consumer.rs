@@ -55,6 +55,7 @@ pub struct NominalCoreConsumer<A: AuthProvider> {
     handle: tokio::runtime::Handle,
     auth_provider: A,
     data_source_rid: ResourceIdentifier,
+    metrics: Option<Arc<crate::metrics::PendingMetrics>>,
 }
 
 impl<A: AuthProvider> NominalCoreConsumer<A> {
@@ -69,7 +70,19 @@ impl<A: AuthProvider> NominalCoreConsumer<A> {
             handle,
             auth_provider,
             data_source_rid,
+            metrics: None,
         }
+    }
+
+    /// Piggyback completed request metrics on later data requests to the same dataset.
+    /// Pending metrics are bounded and best-effort; no extra requests are sent.
+    pub fn with_track_metrics(mut self, enabled: bool) -> Self {
+        if enabled {
+            self.metrics.get_or_insert_with(Default::default);
+        } else {
+            self.metrics = None;
+        }
+        self
     }
 }
 
@@ -88,15 +101,24 @@ impl<T: AuthProvider + 'static> WriteRequestConsumer for NominalCoreConsumer<T> 
             .auth_provider
             .token()
             .ok_or(ConsumerError::MissingTokenError)?;
-        let write_request =
-            client::encode_request(&request.encode_to_vec(), &token, &self.data_source_rid)?;
-        self.handle.block_on(async {
-            self.client
-                .send(write_request)
-                .await
-                .map_err(|e| ConsumerError::RequestError(format!("{e:?}")))
-        })?;
-        Ok(())
+        let encode = |request: &WriteRequestNominal| {
+            client::encode_request(&request.encode_to_vec(), &token, &self.data_source_rid)
+                .map_err(ConsumerError::from)
+        };
+        let send = |write_request| {
+            self.handle.block_on(async {
+                self.client
+                    .send(write_request)
+                    .await
+                    .map(|_| ())
+                    .map_err(|e| ConsumerError::RequestError(format!("{e:?}")))
+            })
+        };
+        if let Some(metrics) = &self.metrics {
+            metrics.consume(request, encode, send)
+        } else {
+            send(encode(request)?)
+        }
     }
 }
 
