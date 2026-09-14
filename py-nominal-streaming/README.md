@@ -107,3 +107,21 @@ If a journal write also fails, accepted batches remain in memory while the strea
 object is alive. After fixing disk access, call `stream.save_failed(Path("recovered-logs"))`
 and then `stream.close()`. Recovery may produce duplicate segments after a partial disk
 write; inspect the manifests before importing recovered files.
+
+Log options follow `PyNominalStreamOpts`: keyword configuration, read-only properties,
+fluent `with_*` setters, and a readable `repr`. Streams copy their options when configured.
+
+```python
+opts = (
+    PyNominalLogStreamOpts()
+    .with_max_request_bytes(8 * 1024 * 1024)
+    .with_num_upload_workers(4)
+    .with_num_runtime_workers(2)
+)
+stream = NominalLogStream().with_options(opts).enable_logging("info")
+```
+
+Configure the destination before opening the stream. Runtime workers drive asynchronous
+HTTP I/O; upload workers perform compression and dispatch. Logs default to two runtime
+workers and four upload workers. Runtime workers must be positive but need not match the
+upload count. Configuration is frozen once opened; use a new stream to change it.

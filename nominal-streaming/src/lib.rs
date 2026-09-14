@@ -159,6 +159,8 @@ pub mod client;
 pub mod consumer;
 pub mod listener;
 pub mod log;
+#[cfg(feature = "logging")]
+mod logging;
 #[cfg(test)]
 mod simulated_consumer;
 pub mod stream;

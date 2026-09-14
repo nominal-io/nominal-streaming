@@ -60,16 +60,34 @@ class NominalLogStream:
         self._auth_header = auth_header
         self._impl = PyNominalLogStream(opts)
 
+    def enable_logging(self, log_directive: str = "debug") -> Self:
+        """Enable Rust stream logging when the stream opens.
+
+        Args:
+            log_directive: Tracing filter directive, such as "info" or "nominal_streaming=debug".
+        """
+        self._impl = self._impl.enable_logging(log_directive)
+        return self
+
+    def with_options(self, opts: PyNominalLogStreamOpts) -> Self:
+        """Set stream options before opening.
+
+        Args:
+            opts: Batching, buffering, retry and runtime configuration.
+        """
+        self._impl = self._impl.with_options(opts)
+        return self
+
     def with_core_consumer(self, dataset_rid: str) -> Self:
-        self._impl.with_core_consumer(dataset_rid, self._auth_header)
+        self._impl = self._impl.with_core_consumer(dataset_rid, self._auth_header)
         return self
 
     def with_file_fallback(self, directory: str | Path) -> Self:
-        self._impl.with_file_fallback(Path(directory))
+        self._impl = self._impl.with_file_fallback(Path(directory))
         return self
 
     def to_file(self, directory: str | Path) -> Self:
-        self._impl.to_file(Path(directory))
+        self._impl = self._impl.to_file(Path(directory))
         return self
 
     def open(self) -> Self:

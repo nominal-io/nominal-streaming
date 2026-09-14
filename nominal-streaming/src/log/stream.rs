@@ -64,6 +64,20 @@ impl NominalLogStreamBuilder {
         self.file = Some(directory.into());
         self
     }
+    /// Enable tracing with the default filter or RUST_LOG environment setting.
+    #[cfg(feature = "logging")]
+    pub fn enable_logging(self) -> Self {
+        crate::logging::init(None);
+        self
+    }
+
+    /// Enable tracing with an explicit filter directive.
+    #[cfg(feature = "logging")]
+    pub fn enable_logging_with_directive(self, directive: &str) -> Self {
+        crate::logging::init(Some(directive));
+        self
+    }
+
     /// Validate the configuration and start upload workers.
     pub fn build(self) -> Result<NominalLogStream, LogStreamError> {
         self.opts.validate()?;

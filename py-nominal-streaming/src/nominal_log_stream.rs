@@ -3,7 +3,6 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::time::Duration;
 
 use nominal_streaming::log::LogRecord;
 use nominal_streaming::log::LogStreamError;
@@ -16,61 +15,11 @@ use pyo3::exceptions::PyRuntimeError;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
+use crate::nominal_log_stream_opts::PyNominalLogStreamOpts;
+
 fn error(err: impl std::fmt::Display) -> PyErr {
     PyRuntimeError::new_err(err.to_string())
 }
-fn duration(value: f64) -> PyResult<Duration> {
-    Duration::try_from_secs_f64(value)
-        .map_err(|_| PyValueError::new_err("duration must be finite and nonnegative"))
-}
-
-#[pyclass(from_py_object)]
-#[derive(Clone)]
-pub struct PyNominalLogStreamOpts {
-    inner: LogStreamOptions,
-}
-
-#[pymethods]
-impl PyNominalLogStreamOpts {
-    #[new]
-    #[pyo3(signature = (*, max_request_bytes=8*1024*1024, max_batch_bytes=16*1024*1024, max_buffered_bytes=64*1024*1024,
-        max_records_per_batch=10_000, max_request_delay_secs=0.25, num_upload_workers=4,
-        base_api_url="https://api.gov.nominal.io/api", request_timeout_secs=30.0,
-        max_retries=3, initial_backoff_secs=0.1, max_backoff_secs=5.0, max_retry_after_secs=30.0))]
-    #[allow(clippy::too_many_arguments)]
-    fn new(
-        max_request_bytes: usize,
-        max_batch_bytes: usize,
-        max_buffered_bytes: usize,
-        max_records_per_batch: usize,
-        max_request_delay_secs: f64,
-        num_upload_workers: usize,
-        base_api_url: &str,
-        request_timeout_secs: f64,
-        max_retries: usize,
-        initial_backoff_secs: f64,
-        max_backoff_secs: f64,
-        max_retry_after_secs: f64,
-    ) -> PyResult<Self> {
-        Ok(Self {
-            inner: LogStreamOptions {
-                max_request_bytes,
-                max_batch_bytes,
-                max_buffered_bytes,
-                max_records_per_batch,
-                max_request_delay: duration(max_request_delay_secs)?,
-                num_upload_workers,
-                base_api_url: base_api_url.into(),
-                request_timeout: duration(request_timeout_secs)?,
-                max_retries,
-                initial_backoff: duration(initial_backoff_secs)?,
-                max_backoff: duration(max_backoff_secs)?,
-                max_retry_after: duration(max_retry_after_secs)?,
-            },
-        })
-    }
-}
-
 #[pyclass(name = "LogStreamStats", get_all)]
 pub struct PyLogStreamStats {
     accepted_records: u64,
@@ -116,7 +65,9 @@ impl OwnedStream {
 
 #[pyclass]
 pub struct PyNominalLogStream {
+    log_level: Option<String>,
     opts: LogStreamOptions,
+    num_runtime_workers: usize,
     core: Option<(BearerToken, ResourceIdentifier)>,
     file: Option<PathBuf>,
     fallback: Option<PathBuf>,
@@ -139,7 +90,10 @@ impl PyNominalLogStream {
     #[new]
     #[pyo3(signature = (opts=None))]
     fn new(opts: Option<PyNominalLogStreamOpts>) -> Self {
+        let num_runtime_workers = opts.as_ref().map_or(2, |opts| opts.num_runtime_workers);
         Self {
+            log_level: None,
+            num_runtime_workers,
             opts: opts.map(|o| o.inner).unwrap_or_default(),
             core: None,
             file: None,
@@ -147,39 +101,71 @@ impl PyNominalLogStream {
             owned: None,
         }
     }
+    #[pyo3(signature = (log_level=None))]
+    fn enable_logging<'py>(
+        mut slf: PyRefMut<'py, Self>,
+        log_level: Option<&str>,
+    ) -> PyResult<PyRefMut<'py, Self>> {
+        slf.configuring()?;
+        slf.log_level = Some(log_level.unwrap_or("debug").into());
+        Ok(slf)
+    }
+    fn with_options(
+        mut slf: PyRefMut<'_, Self>,
+        opts: PyNominalLogStreamOpts,
+    ) -> PyResult<PyRefMut<'_, Self>> {
+        slf.configuring()?;
+        slf.num_runtime_workers = opts.num_runtime_workers;
+        slf.opts = opts.inner;
+        Ok(slf)
+    }
     #[pyo3(signature = (dataset_rid, token=None))]
-    fn with_core_consumer(&mut self, dataset_rid: &str, token: Option<&str>) -> PyResult<()> {
-        self.configuring()?;
+    fn with_core_consumer<'py>(
+        mut slf: PyRefMut<'py, Self>,
+        dataset_rid: &str,
+        token: Option<&str>,
+    ) -> PyResult<PyRefMut<'py, Self>> {
+        slf.configuring()?;
         let token = token
             .map(str::to_owned)
             .or_else(|| std::env::var("NOMINAL_TOKEN").ok())
             .ok_or_else(|| error("NOMINAL_TOKEN not set and no token provided"))?;
-        self.core = Some((
+        slf.core = Some((
             BearerToken::new(&token).map_err(error)?,
             ResourceIdentifier::new(dataset_rid).map_err(error)?,
         ));
-        Ok(())
+        Ok(slf)
     }
     #[pyo3(name = "to_file")]
-    fn set_file_target(&mut self, directory: PathBuf) -> PyResult<()> {
-        self.configuring()?;
-        self.file = Some(directory);
-        Ok(())
+    fn set_file_target(
+        mut slf: PyRefMut<'_, Self>,
+        directory: PathBuf,
+    ) -> PyResult<PyRefMut<'_, Self>> {
+        slf.configuring()?;
+        slf.file = Some(directory);
+        Ok(slf)
     }
-    fn with_file_fallback(&mut self, directory: PathBuf) -> PyResult<()> {
-        self.configuring()?;
-        self.fallback = Some(directory);
-        Ok(())
+    fn with_file_fallback(
+        mut slf: PyRefMut<'_, Self>,
+        directory: PathBuf,
+    ) -> PyResult<PyRefMut<'_, Self>> {
+        slf.configuring()?;
+        slf.fallback = Some(directory);
+        Ok(slf)
     }
     fn open(&mut self, py: Python<'_>) -> PyResult<()> {
         self.configuring()?;
         let owned = py.detach(|| -> PyResult<OwnedStream> {
             let runtime = tokio::runtime::Builder::new_multi_thread()
-                .worker_threads(2)
+                .worker_threads(self.num_runtime_workers)
+                .thread_name("nominal-log-runtime")
                 .enable_all()
                 .build()
                 .map_err(error)?;
             let mut builder = NominalLogStream::builder().with_options(self.opts.clone());
+            if let Some(level) = &self.log_level {
+                builder = builder.enable_logging_with_directive(level);
+            }
             if let Some((token, rid)) = &self.core {
                 builder =
                     builder.stream_to_core(token.clone(), rid.clone(), runtime.handle().clone());
