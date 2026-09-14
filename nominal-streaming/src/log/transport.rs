@@ -174,7 +174,14 @@ fn parse_retry_after(value: &str) -> Option<Duration> {
 }
 
 pub(super) fn encode(request: &wire::WriteBatchesRequest) -> std::io::Result<Bytes> {
-    zstd::encode_all(request.encode_to_vec().as_slice(), 1).map(Bytes::from)
+    let raw = request.encode_to_vec();
+    let compressed = zstd::encode_all(raw.as_slice(), 1)?;
+    #[cfg(feature = "instrument")]
+    tracing::info!(target: "nominal_streaming::log::attempt", "{}", serde_json::json!({
+        "event": "batch_encoded", "raw_bytes": raw.len(), "wire_bytes": compressed.len(),
+        "records": request.batches.iter().map(|b| b.points.as_ref().map_or(0, |p| p.timestamps.len())).sum::<usize>(),
+    }));
+    Ok(Bytes::from(compressed))
 }
 
 pub(super) struct CoreTarget {

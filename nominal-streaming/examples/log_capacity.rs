@@ -16,7 +16,25 @@ fn env(name: &str) -> String {
     std::env::var(name).unwrap_or_else(|_| panic!("missing {name}"))
 }
 
-fn record(run: &str, phase: &str, sequence: usize, base: i64) -> LogRecord {
+fn synthetic_text(mut state: u64, count: usize) -> String {
+    let mut output = String::with_capacity(count);
+    for _ in 0..count {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        output.push((b'a' + (state % 26) as u8) as char);
+    }
+    output
+}
+
+fn record(
+    run: &str,
+    phase: &str,
+    sequence: usize,
+    base: i64,
+    extra_args: usize,
+    extra_message_bytes: usize,
+) -> LogRecord {
     let level = ["DEBUG", "INFO", "WARNING", "ERROR"][sequence % 4];
     let service = ["telemetry-gateway", "scheduler", "worker", "api"][sequence % 4];
     let component = ["ingest", "routing", "validation", "dispatch"][sequence % 4];
@@ -24,8 +42,8 @@ fn record(run: &str, phase: &str, sequence: usize, base: i64) -> LogRecord {
         "{sequence:016x}{:08x}",
         (sequence as u64 * 0x9e3779b1) & 0xffffffff
     );
-    let message = format!("{level} service={service} component={component} handled synthetic request run={run} sequence={sequence:016x} trace={trace} operation=stream_log outcome=accepted route=/api/v1/events retryable=false payload_class=structured benchmark=true");
-    let args = HashMap::from([
+    let mut message = format!("{level} service={service} component={component} handled synthetic request run={run} sequence={sequence:016x} trace={trace} operation=stream_log outcome=accepted route=/api/v1/events retryable=false payload_class=structured benchmark=true");
+    let mut args = HashMap::from([
         ("benchmark_run".into(), run.into()),
         ("benchmark_phase".into(), phase.into()),
         ("sequence".into(), sequence.to_string()),
@@ -42,6 +60,16 @@ fn record(run: &str, phase: &str, sequence: usize, base: i64) -> LogRecord {
         ("function".into(), "produce_paced_records".into()),
         ("line".into(), "0".into()),
     ]);
+    message.push_str(&synthetic_text(
+        sequence as u64 ^ 0xabcdef,
+        extra_message_bytes,
+    ));
+    for index in 0..extra_args {
+        args.insert(
+            format!("extra_{index:03}"),
+            synthetic_text(sequence as u64 ^ ((index as u64 + 1) << 32), 64),
+        );
+    }
     LogRecord::new(base + sequence as i64, message, args)
 }
 
@@ -67,6 +95,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         return Err("probe bounds exceeded".into());
     }
+    let extra_args: usize = std::env::var("BENCH_EXTRA_ARGS")
+        .unwrap_or_else(|_| "0".into())
+        .parse()?;
+    let extra_message_bytes: usize = std::env::var("BENCH_EXTRA_MESSAGE_BYTES")
+        .unwrap_or_else(|_| "0".into())
+        .parse()?;
+    if extra_args > 116 || extra_message_bytes > 8192 {
+        return Err("payload bounds exceeded".into());
+    }
     let run = env("BENCH_RUN");
     let phase = env("BENCH_PHASE");
     let base: i64 = env("BENCH_BASE_NS").parse()?;
@@ -74,9 +111,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .worker_threads(4)
         .enable_all()
         .build()?;
-    // 4096 accounted bytes per record leaves headroom above this fixture's ~2600 bytes.
+    // Scale the accounted byte budgets with the optional richer fixture payload.
     // Total includes queued and in-flight work, capped at 6 GiB; the launcher checks available host memory.
-    let batch_bytes = batch * 4096;
+    let batch_bytes = batch * (4096 + extra_args * 256 + extra_message_bytes * 2);
     let buffer_bytes = (batch_bytes * (workers + 1)).min(6 * 1024 * 1024 * 1024);
     let opts = LogStreamOptions {
         base_api_url: url,
@@ -115,7 +152,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut input_error = None;
     for start in (0..count).step_by(1000) {
         let records = (start..(start + 1000).min(count))
-            .map(|i| record(&run, &phase, i, base))
+            .map(|i| record(&run, &phase, i, base, extra_args, extra_message_bytes))
             .collect();
         if let Err(error) = stream.enqueue_batch(&phase, records) {
             input_error = Some(error.to_string());
@@ -135,7 +172,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let s = stream.stats();
     println!(
         "{}",
-        json!({"kind":"result","run":run,"phase":phase,"base_ns":base,"configured_records":count,"batch_records":batch,"workers":workers,"max_batch_bytes":batch_bytes,"max_buffered_bytes":buffer_bytes,"producer_seconds":producer_seconds,"total_seconds":total_seconds,"drain_seconds":total_seconds-producer_seconds,"ack_per_second":s.acknowledged_records as f64/total_seconds,"requests_per_second":s.requests as f64/total_seconds,"accepted":s.accepted_records,"acknowledged":s.acknowledged_records,"backed_up":s.backed_up_records,"failed":s.failed_records,"requests":s.requests,"retries":s.retries,"buffered_bytes":s.buffered_bytes,"last_error":s.last_error,"input_error":input_error,"close_error":close_error})
+        json!({"kind":"result","run":run,"phase":phase,"base_ns":base,"configured_records":count,"extra_args":extra_args,"extra_message_bytes":extra_message_bytes,"batch_records":batch,"workers":workers,"max_batch_bytes":batch_bytes,"max_buffered_bytes":buffer_bytes,"producer_seconds":producer_seconds,"total_seconds":total_seconds,"drain_seconds":total_seconds-producer_seconds,"ack_per_second":s.acknowledged_records as f64/total_seconds,"requests_per_second":s.requests as f64/total_seconds,"accepted":s.accepted_records,"acknowledged":s.acknowledged_records,"backed_up":s.backed_up_records,"failed":s.failed_records,"requests":s.requests,"retries":s.retries,"buffered_bytes":s.buffered_bytes,"last_error":s.last_error,"input_error":input_error,"close_error":close_error})
     );
     if s.acknowledged_records != count as u64 || input_error.is_some() || close_error.is_some() {
         std::process::exit(2);
