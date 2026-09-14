@@ -88,26 +88,45 @@ impl LogTransport for HttpTransport {
         })?;
         #[cfg(feature = "instrument")]
         let started = std::time::Instant::now();
+        #[cfg(feature = "instrument")]
+        let started_utc = chrono::Utc::now();
+        #[cfg(feature = "instrument")]
+        let trace_id = format!(
+            "{:016x}{:016x}",
+            started_utc.timestamp_nanos_opt().unwrap_or_default(),
+            {
+                static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            }
+        );
+        #[cfg(feature = "instrument")]
+        tracing::info!(target: "nominal_streaming::log::attempt", "{}", serde_json::json!({
+            "event": "request_started", "started_utc": started_utc.to_rfc3339(),
+            "trace_id": trace_id, "wire_bytes": body.len(),
+        }));
         let result = self.handle.block_on(async {
-            let response = self
+            let request = self
                 .client
                 .post(self.endpoint.clone())
                 .bearer_auth(token.as_str())
                 .header(CONTENT_TYPE, "application/x-protobuf")
                 .header(CONTENT_ENCODING, "zstd")
-                .body(body.clone())
-                .send()
-                .await
-                .map_err(|e| AttemptError {
-                    message: if e.is_timeout() {
-                        "request timed out"
-                    } else {
-                        "request transport failed"
-                    }
-                    .into(),
-                    retryable: !e.is_builder(),
-                    retry_after: None,
-                })?;
+                .body(body.clone());
+            #[cfg(feature = "instrument")]
+            let request = request
+                .header("X-B3-TraceId", &trace_id)
+                .header("X-B3-SpanId", &trace_id[16..])
+                .header("X-B3-Sampled", "1");
+            let response = request.send().await.map_err(|e| AttemptError {
+                message: if e.is_timeout() {
+                    "request timed out"
+                } else {
+                    "request transport failed"
+                }
+                .into(),
+                retryable: !e.is_builder(),
+                retry_after: None,
+            })?;
             let status = response.status();
             if status.is_success() {
                 return Ok(());
@@ -124,14 +143,15 @@ impl LogTransport for HttpTransport {
             })
         });
         #[cfg(feature = "instrument")]
-        tracing::info!(
-            target: "nominal_streaming::log::attempt",
-            elapsed_micros = started.elapsed().as_micros() as u64,
-            wire_bytes = body.len(),
-            success = result.is_ok(),
-            error = result.as_ref().err().map(|error| error.message.as_str()).unwrap_or(""),
-            "log upload attempt completed"
-        );
+        tracing::info!(target: "nominal_streaming::log::attempt", "{}", serde_json::json!({
+            "event": "request_completed", "started_utc": started_utc.to_rfc3339(),
+            "completed_utc": chrono::Utc::now().to_rfc3339(), "trace_id": trace_id,
+            "elapsed_micros": started.elapsed().as_micros() as u64,
+            "wire_bytes": body.len(), "success": result.is_ok(),
+            "error": result.as_ref().err().map(|e| e.message.as_str()),
+            "retryable": result.as_ref().err().map(|e| e.retryable),
+            "retry_after_ms": result.as_ref().err().and_then(|e| e.retry_after).map(|v| v.as_millis() as u64),
+        }));
         result
     }
 }

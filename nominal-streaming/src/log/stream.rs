@@ -483,6 +483,15 @@ fn worker(shared: Arc<Shared>) {
 }
 
 fn deliver(shared: &Shared, request: &wire::WriteBatchesRequest) -> Result<bool, String> {
+    #[cfg(feature = "instrument")]
+    let batch_id = format!("{:x}-{:x}", std::process::id(), {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    });
+    #[cfg(feature = "instrument")]
+    let span = tracing::info_span!(target: "nominal_streaming::log::attempt", "batch", batch_id = %batch_id);
+    #[cfg(feature = "instrument")]
+    let _entered = span.enter();
     let error = if let Some(target) = &shared.target {
         match transport::encode(request) {
             Ok(body) => {
@@ -496,11 +505,20 @@ fn deliver(shared: &Shared, request: &wire::WriteBatchesRequest) -> Result<bool,
                             state.stats.retries += 1;
                         }
                     }
+                    #[cfg(feature = "instrument")]
+                    let attempt_span = tracing::info_span!(target: "nominal_streaming::log::attempt", "attempt", attempt = attempt + 1);
+                    #[cfg(feature = "instrument")]
+                    let _attempt_entered = attempt_span.enter();
                     match target.send(&body) {
                         Ok(()) => return Ok(false),
                         Err(error) => {
                             last = error.message;
                             if !error.retryable || attempt == shared.opts.max_retries {
+                                #[cfg(feature = "instrument")]
+                                tracing::info!(target: "nominal_streaming::log::attempt", "{}", serde_json::json!({
+                                    "event": "delivery_abandoned", "completed_utc": chrono::Utc::now().to_rfc3339(),
+                                    "reason": if error.retryable { "retry_budget_exhausted" } else { "non_retryable_error" }, "error": last,
+                                }));
                                 break;
                             }
                             let wait = delay.max(error.retry_after.unwrap_or_default());
@@ -508,6 +526,11 @@ fn deliver(shared: &Shared, request: &wire::WriteBatchesRequest) -> Result<bool,
                                 .retry_after
                                 .is_some_and(|after| after > shared.opts.max_retry_after)
                             {
+                                #[cfg(feature = "instrument")]
+                                tracing::info!(target: "nominal_streaming::log::attempt", "{}", serde_json::json!({
+                                    "event": "delivery_abandoned", "completed_utc": chrono::Utc::now().to_rfc3339(),
+                                    "reason": "retry_after_exceeds_limit", "error": last,
+                                }));
                                 break;
                             }
                             thread::sleep(wait);
@@ -536,5 +559,10 @@ fn deliver(shared: &Shared, request: &wire::WriteBatchesRequest) -> Result<bool,
             error.as_deref().unwrap_or("file-only stream")
         )
     })?;
+    #[cfg(feature = "instrument")]
+    tracing::info!(target: "nominal_streaming::log::attempt", "{}", serde_json::json!({
+        "event": "batch_backed_up", "completed_utc": chrono::Utc::now().to_rfc3339(),
+        "reason": error.as_deref().unwrap_or("file-only stream"),
+    }));
     Ok(true)
 }

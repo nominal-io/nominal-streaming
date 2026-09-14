@@ -86,9 +86,14 @@ pub(super) fn save(directory: &Path, request: &wire::WriteBatchesRequest) -> std
         serde_json::to_writer(&mut metadata, &manifest)?;
         metadata.write_all(b"\n")?;
         metadata.sync_all()?;
-        fs::rename(pending, final_path)?;
+        fs::rename(pending, &final_path)?;
         #[cfg(unix)]
         fs::File::open(directory)?.sync_all()?;
+        #[cfg(feature = "instrument")]
+        tracing::info!(target: "nominal_streaming::log::attempt", "{}", serde_json::json!({
+            "event": "journal_saved", "completed_utc": chrono::Utc::now().to_rfc3339(),
+            "file": final_path, "records": logs.points.len(),
+        }));
     }
     Ok(())
 }
