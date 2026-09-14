@@ -128,6 +128,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ..Default::default()
         },
         "bounded" => {
+            let request_mib: usize = std::env::var("BENCH_REQUEST_MIB")
+                .unwrap_or_else(|_| "8".into())
+                .parse()?;
+            if !(1..=8).contains(&request_mib) {
+                return Err("bounded request limit must be 1..=8 MiB".into());
+            }
             let batch_mib: usize = env("BENCH_BATCH_MIB").parse()?;
             let buffer_mib: usize = env("BENCH_BUFFER_MIB").parse()?;
             if !(16..=64).contains(&batch_mib) || !(64..=512).contains(&buffer_mib) {
@@ -135,6 +141,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             LogStreamOptions {
                 base_api_url: url,
+                max_request_bytes: request_mib * 1024 * 1024,
                 max_batch_bytes: batch_mib * 1024 * 1024,
                 max_buffered_bytes: buffer_mib * 1024 * 1024,
                 num_upload_workers: workers,
