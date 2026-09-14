@@ -228,8 +228,12 @@ impl NominalLogStream {
             if state.stats.buffered_bytes <= self.shared.opts.max_buffered_bytes - total_bytes {
                 break;
             }
-            // Flush a partial batch now rather than waiting for the timer while a producer blocks.
-            queue_pending(&mut state);
+            // Only force a partial batch out if no queued/in-flight work can free capacity.
+            // Otherwise let the pending batch fill after an upload completes. Its normal
+            // flush timer still applies, and close/fatal outcomes still wake admission.
+            if state.unfinished == state.pending.count {
+                queue_pending(&mut state);
+            }
             self.shared.changed.notify_all();
             self.shared.changed.wait(&mut state);
         }
@@ -530,4 +534,93 @@ fn deliver(shared: &Shared, request: &wire::WriteBatchesRequest) -> Result<bool,
         "reason": error.as_deref().unwrap_or("file-only stream"),
     }));
     Ok(true)
+}
+
+#[cfg(test)]
+mod pressure_tests {
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
+    use std::sync::mpsc;
+    use std::time::Duration;
+    use std::time::Instant;
+
+    use prost::Message;
+
+    use super::*;
+
+    struct HeldFirstUpload {
+        started: mpsc::Sender<()>,
+        release: Mutex<mpsc::Receiver<()>>,
+        calls: AtomicUsize,
+        sizes: Mutex<Vec<usize>>,
+    }
+    impl LogTransport for HeldFirstUpload {
+        fn send(&self, body: &bytes::Bytes) -> Result<(), transport::AttemptError> {
+            let request = wire::WriteBatchesRequest::decode(
+                zstd::decode_all(body.as_ref()).unwrap().as_slice(),
+            )
+            .unwrap();
+            self.sizes.lock().push(
+                request
+                    .batches
+                    .iter()
+                    .map(|b| b.points.as_ref().unwrap().timestamps.len())
+                    .sum(),
+            );
+            if self.calls.fetch_add(1, Ordering::Relaxed) == 0 {
+                self.started.send(()).unwrap();
+                self.release.lock().recv().unwrap();
+            }
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn backpressure_waits_for_inflight_capacity_before_splitting_partial_batch() {
+        let input = LogRecord::new(0, "one", HashMap::new());
+        let charge = input.accounted_bytes("a")
+            + RecordSize::new(&input).encoding_reservation("a", "fixture");
+        let (started_tx, started_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let target = Arc::new(HeldFirstUpload {
+            started: started_tx,
+            release: Mutex::new(release_rx),
+            calls: AtomicUsize::new(0),
+            sizes: Mutex::new(Vec::new()),
+        });
+        let opts = LogStreamOptions {
+            max_batch_bytes: charge * 2,
+            max_buffered_bytes: charge * 3,
+            max_records_per_batch: 2,
+            max_request_delay: Duration::from_secs(60),
+            num_upload_workers: 1,
+            ..Default::default()
+        };
+        let stream = Arc::new(
+            NominalLogStream::start(opts, Some(target.clone()), "fixture".into(), None).unwrap(),
+        );
+        stream
+            .enqueue_batch("a", vec![input.clone(), input.clone()])
+            .unwrap();
+        started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        stream.enqueue("a", input.clone()).unwrap();
+        let writer = stream.clone();
+        let pending = thread::spawn(move || writer.enqueue("a", input));
+        let deadline = Instant::now() + Duration::from_secs(2);
+        // The upload is held in the mock, so only the blocked producer can wait here.
+        let mut producer_waited = false;
+        while Instant::now() < deadline {
+            if stream.shared.changed.notify_one() {
+                producer_waited = true;
+                break;
+            }
+            thread::yield_now();
+        }
+        release_tx.send(()).unwrap();
+        pending.join().unwrap().unwrap();
+        let stats = stream.close().unwrap();
+        assert!(producer_waited);
+        assert_eq!(stats.acknowledged_records, 4);
+        assert_eq!(target.sizes.lock().as_slice(), &[2, 2]);
+    }
 }

@@ -104,6 +104,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if extra_args > 116 || extra_message_bytes > 8192 {
         return Err("payload bounds exceeded".into());
     }
+    let enqueue_chunk: usize = std::env::var("BENCH_ENQUEUE_CHUNK")
+        .unwrap_or_else(|_| "1000".into())
+        .parse()?;
+    if !(1..=1000).contains(&enqueue_chunk) {
+        return Err("enqueue chunk must be 1..=1000".into());
+    }
     let run = env("BENCH_RUN");
     let phase = env("BENCH_PHASE");
     let base: i64 = env("BENCH_BASE_NS").parse()?;
@@ -121,6 +127,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             base_api_url: url,
             ..Default::default()
         },
+        "bounded" => {
+            let batch_mib: usize = env("BENCH_BATCH_MIB").parse()?;
+            let buffer_mib: usize = env("BENCH_BUFFER_MIB").parse()?;
+            if !(16..=64).contains(&batch_mib) || !(64..=512).contains(&buffer_mib) {
+                return Err("bounded probe memory limits exceeded".into());
+            }
+            LogStreamOptions {
+                base_api_url: url,
+                max_batch_bytes: batch_mib * 1024 * 1024,
+                max_buffered_bytes: buffer_mib * 1024 * 1024,
+                num_upload_workers: workers,
+                ..Default::default()
+            }
+        }
         "stress" => LogStreamOptions {
             base_api_url: url,
             max_request_bytes: batch_bytes,
@@ -131,7 +151,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             num_upload_workers: workers,
             ..Default::default()
         },
-        _ => return Err("BENCH_POLICY must be defaults or stress".into()),
+        _ => return Err("BENCH_POLICY must be defaults, bounded or stress".into()),
     };
     let batch = opts.max_records_per_batch;
     let workers = opts.num_upload_workers;
@@ -165,8 +185,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
     let mut input_error = None;
-    for start in (0..count).step_by(1000) {
-        let records = (start..(start + 1000).min(count))
+    for start in (0..count).step_by(enqueue_chunk) {
+        let records = (start..(start + enqueue_chunk).min(count))
             .map(|i| record(&run, &phase, i, base, extra_args, extra_message_bytes))
             .collect();
         if let Err(error) = stream.enqueue_batch(&phase, records) {
@@ -187,7 +207,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let s = stream.stats();
     println!(
         "{}",
-        json!({"kind":"result","run":run,"phase":phase,"base_ns":base,"configured_records":count,"policy":policy,"max_request_bytes":request_bytes,"flush_delay_ms":flush_delay_ms,"extra_args":extra_args,"extra_message_bytes":extra_message_bytes,"batch_records":batch,"workers":workers,"max_batch_bytes":batch_bytes,"max_buffered_bytes":buffer_bytes,"producer_seconds":producer_seconds,"total_seconds":total_seconds,"drain_seconds":total_seconds-producer_seconds,"ack_per_second":s.acknowledged_records as f64/total_seconds,"requests_per_second":s.requests as f64/total_seconds,"accepted":s.accepted_records,"acknowledged":s.acknowledged_records,"backed_up":s.backed_up_records,"failed":s.failed_records,"requests":s.requests,"retries":s.retries,"buffered_bytes":s.buffered_bytes,"last_error":s.last_error,"input_error":input_error,"close_error":close_error})
+        json!({"kind":"result","run":run,"phase":phase,"base_ns":base,"configured_records":count,"enqueue_chunk":enqueue_chunk,"policy":policy,"max_request_bytes":request_bytes,"flush_delay_ms":flush_delay_ms,"extra_args":extra_args,"extra_message_bytes":extra_message_bytes,"batch_records":batch,"workers":workers,"max_batch_bytes":batch_bytes,"max_buffered_bytes":buffer_bytes,"producer_seconds":producer_seconds,"total_seconds":total_seconds,"drain_seconds":total_seconds-producer_seconds,"ack_per_second":s.acknowledged_records as f64/total_seconds,"requests_per_second":s.requests as f64/total_seconds,"accepted":s.accepted_records,"acknowledged":s.acknowledged_records,"backed_up":s.backed_up_records,"failed":s.failed_records,"requests":s.requests,"retries":s.retries,"buffered_bytes":s.buffered_bytes,"last_error":s.last_error,"input_error":input_error,"close_error":close_error})
     );
     if s.acknowledged_records != count as u64 || input_error.is_some() || close_error.is_some() {
         std::process::exit(2);

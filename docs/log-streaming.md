@@ -67,7 +67,7 @@ Supply a multi-thread Tokio runtime with I/O and timers enabled, and keep it ali
 ## Delivery and resource limits
 
 - `enqueue` acknowledges acceptance into bounded memory. It is not a disk or backend durability guarantee; process crashes can lose buffered records.
-- Defaults: 16 MiB accounted bytes or 50,000 records per request, 64 MiB total accounted bytes, four upload workers, and a 250 ms maximum buffering delay. These are client resource settings, not API limits.
+- Defaults: 8 MiB uncompressed protobuf, 10,000 records and 16 MiB charged memory per batch, 64 MiB total charged memory, four upload workers, and a 250 ms maximum buffering delay. These are client resource settings, not API limits.
 - Accounted bytes conservatively include records, strings, argument maps and framing. The bound covers pending, queued, in-flight and retained failed data. It is not an exact RSS ceiling: caller-owned inputs, codec/request scratch buffers, runtimes and allocator overhead also consume memory.
 - A record exceeding the request budget or an input batch exceeding the total memory budget is rejected before any of that call is accepted. Split large caller batches explicitly. When previously accepted work occupies the budget, producers block; Python releases the GIL during this wait.
 - Buffering delay is a dispatch target under available capacity, not an end-to-end visibility SLA. Slow uploads and retry waits apply backpressure. Concurrent uploads do not preserve request order.
@@ -97,9 +97,33 @@ more memory than their compressed wire size suggests.
 Allow enough total buffer space for concurrent in-flight batches and pending work.
 Increasing workers while leaving a small total budget can leave workers idle. Increasing
 only the record limit may do nothing if the byte limit still closes requests first.
-Backpressure can also close partial batches early to release memory. Large batches trade
+Backpressure waits for queued or in-flight work to release memory before admitting more
+records. It forces a partial batch out only when pending records are the only work that
+can release capacity; the normal flush timer still applies. Large batches trade
 buffering latency and memory for fewer API requests; benchmark the actual record shape
 and deployment before choosing settings. Worker count is not a requests-per-second limiter.
+
+For argument-heavy bulk ingestion, start by giving full requests enough memory and
+keeping several requests in flight. This explicit Python configuration retains the
+8 MiB serialized cap and uses a 256 MiB charged memory budget:
+
+```python
+opts = PyNominalLogStreamOpts(
+    max_request_bytes=8 * 1024 * 1024,
+    max_batch_bytes=64 * 1024 * 1024,
+    max_buffered_bytes=256 * 1024 * 1024,
+    num_upload_workers=4,
+)
+```
+
+Measure four workers first, then eight if delivery latency and errors remain acceptable.
+Use `enqueue_batch` with integer timestamps to amortize Python/native call overhead.
+More memory and workers do not guarantee higher throughput: finite staging probes with
+64 arguments and an extra 4 KiB of text per log reached roughly 1.1k logs/s at four
+workers and 1.2k at eight with this budget after the batching fix, compared with 534
+under the earlier default implementation. Those observations are workload- and
+environment-specific, not an API capacity guarantee. Doubling the total budget again
+did not materially improve that workload. Defaults remain conservative.
 
 The `log_capacity` Rust example is an opt-in finite staging probe. Build with
 `cargo build --release -p nominal-streaming --example log_capacity --features instrument`.
@@ -149,4 +173,4 @@ assert file.ingest_status is IngestStatus.SUCCESS
 
 Retain the local segment until terminal success is verified. Importing it again can create duplicates. Backend-added internal ingest metadata is normal bookkeeping. Journal files are uncompressed JSONL for compatibility; zstd here describes wire content encoding, not a claim that `.jsonl.zst` file ingestion is supported.
 
-For the finite capacity example, `BENCH_POLICY=defaults` uses the actual library defaults (except staging URL). `stress` deliberately raises limits; result metadata records the effective request, memory, count, worker and flush-delay settings. Do not treat stress results as default-policy behavior.
+For the finite capacity example, `BENCH_POLICY=defaults` uses the actual library defaults (except staging URL). `bounded` retains the serialized request cap while configuring batch memory (16–64 MiB), total memory (64–512 MiB) and workers. `BENCH_ENQUEUE_CHUNK` controls caller batch size (1–1,000 records). `stress` deliberately raises limits; result metadata records the effective request, memory, count, worker and flush-delay settings. Do not treat stress results as default-policy behavior.
