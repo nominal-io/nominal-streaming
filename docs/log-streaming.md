@@ -74,6 +74,28 @@ Supply a multi-thread Tokio runtime with I/O and timers enabled, and keep it ali
 - Python `close(wait=False)` stops acceptance and drains in a background native thread. Follow with `close(wait=True)` to wait and inspect the outcome. It does not cancel or deliberately discard accepted records. Explicit close is required before interpreter/process exit when delivery matters.
 - Stats distinguish accepted, acknowledged, backed-up and unpreserved failed records. `last_error` reports the most recent delivery/preservation error even if backup succeeded. A successful flush can therefore include backed-up records; it does not mean all records reached Core.
 
+## Configuring larger batches
+
+The default record and byte limits are configurable, not hard caps. A throughput-oriented
+configuration can raise `max_records_per_batch`, `max_batch_bytes`,
+`max_buffered_bytes`, `num_upload_workers`, and `max_request_delay` together
+(`max_request_delay_secs` in Python). A request closes at whichever batch limit it reaches
+first. Accounted bytes include allocation overhead, so 50,000 records may require much
+more memory than their compressed wire size suggests.
+
+Allow enough total buffer space for concurrent in-flight batches and pending work.
+Increasing workers while leaving a small total budget can leave workers idle. Increasing
+only the record limit may do nothing if the byte limit still closes requests first.
+Backpressure can also close partial batches early to release memory. Large batches trade
+buffering latency and memory for fewer API requests; benchmark the actual record shape
+and deployment before choosing settings. Worker count is not a requests-per-second limiter.
+
+The `log_capacity` Rust example is an opt-in finite staging probe. Build with
+`cargo build --release -p nominal-streaming --example log_capacity --features instrument`.
+The existing `instrument` feature enables per-attempt tracing under
+`nominal_streaming::log::attempt`, including elapsed microseconds, compressed wire bytes,
+success, and a sanitized error. It does not emit credentials or record contents.
+
 ## Retry and backup
 
 The stream makes an initial attempt plus at most three retries. Transport failures and HTTP 408, 429, 500, 502, 503 and 504 are retryable. Other HTTP statuses go directly to backup. There is one retry loop, with no additional reqwest retry layer.

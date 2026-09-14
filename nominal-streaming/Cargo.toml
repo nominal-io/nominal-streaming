@@ -41,3 +41,7 @@ zstd = { workspace = true }
 [dev-dependencies]
 test-log = { workspace = true }
 tempfile = { workspace = true }
+
+[[example]]
+name = "log_capacity"
+required-features = ["logging", "instrument"]

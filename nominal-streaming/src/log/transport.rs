@@ -86,7 +86,9 @@ impl LogTransport for HttpTransport {
             retryable: false,
             retry_after: None,
         })?;
-        self.handle.block_on(async {
+        #[cfg(feature = "instrument")]
+        let started = std::time::Instant::now();
+        let result = self.handle.block_on(async {
             let response = self
                 .client
                 .post(self.endpoint.clone())
@@ -120,7 +122,17 @@ impl LogTransport for HttpTransport {
                 retryable: matches!(status.as_u16(), 408 | 429 | 500 | 502 | 503 | 504),
                 retry_after,
             })
-        })
+        });
+        #[cfg(feature = "instrument")]
+        tracing::info!(
+            target: "nominal_streaming::log::attempt",
+            elapsed_micros = started.elapsed().as_micros() as u64,
+            wire_bytes = body.len(),
+            success = result.is_ok(),
+            error = result.as_ref().err().map(|error| error.message.as_str()).unwrap_or(""),
+            "log upload attempt completed"
+        );
+        result
     }
 }
 
