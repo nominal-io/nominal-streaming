@@ -158,6 +158,7 @@ let stream = NominalDatasetStreamBuilder::new()
 pub mod client;
 pub mod consumer;
 pub mod listener;
+pub mod log;
 #[cfg(test)]
 mod simulated_consumer;
 pub mod stream;

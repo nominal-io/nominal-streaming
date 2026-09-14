@@ -17,6 +17,7 @@ instrument = []
 [dependencies]
 apache-avro = { workspace = true }
 async-channel = { workspace = true }
+bytes = { workspace = true }
 chrono = { workspace = true }
 conjure-error = { workspace = true }
 conjure-http = { workspace = true }

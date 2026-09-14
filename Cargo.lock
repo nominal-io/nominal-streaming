@@ -1630,6 +1630,7 @@ version = "0.9.9"
 dependencies = [
  "apache-avro",
  "async-channel",
+ "bytes",
  "chrono",
  "conjure-error",
  "conjure-http",

@@ -55,3 +55,55 @@ if __name__ == "__main__":
             tags={"tag_key": "tag_value"}
         )
 ```
+
+## Log streams
+
+`NominalLogStream` sends timestamped string messages and per-record string arguments to
+an existing dataset's log channel. It uses bounded native buffering: enqueue blocks
+when the byte budget is full, while releasing the Python GIL. Batch enqueue crosses
+into Rust once and merges common arguments with per-record overrides.
+
+```python
+import os
+from pathlib import Path
+from nominal_streaming import NominalLogStream, PyNominalLogStreamOpts
+
+opts = PyNominalLogStreamOpts(max_buffered_bytes=64 * 1024 * 1024)
+with (NominalLogStream(os.environ["NOMINAL_TOKEN"], opts)
+      .with_core_consumer(os.environ["NOMINAL_DATASET_RID"])
+      .with_file_fallback(Path("log-backup"))) as stream:
+    stream.enqueue("engine", "2026-09-14T12:00:00.123456789Z", "started",
+                   args={"engine": "left"})
+    stream.enqueue_batch("engine", [1_800_000_000_000_000_001, 1_800_000_000_000_000_002],
+                         ["running", "stopped"], args={"engine": "left"},
+                         per_record_args=[{"phase": "test"}, {"phase": "done"}])
+    print(stream.flush().acknowledged_records)
+```
+
+For local-only recording, use `with NominalLogStream().to_file(Path("logs")) as stream:`.
+The destination is a directory of per-channel JSONL journals plus manifests with explicit
+nanosecond timestamp metadata, not a telemetry Avro file. Journal field names reserved
+for timestamp and message cannot also be argument keys. File preservation increments
+`backed_up_records`, not `acknowledged_records`.
+
+Integer timestamps are signed Unix nanoseconds. Aware `datetime` values use exact
+integer arithmetic. ISO 8601 strings require a timezone and support up to nine fractional
+digits; ambiguous dates and naive datetimes are rejected. `tags` is an alias for `args`;
+passing both is an error. All messages and argument keys/values must be strings.
+
+`close()` refuses new writes, drains all accepted records, and reports delivery failures.
+`close(wait=False)` starts graceful background draining; a later `close()` waits and
+reports its result. `stats()` separates acceptance, acknowledgement, backup, and failure.
+Use explicit close or a context manager to observe failures before process exit. No global
+signal handlers are installed, and streams may be used from worker threads.
+
+Run file-only native integration tests after installing the wheel:
+
+```shell
+python -m unittest discover -s py-nominal-streaming/tests -v
+```
+
+If a journal write also fails, accepted batches remain in memory while the stream
+object is alive. After fixing disk access, call `stream.save_failed(Path("recovered-logs"))`
+and then `stream.close()`. Recovery may produce duplicate segments after a partial disk
+write; inspect the manifests before importing recovered files.

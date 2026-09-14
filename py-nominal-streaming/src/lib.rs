@@ -5,6 +5,7 @@
 
 mod lazy_dataset_stream_builder;
 mod nominal_dataset_stream;
+mod nominal_log_stream;
 mod nominal_stream_opts;
 mod point;
 mod runtime;
@@ -15,5 +16,8 @@ use pyo3::prelude::*;
 fn nominal_streaming(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<nominal_stream_opts::PyNominalStreamOpts>()?;
     m.add_class::<nominal_dataset_stream::PyNominalDatasetStream>()?;
+    m.add_class::<nominal_log_stream::PyNominalLogStreamOpts>()?;
+    m.add_class::<nominal_log_stream::PyNominalLogStream>()?;
+    m.add_class::<nominal_log_stream::PyLogStreamStats>()?;
     Ok(())
 }
