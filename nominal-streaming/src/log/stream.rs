@@ -13,8 +13,9 @@ use parking_lot::Mutex;
 
 use super::batch::Batch;
 use super::batch::RecordSize;
+use super::consumer::DeliveryOutcome;
+use super::consumer::LogConsumer;
 use super::journal;
-use super::transport;
 use super::transport::CoreTarget;
 use super::transport::HttpTransport;
 use super::transport::LogTransport;
@@ -24,19 +25,22 @@ use super::LogStreamOptions;
 use super::LogStreamStats;
 use crate::types::AuthProvider;
 
+/// Configure a Core or file target and the log stream resource limits.
 #[derive(Default)]
 pub struct NominalLogStreamBuilder {
     opts: LogStreamOptions,
     core: Option<CoreTarget>,
     backup: Option<PathBuf>,
-    file_only: bool,
+    file: Option<PathBuf>,
 }
 
 impl NominalLogStreamBuilder {
+    /// Set batching, buffering and retry limits.
     pub fn with_options(mut self, opts: LogStreamOptions) -> Self {
         self.opts = opts;
         self
     }
+    /// Upload to an existing dataset using the supplied authentication provider and runtime.
     pub fn stream_to_core(
         mut self,
         auth: impl AuthProvider + 'static,
@@ -55,17 +59,22 @@ impl NominalLogStreamBuilder {
         self.backup = Some(directory.into());
         self
     }
-    /// Write only journal files. Combining this with a Core target is an error.
+    /// Write only journal files. A Core target or fallback directory cannot also be set.
     pub fn stream_to_file(mut self, directory: impl Into<PathBuf>) -> Self {
-        self.file_only = true;
-        self.backup = Some(directory.into());
+        self.file = Some(directory.into());
         self
     }
+    /// Validate the configuration and start upload workers.
     pub fn build(self) -> Result<NominalLogStream, LogStreamError> {
         self.opts.validate()?;
-        if self.file_only == self.core.is_some() {
+        if self.file.is_some() == self.core.is_some() {
             return Err(LogStreamError::Invalid(
                 "choose a Core target or file-only target".into(),
+            ));
+        }
+        if self.file.is_some() && self.backup.is_some() {
+            return Err(LogStreamError::Invalid(
+                "file-only streams cannot also configure a fallback directory".into(),
             ));
         }
         let (target, rid) = match self.core {
@@ -78,7 +87,7 @@ impl NominalLogStreamBuilder {
             ),
             None => (None, String::new()),
         };
-        NominalLogStream::start(self.opts, target, rid, self.backup)
+        NominalLogStream::start(self.opts, target, rid, self.file.or(self.backup))
     }
 }
 
@@ -105,7 +114,7 @@ struct Shared {
     state: Mutex<State>,
     changed: Condvar,
     opts: LogStreamOptions,
-    target: Option<Arc<dyn LogTransport>>,
+    consumer: LogConsumer,
     dataset_rid: String,
     backup: Option<PathBuf>,
 }
@@ -135,8 +144,8 @@ impl NominalLogStream {
         let shared = Arc::new(Shared {
             state: Mutex::new(State::default()),
             changed: Condvar::new(),
+            consumer: LogConsumer::new(opts.clone(), target, backup.clone()),
             opts,
-            target,
             dataset_rid,
             backup,
         });
@@ -345,6 +354,7 @@ impl Drop for NominalLogStream {
     }
 }
 
+/// A channel writer with common per-record arguments.
 pub struct LogWriter<'a> {
     stream: &'a NominalLogStream,
     channel: String,
@@ -352,6 +362,7 @@ pub struct LogWriter<'a> {
 }
 
 impl LogWriter<'_> {
+    /// Enqueue a message with the writer's common arguments.
     pub fn push(
         &self,
         timestamp_ns: i64,
@@ -362,6 +373,7 @@ impl LogWriter<'_> {
             LogRecord::new(timestamp_ns, message, self.args.clone()),
         )
     }
+    /// Enqueue records, preserving record-specific overrides of common arguments.
     pub fn enqueue_batch(&self, records: Vec<LogRecord>) -> Result<(), LogStreamError> {
         let records = records
             .into_iter()
@@ -420,17 +432,28 @@ fn worker(shared: Arc<Shared>) {
         let count = batch.count;
         let bytes = batch.bytes;
         let request = batch.into_request(&shared.dataset_rid);
-        let result =
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| deliver(&shared, &request)))
-                .unwrap_or_else(|_| Err("log delivery worker panicked".into()));
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            shared.consumer.consume(&request, |retry| {
+                let mut state = shared.state.lock();
+                state.stats.requests += 1;
+                state.stats.retries += u64::from(retry);
+            })
+        }))
+        .unwrap_or_else(|_| Err("log delivery worker panicked".into()));
         let mut state = shared.state.lock();
         state.unfinished -= count;
         match result {
-            Ok(backed_up) => {
-                if backed_up {
-                    state.stats.backed_up_records += count as u64;
-                } else {
-                    state.stats.acknowledged_records += count as u64;
+            Ok(delivery) => {
+                match delivery {
+                    DeliveryOutcome::Acknowledged => {
+                        state.stats.acknowledged_records += count as u64
+                    }
+                    DeliveryOutcome::BackedUp { delivery_error } => {
+                        state.stats.backed_up_records += count as u64;
+                        if let Some(error) = delivery_error {
+                            state.stats.last_error = Some(error);
+                        }
+                    }
                 }
                 state.stats.buffered_bytes -= bytes;
             }
@@ -451,91 +474,6 @@ fn worker(shared: Arc<Shared>) {
     }
 }
 
-fn deliver(shared: &Shared, request: &wire::WriteBatchesRequest) -> Result<bool, String> {
-    #[cfg(feature = "instrument")]
-    let batch_id = format!("{:x}-{:x}", std::process::id(), {
-        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-    });
-    #[cfg(feature = "instrument")]
-    let span = tracing::info_span!(target: "nominal_streaming::log::attempt", "batch", batch_id = %batch_id);
-    #[cfg(feature = "instrument")]
-    let _entered = span.enter();
-    let error = if let Some(target) = &shared.target {
-        match transport::encode(request, shared.opts.max_request_bytes) {
-            Ok(body) => {
-                let mut delay = shared.opts.initial_backoff;
-                let mut last = String::new();
-                for attempt in 0..=shared.opts.max_retries {
-                    {
-                        let mut state = shared.state.lock();
-                        state.stats.requests += 1;
-                        if attempt > 0 {
-                            state.stats.retries += 1;
-                        }
-                    }
-                    #[cfg(feature = "instrument")]
-                    let attempt_span = tracing::info_span!(target: "nominal_streaming::log::attempt", "attempt", attempt = attempt + 1);
-                    #[cfg(feature = "instrument")]
-                    let _attempt_entered = attempt_span.enter();
-                    match target.send(&body) {
-                        Ok(()) => return Ok(false),
-                        Err(error) => {
-                            last = error.message;
-                            if !error.retryable || attempt == shared.opts.max_retries {
-                                #[cfg(feature = "instrument")]
-                                tracing::info!(target: "nominal_streaming::log::attempt", "{}", serde_json::json!({
-                                    "event": "delivery_abandoned", "completed_utc": chrono::Utc::now().to_rfc3339(),
-                                    "reason": if error.retryable { "retry_budget_exhausted" } else { "non_retryable_error" }, "error": last,
-                                }));
-                                break;
-                            }
-                            let wait = delay.max(error.retry_after.unwrap_or_default());
-                            if error
-                                .retry_after
-                                .is_some_and(|after| after > shared.opts.max_retry_after)
-                            {
-                                #[cfg(feature = "instrument")]
-                                tracing::info!(target: "nominal_streaming::log::attempt", "{}", serde_json::json!({
-                                    "event": "delivery_abandoned", "completed_utc": chrono::Utc::now().to_rfc3339(),
-                                    "reason": "retry_after_exceeds_limit", "error": last,
-                                }));
-                                break;
-                            }
-                            thread::sleep(wait);
-                            delay = delay.saturating_mul(2).min(shared.opts.max_backoff);
-                        }
-                    }
-                }
-                Some(last)
-            }
-            Err(error) => Some(format!("encoding failed: {error}")),
-        }
-    } else {
-        None
-    };
-    if let Some(error) = &error {
-        shared.state.lock().stats.last_error = Some(error.clone());
-        tracing::warn!("Log batch delivery unconfirmed; attempting journal backup: {error}");
-    }
-    let directory = shared
-        .backup
-        .as_ref()
-        .ok_or_else(|| error.clone().unwrap_or_else(|| "no log destination".into()))?;
-    journal::save(directory, request).map_err(|disk| {
-        format!(
-            "{}; journal backup failed: {disk}",
-            error.as_deref().unwrap_or("file-only stream")
-        )
-    })?;
-    #[cfg(feature = "instrument")]
-    tracing::info!(target: "nominal_streaming::log::attempt", "{}", serde_json::json!({
-        "event": "batch_backed_up", "completed_utc": chrono::Utc::now().to_rfc3339(),
-        "reason": error.as_deref().unwrap_or("file-only stream"),
-    }));
-    Ok(true)
-}
-
 #[cfg(test)]
 mod pressure_tests {
     use std::sync::atomic::AtomicUsize;
@@ -547,6 +485,7 @@ mod pressure_tests {
     use prost::Message;
 
     use super::*;
+    use crate::log::transport;
 
     struct HeldFirstUpload {
         started: mpsc::Sender<()>,

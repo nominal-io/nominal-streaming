@@ -102,6 +102,35 @@ class LogStreamTests(unittest.TestCase):
             self.assertEqual(rescued.failed_records, 0)
             stream.close()
 
+    def test_file_only_rejects_fallback_in_either_configuration_order(self):
+        with tempfile.TemporaryDirectory() as directory:
+            primary = Path(directory) / "primary"
+            fallback = Path(directory) / "fallback"
+            streams = [
+                NominalLogStream().to_file(primary).with_file_fallback(fallback),
+                NominalLogStream().with_file_fallback(fallback).to_file(primary),
+            ]
+            for stream in streams:
+                with self.assertRaisesRegex(RuntimeError, "file-only streams"):
+                    stream.open()
+            self.assertFalse(primary.exists())
+            self.assertFalse(fallback.exists())
+
+    def test_background_close_reports_failed_journal_and_allows_rescue(self):
+        with tempfile.TemporaryDirectory() as directory:
+            bad = Path(directory) / "occupied"
+            bad.write_text("not a directory")
+            stream = NominalLogStream().to_file(bad).open()
+            stream.enqueue("app", 1, "preserve me")
+            self.assertIsNone(stream.close(wait=False))
+            with self.assertRaises(RuntimeError):
+                stream.close(wait=True)
+            self.assertEqual(stream.stats().failed_records, 1)
+            stats = stream.save_failed(Path(directory) / "rescued")
+            self.assertEqual(stats.backed_up_records, 1)
+            self.assertEqual(stats.failed_records, 0)
+            stream.close()
+
     def test_serialized_byte_limit_rejects_atomically_and_splits(self):
         with tempfile.TemporaryDirectory() as directory:
             opts = PyNominalLogStreamOpts(max_request_bytes=512)

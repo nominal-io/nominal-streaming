@@ -1,6 +1,39 @@
-//! Bounded streaming of timestamped log messages.
+//! Streaming timestamped log messages to Core or journal files.
+//!
+//! Like [`crate::stream::NominalDatasetStream`], a log stream batches writes, applies
+//! backpressure and delivers complete requests through a consumer. Logs use a separate
+//! columnar wire representation and journal JSONL fallback. Their admission limits count
+//! serialized bytes and memory as well as records, since messages and arguments vary in size.
+//!
+//! # Example: recording to a journal
+//!
+//! ```no_run
+//! use std::collections::HashMap;
+//! use nominal_streaming::log::NominalLogStream;
+//!
+//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! let stream = NominalLogStream::builder()
+//!     .stream_to_file("logs")
+//!     .build()?;
+//! let writer = stream.writer("application", HashMap::new());
+//! writer.push(1_789_392_441_123_456_789, "Started")?;
+//! let stats = stream.close()?;
+//! assert_eq!(stats.backed_up_records, 1);
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! For Core delivery, configure [`NominalLogStreamBuilder::stream_to_core`] and
+//! [`NominalLogStreamBuilder::with_file_fallback`]. Keep the supplied multi-thread Tokio
+//! runtime alive until close completes. These APIs block; use a blocking context in async code.
+//!
+//! Enqueue accepts records into memory. [`NominalLogStream::flush`] and
+//! [`NominalLogStream::close`] wait for delivery or preservation and report failures.
+//! Acknowledged batches never go to fallback; an unconfirmed request may already exist in
+//! Core, so retries or journal recovery can duplicate it. Buffered records are not crash-durable.
 
 mod batch;
+mod consumer;
 mod journal;
 mod stream;
 mod transport;

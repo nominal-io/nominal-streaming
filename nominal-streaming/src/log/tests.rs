@@ -614,3 +614,105 @@ fn exactly_full_serialized_batch_dispatches_without_waiting_for_timer() {
     stream.close().unwrap();
     assert!(sent_without_close);
 }
+
+#[test]
+fn panicking_delivery_retains_records_and_flush_returns_error() {
+    struct PanickingTransport;
+    impl LogTransport for PanickingTransport {
+        fn send(&self, _body: &bytes::Bytes) -> Result<(), AttemptError> {
+            panic!("auth provider failed");
+        }
+    }
+
+    let stream = Arc::new(
+        NominalLogStream::start(
+            fast_options(),
+            Some(Arc::new(PanickingTransport)),
+            "fixture".into(),
+            None,
+        )
+        .unwrap(),
+    );
+    stream.enqueue("app", record("preserve me")).unwrap();
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    let flushing = stream.clone();
+    let thread = std::thread::spawn(move || done_tx.send(flushing.flush()).unwrap());
+    assert!(done_rx
+        .recv_timeout(Duration::from_secs(2))
+        .unwrap()
+        .is_err());
+    thread.join().unwrap();
+    assert!(stream.enqueue("app", record("late")).is_err());
+    let stats = stream.stats();
+    assert_eq!(stats.failed_records, 1);
+    assert_eq!(stats.acknowledged_records, 0);
+    assert!(stats.buffered_bytes > 0);
+    assert!(stream.close().is_err());
+
+    let directory = tempfile::tempdir().unwrap();
+    let stats = stream.save_failed(directory.path()).unwrap();
+    assert_eq!(stats.backed_up_records, 1);
+    assert_eq!(stats.failed_records, 0);
+    assert_eq!(stats.buffered_bytes, 0);
+    stream.close().unwrap();
+}
+
+#[test]
+fn channel_writer_merges_common_arguments_with_record_overrides() {
+    let target = target(0, false);
+    let stream =
+        NominalLogStream::start(fast_options(), Some(target.clone()), "fixture".into(), None)
+            .unwrap();
+    let writer = stream.writer("app", HashMap::from([("service".into(), "api".into())]));
+    writer.push(1, "started").unwrap();
+    writer
+        .enqueue_batch(vec![LogRecord::new(
+            2,
+            "ready",
+            HashMap::from([("service".into(), "worker".into())]),
+        )])
+        .unwrap();
+    assert_eq!(stream.close().unwrap().acknowledged_records, 2);
+    let requests = target.requests.lock().unwrap();
+    let messages: Vec<_> = requests
+        .iter()
+        .flat_map(|r| &r.batches)
+        .flat_map(|batch| {
+            assert_eq!(batch.channel, "app");
+            assert!(batch.tags.is_empty());
+            let Some(wire::points::Points::LogPoints(logs)) =
+                &batch.points.as_ref().unwrap().points
+            else {
+                panic!("expected logs");
+            };
+            logs.points
+                .iter()
+                .map(|point| point.value.as_ref().unwrap())
+        })
+        .collect();
+    let by_message: HashMap<_, _> = messages
+        .iter()
+        .map(|v| (v.message.as_str(), v.args["service"].as_str()))
+        .collect();
+    assert_eq!(by_message["started"], "api");
+    assert_eq!(by_message["ready"], "worker");
+}
+
+#[test]
+fn file_only_target_rejects_fallback_in_either_configuration_order() {
+    let directory = tempfile::tempdir().unwrap();
+    let file = directory.path().join("file");
+    let fallback = directory.path().join("fallback");
+    for builder in [
+        NominalLogStream::builder()
+            .stream_to_file(&file)
+            .with_file_fallback(&fallback),
+        NominalLogStream::builder()
+            .with_file_fallback(&fallback)
+            .stream_to_file(&file),
+    ] {
+        assert!(matches!(builder.build(), Err(LogStreamError::Invalid(_))));
+    }
+    assert!(!file.exists());
+    assert!(!fallback.exists());
+}

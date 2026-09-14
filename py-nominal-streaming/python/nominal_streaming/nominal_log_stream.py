@@ -8,7 +8,7 @@ from pathlib import Path
 from types import TracebackType
 from typing import Mapping, Sequence
 
-from typing_extensions import Self
+from typing_extensions import Self, TypeGuard
 
 from nominal_streaming._nominal_streaming import LogStreamStats, PyNominalLogStream, PyNominalLogStreamOpts
 
@@ -34,6 +34,10 @@ def _timestamp_ns(value: TimestampLike) -> int:
         raise ValueError("datetime timestamp must include a timezone")
     delta = value.astimezone(dt.timezone.utc) - _EPOCH
     return ((delta.days * 86400 + delta.seconds) * 1_000_000 + delta.microseconds) * 1000 + fraction
+
+
+def _is_nanoseconds(values: Sequence[TimestampLike]) -> TypeGuard[Sequence[int]]:
+    return all(type(value) is int for value in values)
 
 
 def _args(tags: Mapping[str, str] | None, args: Mapping[str, str] | None) -> dict[str, str] | None:
@@ -131,9 +135,7 @@ class NominalLogStream:
             raise ValueError("timestamps and messages must have equal lengths")
         if per_record_args is not None and len(per_record_args) != len(messages):
             raise ValueError("per_record_args and messages must have equal lengths")
-        normalized = (
-            timestamps if all(type(ts) is int for ts in timestamps) else [_timestamp_ns(ts) for ts in timestamps]
-        )
+        normalized = timestamps if _is_nanoseconds(timestamps) else [_timestamp_ns(ts) for ts in timestamps]
         self._impl.enqueue_batch(
             channel,
             normalized,

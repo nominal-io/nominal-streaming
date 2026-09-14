@@ -77,7 +77,7 @@ Supply a multi-thread Tokio runtime with I/O and timers enabled, and keep it ali
 
 ## Serialized requests and memory budgets
 
-Defaults are **8 MiB uncompressed protobuf per request**, **10,000 messages**, **16 MiB charged memory per batch**, **64 MiB total charged memory**, **250 ms flush delay**, and **4 upload workers**. Any limit can close a batch early. A message count does not predict request size: argument keys and values and message text all count.
+Any batch limit can close a request early. A message count does not predict request size: argument keys and values and message text all count.
 
 The stream computes exact protobuf sizes incrementally, including timestamps, UTF-8 byte lengths, argument map entries, channel/dataset envelopes and changing length prefixes. It does not serialize the growing batch after every insertion. The encoder checks the generated request's actual size again before sending; an unexpected sizing error follows the normal unconfirmed-batch preservation path.
 
@@ -118,34 +118,9 @@ opts = PyNominalLogStreamOpts(
 
 Measure four workers first, then eight if delivery latency and errors remain acceptable.
 Use `enqueue_batch` with integer timestamps to amortize Python/native call overhead.
-More memory and workers do not guarantee higher throughput: finite staging probes with
-64 arguments and an extra 4 KiB of text per log reached roughly 1.1k logs/s at four
-workers and 1.2k at eight with this budget after the batching fix, compared with 534
-under the earlier default implementation. Those observations are workload- and
-environment-specific, not an API capacity guarantee. Doubling the total budget again
-did not materially improve that workload. Defaults remain conservative.
-
-The `log_capacity` Rust example is an opt-in finite staging probe. Build with
-`cargo build --release -p nominal-streaming --example log_capacity --features instrument`.
-The existing `instrument` feature enables per-attempt tracing under
-`nominal_streaming::log::attempt`, including elapsed microseconds, compressed wire bytes,
-success, and a sanitized error. It does not emit credentials or record contents.
-
-## Diagnostic timing
-
-Build with `instrument` to record protobuf encoding and zstd durations, aggregate
-connection setup time (DNS/TCP/TLS together), negotiated HTTP version/status, and
-first/final request-body handoff offsets. The diagnostic body supplies exact-length,
-64 KiB slices of the already compressed buffer; it does not re-encode per retry.
-Non-instrumented builds retain the original reusable byte body.
-
-`body_last_chunk_micros` means the HTTP stack consumed the last chunk. It is **not**
-a socket-write completion or TCP acknowledgement. The remaining interval until response
-headers includes HTTP/TLS/socket buffering, network transit, ingress and backend work.
-Connection timings are independent events, not reliably attributable to a single request
-because pooled HTTP/2 connections can be shared. They combine DNS, TCP and TLS; they do
-not split those phases. Instrumentation may affect scheduling and chunking, so compare
-runs using the same build. No payloads, headers or tokens are logged.
+More memory and workers do not guarantee higher throughput. Measure request latency,
+acknowledged records and fallback counts with representative messages before raising limits.
+See [the capacity probe](log-capacity.md) for development diagnostics.
 
 ## Retry and backup
 
@@ -157,7 +132,7 @@ Default exponential backoff starts at 100 ms and caps at 5 seconds. Each HTTP at
 
 Journal writes flush and sync before completion is reported. Disk errors stop admission, surface through flush/close, and leave unpreserved batches owned by the stream. After correcting the disk problem, `save_failed(other_directory)` can rescue them. Do not discard the stream after a failed close unless you accept losing those retained records. Partial multi-channel backup/rescue may leave some completed segments before an error; inspect manifests to avoid unnecessary re-import.
 
-File-only operation is available through `.stream_to_file(directory)` in Rust or `.to_file(directory)` in Python. It cannot be combined with a Core target; that prevents accidentally configuring a duplicate write of every acknowledged record.
+File-only operation is available through `.stream_to_file(directory)` in Rust or `.to_file(directory)` in Python. Configure either a file-only destination or a Core target with optional fallback. Combining file-only operation with a Core target or a fallback directory is an error.
 
 ## Journal files and recovery
 
@@ -188,7 +163,3 @@ assert file.ingest_status is IngestStatus.SUCCESS
 ```
 
 Retain the local segment until terminal success is verified. Importing it again can create duplicates. Backend-added internal ingest metadata is normal bookkeeping. Journal files are uncompressed JSONL for compatibility; zstd here describes wire content encoding, not a claim that `.jsonl.zst` file ingestion is supported.
-
-For the finite capacity example, `BENCH_POLICY=defaults` uses the actual library defaults (except staging URL). `bounded` defaults to the 8 MiB serialized request cap (`BENCH_REQUEST_MIB` permits 1–8 MiB) while configuring batch memory (16–64 MiB), total memory (64–512 MiB) and workers. `BENCH_ENQUEUE_CHUNK` controls caller batch size (1–1,000 records). `stress` deliberately raises limits; result metadata records the effective request, memory, count, worker and flush-delay settings. Do not treat stress results as default-policy behavior.
-
-The capacity probe supports `BENCH_SIMPLE_MESSAGE_BYTES=64..8192` for exact-size ASCII messages with no arguments. This fixture cannot be combined with the extra-argument or extra-message knobs. It uses a fixed log prefix and deterministic varying text; result metadata records the selected size.
