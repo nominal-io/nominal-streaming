@@ -1,5 +1,4 @@
 use std::fmt::Debug;
-use std::io::Write;
 use std::sync::Arc;
 use std::sync::LazyLock;
 
@@ -24,7 +23,6 @@ use nominal_api::clients::ingest::api::AsyncIngestServiceClient;
 use nominal_api::clients::upload::api::AsyncUploadServiceClient;
 use nominal_api::objects::api::rids::NominalDataSourceOrDatasetRid;
 use nominal_api::objects::api::rids::WorkspaceRid;
-use snap::write::FrameEncoder;
 use url::Url;
 
 use crate::types::AuthProvider;
@@ -142,22 +140,25 @@ pub fn async_conjure_client(service: &'static str, uri: Url) -> Result<Client, E
 
 pub type WriteRequest<'a> = Request<AsyncRequestBody<'a, BodyWriter>>;
 
-pub fn encode_request<'a, 'b>(
-    write_request_bytes: Vec<u8>,
-    api_key: &'a BearerToken,
-    data_source_rid: &'a ResourceIdentifier,
-) -> std::io::Result<WriteRequest<'b>> {
-    let mut encoder = FrameEncoder::new(Vec::with_capacity(write_request_bytes.len()));
+/// Zstd compression level for request bodies.
+///
+/// Level 1 compresses at speeds comparable to snappy while producing a substantially smaller body
+/// (snappy has no entropy coder), and every byte saved feeds straight into per-request upload
+/// time. Higher levels shrink telemetry payloads little further and cost disproportionate CPU.
+const ZSTD_LEVEL: i32 = 1;
 
-    encoder.write_all(&write_request_bytes)?;
+pub fn encode_request(
+    write_request_bytes: &[u8],
+    api_key: &BearerToken,
+    data_source_rid: &ResourceIdentifier,
+) -> std::io::Result<WriteRequest<'static>> {
+    let body = zstd::encode_all(write_request_bytes, ZSTD_LEVEL)?;
 
-    let mut request = Request::new(AsyncRequestBody::Fixed(
-        encoder.into_inner().unwrap().into(),
-    ));
+    let mut request = Request::new(AsyncRequestBody::Fixed(body.into()));
 
     let headers = request.headers_mut();
     headers.insert(CONTENT_TYPE, "application/x-protobuf".parse().unwrap());
-    headers.insert(CONTENT_ENCODING, "x-snappy-framed".parse().unwrap());
+    headers.insert(CONTENT_ENCODING, "zstd".parse().unwrap());
 
     *request.method_mut() = conjure_http::private::http::Method::POST;
     let mut path = conjure_http::private::UriBuilder::new();

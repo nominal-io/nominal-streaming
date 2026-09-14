@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::sync::Arc;
 use std::time::Duration;
 
 use conjure_object::BearerToken;
@@ -32,7 +33,11 @@ pub struct ChannelDescriptor {
     /// The name of the channel.
     pub name: String,
     /// The tags associated with the channel, if any.
-    pub tags: Option<BTreeMap<String, String>>,
+    ///
+    /// Shared rather than owned: a wide record is thousands of channels written at one timestamp
+    /// all carrying the same tags, so a descriptor per channel would otherwise mean copying the
+    /// same map thousands of times per write.
+    pub tags: Option<Arc<BTreeMap<String, String>>>,
 }
 
 impl ChannelDescriptor {
@@ -53,11 +58,11 @@ impl ChannelDescriptor {
     ) -> Self {
         Self {
             name: name.into(),
-            tags: Some(
+            tags: Some(Arc::new(
                 tags.into_iter()
                     .map(|(key, value)| (key.into(), value.into()))
                     .collect(),
-            ),
+            )),
         }
     }
 }

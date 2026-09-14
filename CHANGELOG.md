@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.9](https://github.com/nominal-io/nominal-streaming/compare/v0.9.8...v0.9.9) - 2026-09-11
+
+### Fixed
+
+- change flushing and other higher-freq info logs to debug ([#337](https://github.com/nominal-io/nominal-streaming/pull/337))
+
+## [0.9.8](https://github.com/nominal-io/nominal-streaming/compare/v0.9.7...v0.9.8) - 2026-09-03
+
+### Other
+
+- update Cargo.toml dependencies
+
+## [0.9.7](https://github.com/nominal-io/nominal-streaming/compare/v0.9.6...v0.9.7) - 2026-09-01
+
+### Other
+
+- update Cargo.toml dependencies
+
+## [0.9.6](https://github.com/nominal-io/nominal-streaming/compare/v0.9.5...v0.9.6) - 2026-08-28
+
+### Other
+
+- compress streaming write requests with zstd instead of snappy ([#329](https://github.com/nominal-io/nominal-streaming/pull/329))
+
+## [0.9.5](https://github.com/nominal-io/nominal-streaming/compare/v0.9.4...v0.9.5) - 2026-08-27
+
+### Added
+
+- share a channel descriptor's tag map instead of copying it per channel ([#323](https://github.com/nominal-io/nominal-streaming/pull/323))
+
+### Other
+
+- add enqueue_many so a wide record takes one buffer lock, not one per channel ([#322](https://github.com/nominal-io/nominal-streaming/pull/322))
+
 ## [0.9.4](https://github.com/nominal-io/nominal-streaming/compare/v0.9.3...v0.9.4) - 2026-08-26
 
 ### Other

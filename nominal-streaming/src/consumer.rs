@@ -102,7 +102,7 @@ impl<T: AuthProvider + 'static> WriteRequestConsumer for NominalCoreConsumer<T> 
             .token()
             .ok_or(ConsumerError::MissingTokenError)?;
         let encode = |request: &WriteRequestNominal| {
-            client::encode_request(request.encode_to_vec(), &token, &self.data_source_rid)
+            client::encode_request(&request.encode_to_vec(), &token, &self.data_source_rid)
                 .map_err(ConsumerError::from)
         };
         let send = |write_request| {
