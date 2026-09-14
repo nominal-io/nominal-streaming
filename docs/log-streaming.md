@@ -131,6 +131,22 @@ The existing `instrument` feature enables per-attempt tracing under
 `nominal_streaming::log::attempt`, including elapsed microseconds, compressed wire bytes,
 success, and a sanitized error. It does not emit credentials or record contents.
 
+## Diagnostic timing
+
+Build with `instrument` to record protobuf encoding and zstd durations, aggregate
+connection setup time (DNS/TCP/TLS together), negotiated HTTP version/status, and
+first/final request-body handoff offsets. The diagnostic body supplies exact-length,
+64 KiB slices of the already compressed buffer; it does not re-encode per retry.
+Non-instrumented builds retain the original reusable byte body.
+
+`body_last_chunk_micros` means the HTTP stack consumed the last chunk. It is **not**
+a socket-write completion or TCP acknowledgement. The remaining interval until response
+headers includes HTTP/TLS/socket buffering, network transit, ingress and backend work.
+Connection timings are independent events, not reliably attributable to a single request
+because pooled HTTP/2 connections can be shared. They combine DNS, TCP and TLS; they do
+not split those phases. Instrumentation may affect scheduling and chunking, so compare
+runs using the same build. No payloads, headers or tokens are logged.
+
 ## Retry and backup
 
 The stream makes an initial attempt plus at most three retries. Transport failures and HTTP 408, 429, 500, 502, 503 and 504 are retryable. Other HTTP statuses go directly to backup. There is one retry loop, with no additional reqwest retry layer.

@@ -1,3 +1,6 @@
+#[cfg(feature = "instrument")]
+mod timing;
+
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -67,7 +70,10 @@ impl HttpTransport {
             .connect_timeout(opts.request_timeout.min(Duration::from_secs(10)))
             .redirect(reqwest::redirect::Policy::none())
             .retry(reqwest::retry::never())
-            .user_agent(concat!("nominal-streaming/", env!("CARGO_PKG_VERSION")))
+            .user_agent(concat!("nominal-streaming/", env!("CARGO_PKG_VERSION")));
+        #[cfg(feature = "instrument")]
+        let client = client.connector_layer(tower::layer::layer_fn(timing::ConnectionTiming));
+        let client = client
             .build()
             .map_err(|_| LogStreamError::Invalid("could not construct HTTP client".into()))?;
         Ok(Self {
@@ -104,29 +110,56 @@ impl LogTransport for HttpTransport {
             "event": "request_started", "started_utc": started_utc.to_rfc3339(),
             "trace_id": trace_id, "wire_bytes": body.len(),
         }));
+        #[cfg(feature = "instrument")]
+        let body_timing = Arc::new(parking_lot::Mutex::new(timing::BodyTiming::default()));
+        #[cfg(feature = "instrument")]
+        let mut response_version = None;
+        #[cfg(feature = "instrument")]
+        let mut response_status = None;
         let result = self.handle.block_on(async {
+            #[cfg(feature = "instrument")]
+            let upload = reqwest::Body::wrap(timing::TimedBody::new(
+                body.clone(),
+                body_timing.clone(),
+                started,
+            ));
+            #[cfg(not(feature = "instrument"))]
+            let upload = body.clone();
             let request = self
                 .client
                 .post(self.endpoint.clone())
                 .bearer_auth(token.as_str())
                 .header(CONTENT_TYPE, "application/x-protobuf")
                 .header(CONTENT_ENCODING, "zstd")
-                .body(body.clone());
+                .body(upload);
             #[cfg(feature = "instrument")]
             let request = request
                 .header("X-B3-TraceId", &trace_id)
                 .header("X-B3-SpanId", &trace_id[16..])
                 .header("X-B3-Sampled", "1");
-            let response = request.send().await.map_err(|e| AttemptError {
-                message: if e.is_timeout() {
-                    "request timed out"
-                } else {
-                    "request transport failed"
+            let response = request.send().await.map_err(|e| {
+                #[cfg(feature = "instrument")]
+                tracing::info!(target: "nominal_streaming::log::attempt", "{}", serde_json::json!({
+                    "event": "transport_error", "trace_id": trace_id,
+                    "timeout": e.is_timeout(), "connect": e.is_connect(), "body": e.is_body(),
+                    "request": e.is_request(), "decode": e.is_decode(),
+                }));
+                AttemptError {
+                    message: if e.is_timeout() {
+                        "request timed out"
+                    } else {
+                        "request transport failed"
+                    }
+                    .into(),
+                    retryable: !e.is_builder(),
+                    retry_after: None,
                 }
-                .into(),
-                retryable: !e.is_builder(),
-                retry_after: None,
             })?;
+            #[cfg(feature = "instrument")]
+            {
+                response_version = Some(format!("{:?}", response.version()));
+                response_status = Some(response.status().as_u16());
+            }
             let status = response.status();
             if status.is_success() {
                 return Ok(());
@@ -143,11 +176,17 @@ impl LogTransport for HttpTransport {
             })
         });
         #[cfg(feature = "instrument")]
+        let body_timing = body_timing.lock();
+        #[cfg(feature = "instrument")]
         tracing::info!(target: "nominal_streaming::log::attempt", "{}", serde_json::json!({
             "event": "request_completed", "started_utc": started_utc.to_rfc3339(),
             "completed_utc": chrono::Utc::now().to_rfc3339(), "trace_id": trace_id,
             "elapsed_micros": started.elapsed().as_micros() as u64,
             "wire_bytes": body.len(), "success": result.is_ok(),
+            "http_version": response_version, "http_status": response_status,
+            "body_first_poll_micros": body_timing.first_poll_micros,
+            "body_last_chunk_micros": body_timing.last_chunk_micros,
+            "body_supplied_bytes": body_timing.supplied_bytes,
             "error": result.as_ref().err().map(|e| e.message.as_str()),
             "retryable": result.as_ref().err().map(|e| e.retryable),
             "retry_after_ms": result.as_ref().err().and_then(|e| e.retry_after).map(|v| v.as_millis() as u64),
@@ -177,6 +216,8 @@ pub(super) fn encode(
     request: &wire::WriteBatchesRequest,
     max_request_bytes: usize,
 ) -> std::io::Result<Bytes> {
+    #[cfg(feature = "instrument")]
+    let encode_started = std::time::Instant::now();
     if request.encoded_len() > max_request_bytes {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
@@ -184,10 +225,14 @@ pub(super) fn encode(
         ));
     }
     let raw = request.encode_to_vec();
+    #[cfg(feature = "instrument")]
+    let compression_started = std::time::Instant::now();
     let compressed = zstd::bulk::compress(raw.as_slice(), 1)?;
     #[cfg(feature = "instrument")]
     tracing::info!(target: "nominal_streaming::log::attempt", "{}", serde_json::json!({
         "event": "batch_encoded", "raw_bytes": raw.len(), "wire_bytes": compressed.len(),
+        "protobuf_micros": compression_started.duration_since(encode_started).as_micros() as u64,
+        "zstd_micros": compression_started.elapsed().as_micros() as u64,
         "records": request.batches.iter().map(|b| b.points.as_ref().map_or(0, |p| p.timestamps.len())).sum::<usize>(),
     }));
     Ok(Bytes::from(compressed))
