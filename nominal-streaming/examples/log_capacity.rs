@@ -34,7 +34,16 @@ fn record(
     base: i64,
     extra_args: usize,
     extra_message_bytes: usize,
+    simple_message_bytes: Option<usize>,
 ) -> LogRecord {
+    if let Some(length) = simple_message_bytes {
+        let mut message = format!("INFO request completed sequence={sequence:016x} ");
+        message.push_str(&synthetic_text(
+            sequence as u64 ^ 0xabcdef,
+            length - message.len(),
+        ));
+        return LogRecord::new(base + sequence as i64, message, HashMap::new());
+    }
     let level = ["DEBUG", "INFO", "WARNING", "ERROR"][sequence % 4];
     let service = ["telemetry-gateway", "scheduler", "worker", "api"][sequence % 4];
     let component = ["ingest", "routing", "validation", "dispatch"][sequence % 4];
@@ -109,6 +118,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .parse()?;
     if !(1..=1000).contains(&enqueue_chunk) {
         return Err("enqueue chunk must be 1..=1000".into());
+    }
+    let simple_message_bytes: Option<usize> = std::env::var("BENCH_SIMPLE_MESSAGE_BYTES")
+        .ok()
+        .map(|value| value.parse())
+        .transpose()?;
+    if simple_message_bytes.is_some_and(|length| !(64..=8192).contains(&length)) {
+        return Err("simple message length must be 64..=8192 bytes".into());
+    }
+    if simple_message_bytes.is_some() && (extra_args != 0 || extra_message_bytes != 0) {
+        return Err("simple fixture cannot be combined with extra args or message bytes".into());
     }
     let run = env("BENCH_RUN");
     let phase = env("BENCH_PHASE");
@@ -194,7 +213,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut input_error = None;
     for start in (0..count).step_by(enqueue_chunk) {
         let records = (start..(start + enqueue_chunk).min(count))
-            .map(|i| record(&run, &phase, i, base, extra_args, extra_message_bytes))
+            .map(|i| {
+                record(
+                    &run,
+                    &phase,
+                    i,
+                    base,
+                    extra_args,
+                    extra_message_bytes,
+                    simple_message_bytes,
+                )
+            })
             .collect();
         if let Err(error) = stream.enqueue_batch(&phase, records) {
             input_error = Some(error.to_string());
@@ -214,10 +243,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let s = stream.stats();
     println!(
         "{}",
-        json!({"kind":"result","run":run,"phase":phase,"base_ns":base,"configured_records":count,"enqueue_chunk":enqueue_chunk,"policy":policy,"max_request_bytes":request_bytes,"flush_delay_ms":flush_delay_ms,"extra_args":extra_args,"extra_message_bytes":extra_message_bytes,"batch_records":batch,"workers":workers,"max_batch_bytes":batch_bytes,"max_buffered_bytes":buffer_bytes,"producer_seconds":producer_seconds,"total_seconds":total_seconds,"drain_seconds":total_seconds-producer_seconds,"ack_per_second":s.acknowledged_records as f64/total_seconds,"requests_per_second":s.requests as f64/total_seconds,"accepted":s.accepted_records,"acknowledged":s.acknowledged_records,"backed_up":s.backed_up_records,"failed":s.failed_records,"requests":s.requests,"retries":s.retries,"buffered_bytes":s.buffered_bytes,"last_error":s.last_error,"input_error":input_error,"close_error":close_error})
+        json!({"kind":"result","run":run,"phase":phase,"base_ns":base,"configured_records":count,"enqueue_chunk":enqueue_chunk,"policy":policy,"max_request_bytes":request_bytes,"flush_delay_ms":flush_delay_ms,"simple_message_bytes":simple_message_bytes,"extra_args":extra_args,"extra_message_bytes":extra_message_bytes,"batch_records":batch,"workers":workers,"max_batch_bytes":batch_bytes,"max_buffered_bytes":buffer_bytes,"producer_seconds":producer_seconds,"total_seconds":total_seconds,"drain_seconds":total_seconds-producer_seconds,"ack_per_second":s.acknowledged_records as f64/total_seconds,"requests_per_second":s.requests as f64/total_seconds,"accepted":s.accepted_records,"acknowledged":s.acknowledged_records,"backed_up":s.backed_up_records,"failed":s.failed_records,"requests":s.requests,"retries":s.retries,"buffered_bytes":s.buffered_bytes,"last_error":s.last_error,"input_error":input_error,"close_error":close_error})
     );
     if s.acknowledged_records != count as u64 || input_error.is_some() || close_error.is_some() {
         std::process::exit(2);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn simple_fixture_has_exact_size_and_no_arguments() {
+        for length in [64, 128, 512, 8192] {
+            let point = record("run", "phase", 42, 100, 0, 0, Some(length));
+            assert_eq!(point.message.len(), length);
+            assert!(point
+                .message
+                .starts_with("INFO request completed sequence=000000000000002a "));
+            assert!(point.args.is_empty());
+            assert_eq!(point.timestamp_ns, 142);
+        }
+    }
 }
