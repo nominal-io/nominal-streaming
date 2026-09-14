@@ -158,6 +158,9 @@ let stream = NominalDatasetStreamBuilder::new()
 pub mod client;
 pub mod consumer;
 pub mod listener;
+pub mod log;
+#[cfg(feature = "logging")]
+mod logging;
 #[cfg(test)]
 mod simulated_consumer;
 pub mod stream;
@@ -254,7 +257,7 @@ mod tests {
     where
         C: WriteRequestConsumer + 'static,
     {
-        let stream = NominalDatasetStream::new_with_consumer(
+        NominalDatasetStream::new_with_consumer(
             consumer,
             NominalStreamOpts {
                 max_points_per_record,
@@ -263,9 +266,7 @@ mod tests {
                 request_dispatcher_tasks: 4,
                 base_api_url: PRODUCTION_API_URL.to_string(),
             },
-        );
-
-        stream
+        )
     }
 
     fn create_stream_with_consumer_and_options<C>(
