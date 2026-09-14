@@ -1,6 +1,3 @@
-#[cfg(feature = "instrument")]
-mod timing;
-
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -71,8 +68,6 @@ impl HttpTransport {
             .redirect(reqwest::redirect::Policy::none())
             .retry(reqwest::retry::never())
             .user_agent(concat!("nominal-streaming/", env!("CARGO_PKG_VERSION")));
-        #[cfg(feature = "instrument")]
-        let client = client.connector_layer(tower::layer::layer_fn(timing::ConnectionTiming));
         let client = client
             .build()
             .map_err(|_| LogStreamError::Invalid("could not construct HTTP client".into()))?;
@@ -85,6 +80,17 @@ impl HttpTransport {
     }
 }
 
+impl HttpTransport {
+    fn request(&self, body: &Bytes, token: &BearerToken) -> reqwest::RequestBuilder {
+        self.client
+            .post(self.endpoint.clone())
+            .bearer_auth(token.as_str())
+            .header(CONTENT_TYPE, "application/x-protobuf")
+            .header(CONTENT_ENCODING, "zstd")
+            .body(body.clone())
+    }
+}
+
 impl LogTransport for HttpTransport {
     fn send(&self, body: &Bytes) -> Result<(), AttemptError> {
         let token = (self.auth)().ok_or_else(|| AttemptError {
@@ -92,107 +98,51 @@ impl LogTransport for HttpTransport {
             retryable: false,
             retry_after: None,
         })?;
-        #[cfg(feature = "instrument")]
         let started = std::time::Instant::now();
-        #[cfg(feature = "instrument")]
-        let started_utc = chrono::Utc::now();
-        #[cfg(feature = "instrument")]
-        let trace_id = format!(
-            "{:016x}{:016x}",
-            started_utc.timestamp_nanos_opt().unwrap_or_default(),
-            {
-                static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-            }
-        );
-        #[cfg(feature = "instrument")]
-        tracing::info!(target: "nominal_streaming::log::attempt", "{}", serde_json::json!({
-            "event": "request_started", "started_utc": started_utc.to_rfc3339(),
-            "trace_id": trace_id, "wire_bytes": body.len(),
-        }));
-        #[cfg(feature = "instrument")]
-        let body_timing = Arc::new(parking_lot::Mutex::new(timing::BodyTiming::default()));
-        #[cfg(feature = "instrument")]
-        let mut response_version = None;
-        #[cfg(feature = "instrument")]
-        let mut response_status = None;
+        tracing::debug!(wire_bytes = body.len(), "Sending log request");
         let result = self.handle.block_on(async {
-            #[cfg(feature = "instrument")]
-            let upload = reqwest::Body::wrap(timing::TimedBody::new(
-                body.clone(),
-                body_timing.clone(),
-                started,
-            ));
-            #[cfg(not(feature = "instrument"))]
-            let upload = body.clone();
-            let request = self
-                .client
-                .post(self.endpoint.clone())
-                .bearer_auth(token.as_str())
-                .header(CONTENT_TYPE, "application/x-protobuf")
-                .header(CONTENT_ENCODING, "zstd")
-                .body(upload);
-            #[cfg(feature = "instrument")]
-            let request = request
-                .header("X-B3-TraceId", &trace_id)
-                .header("X-B3-SpanId", &trace_id[16..])
-                .header("X-B3-Sampled", "1");
-            let response = request.send().await.map_err(|e| {
-                #[cfg(feature = "instrument")]
-                tracing::info!(target: "nominal_streaming::log::attempt", "{}", serde_json::json!({
-                    "event": "transport_error", "trace_id": trace_id,
-                    "timeout": e.is_timeout(), "connect": e.is_connect(), "body": e.is_body(),
-                    "request": e.is_request(), "decode": e.is_decode(),
-                }));
-                AttemptError {
-                    message: if e.is_timeout() {
-                        "request timed out"
-                    } else {
-                        "request transport failed"
-                    }
-                    .into(),
-                    retryable: !e.is_builder(),
-                    retry_after: None,
-                }
-            })?;
-            #[cfg(feature = "instrument")]
-            {
-                response_version = Some(format!("{:?}", response.version()));
-                response_status = Some(response.status().as_u16());
-            }
-            let status = response.status();
-            if status.is_success() {
-                return Ok(());
-            }
-            let retry_after = response
-                .headers()
-                .get(RETRY_AFTER)
-                .and_then(|h| h.to_str().ok())
-                .and_then(parse_retry_after);
-            Err(AttemptError {
-                message: format!("HTTP {}", status.as_u16()),
-                retryable: matches!(status.as_u16(), 408 | 429 | 500 | 502 | 503 | 504),
-                retry_after,
-            })
+            let response =
+                self.request(body, &token)
+                    .send()
+                    .await
+                    .map_err(|error| AttemptError {
+                        message: if error.is_timeout() {
+                            "request timed out"
+                        } else {
+                            "request transport failed"
+                        }
+                        .into(),
+                        retryable: !error.is_builder(),
+                        retry_after: None,
+                    })?;
+            classify_response(response.status(), response.headers())
         });
-        #[cfg(feature = "instrument")]
-        let body_timing = body_timing.lock();
-        #[cfg(feature = "instrument")]
-        tracing::info!(target: "nominal_streaming::log::attempt", "{}", serde_json::json!({
-            "event": "request_completed", "started_utc": started_utc.to_rfc3339(),
-            "completed_utc": chrono::Utc::now().to_rfc3339(), "trace_id": trace_id,
-            "elapsed_micros": started.elapsed().as_micros() as u64,
-            "wire_bytes": body.len(), "success": result.is_ok(),
-            "http_version": response_version, "http_status": response_status,
-            "body_first_poll_micros": body_timing.first_poll_micros,
-            "body_last_chunk_micros": body_timing.last_chunk_micros,
-            "body_supplied_bytes": body_timing.supplied_bytes,
-            "error": result.as_ref().err().map(|e| e.message.as_str()),
-            "retryable": result.as_ref().err().map(|e| e.retryable),
-            "retry_after_ms": result.as_ref().err().and_then(|e| e.retry_after).map(|v| v.as_millis() as u64),
-        }));
+        tracing::debug!(
+            elapsed_micros = started.elapsed().as_micros() as u64,
+            wire_bytes = body.len(),
+            success = result.is_ok(),
+            error = result.as_ref().err().map(|e| e.message.as_str()),
+            "Log request completed"
+        );
         result
     }
+}
+
+fn classify_response(
+    status: reqwest::StatusCode,
+    headers: &reqwest::header::HeaderMap,
+) -> Result<(), AttemptError> {
+    if status.is_success() {
+        return Ok(());
+    }
+    Err(AttemptError {
+        message: format!("HTTP {}", status.as_u16()),
+        retryable: matches!(status.as_u16(), 408 | 429 | 500 | 502 | 503 | 504),
+        retry_after: headers
+            .get(RETRY_AFTER)
+            .and_then(|h| h.to_str().ok())
+            .and_then(parse_retry_after),
+    })
 }
 
 fn parse_retry_after(value: &str) -> Option<Duration> {
@@ -216,7 +166,6 @@ pub(super) fn encode(
     request: &wire::WriteBatchesRequest,
     max_request_bytes: usize,
 ) -> std::io::Result<Bytes> {
-    #[cfg(feature = "instrument")]
     let encode_started = std::time::Instant::now();
     if request.encoded_len() > max_request_bytes {
         return Err(std::io::Error::new(
@@ -225,16 +174,17 @@ pub(super) fn encode(
         ));
     }
     let raw = request.encode_to_vec();
-    #[cfg(feature = "instrument")]
     let compression_started = std::time::Instant::now();
     let compressed = zstd::bulk::compress(raw.as_slice(), 1)?;
-    #[cfg(feature = "instrument")]
-    tracing::info!(target: "nominal_streaming::log::attempt", "{}", serde_json::json!({
-        "event": "batch_encoded", "raw_bytes": raw.len(), "wire_bytes": compressed.len(),
-        "protobuf_micros": compression_started.duration_since(encode_started).as_micros() as u64,
-        "zstd_micros": compression_started.elapsed().as_micros() as u64,
-        "records": request.batches.iter().map(|b| b.points.as_ref().map_or(0, |p| p.timestamps.len())).sum::<usize>(),
-    }));
+    tracing::debug!(
+        raw_bytes = raw.len(),
+        wire_bytes = compressed.len(),
+        protobuf_micros = compression_started
+            .duration_since(encode_started)
+            .as_micros() as u64,
+        zstd_micros = compression_started.elapsed().as_micros() as u64,
+        "Encoded log request"
+    );
     Ok(Bytes::from(compressed))
 }
 
@@ -247,6 +197,65 @@ pub(super) struct CoreTarget {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn response_status_controls_retries_and_retry_after() {
+        let headers = reqwest::header::HeaderMap::from_iter([(RETRY_AFTER, "17".parse().unwrap())]);
+        for code in [200, 201, 204, 299] {
+            assert!(
+                classify_response(reqwest::StatusCode::from_u16(code).unwrap(), &headers).is_ok()
+            );
+        }
+        for code in [301, 400, 401, 403, 408, 413, 429, 500, 501, 502, 503, 504] {
+            let error = classify_response(reqwest::StatusCode::from_u16(code).unwrap(), &headers)
+                .err()
+                .unwrap();
+            assert_eq!(
+                error.retryable,
+                matches!(code, 408 | 429 | 500 | 502 | 503 | 504)
+            );
+            assert_eq!(error.retry_after, Some(Duration::from_secs(17)));
+            assert_eq!(error.message, format!("HTTP {code}"));
+        }
+        let invalid =
+            reqwest::header::HeaderMap::from_iter([(RETRY_AFTER, "invalid".parse().unwrap())]);
+        assert!(
+            classify_response(reqwest::StatusCode::TOO_MANY_REQUESTS, &invalid)
+                .err()
+                .unwrap()
+                .retry_after
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn request_preserves_body_and_has_no_diagnostic_headers() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let transport = HttpTransport::new(
+            Arc::new(|| None),
+            runtime.handle().clone(),
+            &LogStreamOptions::default(),
+        )
+        .unwrap();
+        let body = Bytes::from_static(b"encoded request");
+        let token = BearerToken::new("test-token").unwrap();
+        let request = transport.request(&body, &token).build().unwrap();
+        assert_eq!(request.method(), reqwest::Method::POST);
+        assert!(request
+            .url()
+            .path()
+            .ends_with("/storage/writer/v1/nominal-columnar"));
+        assert_eq!(request.headers()[CONTENT_TYPE], "application/x-protobuf");
+        assert_eq!(request.headers()[CONTENT_ENCODING], "zstd");
+        assert_eq!(
+            request.headers()[reqwest::header::AUTHORIZATION],
+            "Bearer test-token"
+        );
+        for name in ["X-B3-TraceId", "X-B3-SpanId", "X-B3-Sampled"] {
+            assert!(!request.headers().contains_key(name));
+        }
+        assert_eq!(request.body().unwrap().as_bytes().unwrap(), body.as_ref());
+    }
 
     #[test]
     fn retry_after_supports_seconds_and_http_dates() {

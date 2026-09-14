@@ -119,7 +119,7 @@ struct State {
 }
 
 struct FailedBatch {
-    request: wire::WriteBatchesRequest,
+    request: Arc<wire::WriteBatchesRequest>,
     bytes: usize,
     count: usize,
 }
@@ -332,10 +332,13 @@ impl NominalLogStream {
     pub fn close(&self) -> Result<LogStreamStats, LogStreamError> {
         self.stop_accepting_writes();
         let mut workers = self.workers.lock();
+        let mut panicked = false;
         for join in workers.drain(..) {
-            if join.join().is_err() {
-                return Err(LogStreamError::Delivery("log worker panicked".into()));
-            }
+            panicked |= join.join().is_err();
+        }
+        if panicked {
+            let mut state = self.shared.state.lock();
+            state.fatal_error = Some("log worker panicked".into());
         }
         outcome(&self.shared.state.lock())
     }
@@ -346,17 +349,37 @@ impl NominalLogStream {
         &self,
         directory: impl AsRef<Path>,
     ) -> Result<LogStreamStats, LogStreamError> {
+        self.save_failed_with(directory.as_ref(), journal::save)
+    }
+
+    fn save_failed_with(
+        &self,
+        directory: &Path,
+        save: impl Fn(&Path, &wire::WriteBatchesRequest) -> std::io::Result<()>,
+    ) -> Result<LogStreamStats, LogStreamError> {
         let _ = self.close();
-        let mut state = self.shared.state.lock();
-        while let Some(batch) = state.failed.last() {
-            journal::save(directory.as_ref(), &batch.request)?;
-            let saved = state.failed.pop().expect("last batch exists");
+        // Admission is closed. Reuse its lock to serialize rescue calls without blocking stats.
+        let _rescue = self.admission.lock();
+        loop {
+            let request = {
+                let mut state = self.shared.state.lock();
+                let Some(batch) = state.failed.last() else {
+                    state.fatal_error = None;
+                    return Ok(state.stats.clone());
+                };
+                Arc::clone(&batch.request)
+            };
+            // State retains ownership until the write succeeds, including if the saver panics.
+            save(directory, &request)?;
+            let mut state = self.shared.state.lock();
+            let saved = state
+                .failed
+                .pop()
+                .expect("rescue owns the last failed batch");
             state.stats.backed_up_records += saved.count as u64;
             state.stats.failed_records -= saved.count as u64;
             state.stats.buffered_bytes -= saved.bytes;
         }
-        state.fatal_error = None;
-        Ok(state.stats.clone())
     }
 }
 
@@ -477,7 +500,7 @@ fn worker(shared: Arc<Shared>) {
                 state.stats.last_error = Some(error.clone());
                 state.fatal_error = Some(error);
                 state.failed.push(FailedBatch {
-                    request,
+                    request: Arc::new(request),
                     count,
                     bytes,
                 });
@@ -500,6 +523,49 @@ mod pressure_tests {
 
     use super::*;
     use crate::log::transport;
+
+    #[test]
+    fn recovery_keeps_stats_available_during_journal_io() {
+        let directory = tempfile::tempdir().unwrap();
+        let occupied = directory.path().join("occupied");
+        std::fs::write(&occupied, "not a directory").unwrap();
+        let stream = Arc::new(
+            NominalLogStream::builder()
+                .stream_to_file(occupied)
+                .build()
+                .unwrap(),
+        );
+        stream
+            .enqueue("app", LogRecord::new(1, "retained", HashMap::new()))
+            .unwrap();
+        assert!(stream.close().is_err());
+        let (started_tx, started_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let recovering = stream.clone();
+        let output = directory.path().join("rescued");
+        let rescue = thread::spawn(move || {
+            recovering.save_failed_with(&output, |dir, request| {
+                started_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+                journal::save(dir, request)
+            })
+        });
+        started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        let observing = stream.clone();
+        let (stats_tx, stats_rx) = mpsc::channel();
+        let observer = thread::spawn(move || stats_tx.send(observing.stats()).unwrap());
+        let stats = stats_rx.recv_timeout(Duration::from_secs(2));
+        // Always release disk I/O before asserting, so regressions don't strand the test threads.
+        release_tx.send(()).unwrap();
+        let saved = rescue.join().unwrap().unwrap();
+        observer.join().unwrap();
+        let stats = stats.expect("stats must not wait for journal I/O");
+        assert_eq!(stats.failed_records, 1);
+        assert!(stats.buffered_bytes > 0);
+        assert_eq!(saved.failed_records, 0);
+        assert_eq!(saved.buffered_bytes, 0);
+        assert_eq!(saved.backed_up_records, 1);
+    }
 
     struct HeldFirstUpload {
         started: mpsc::Sender<()>,

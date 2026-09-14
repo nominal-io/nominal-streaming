@@ -3,26 +3,17 @@
 Development diagnostics for [log streaming](log-streaming.md). These probes upload data; run them explicitly against a test dataset.
 
 The `log_capacity` Rust example is an opt-in finite staging probe. Build with
-`cargo build --release -p nominal-streaming --example log_capacity --features instrument`.
-The existing `instrument` feature enables per-attempt tracing under
-`nominal_streaming::log::attempt`, including elapsed microseconds, compressed wire bytes,
-success, and a sanitized error. It does not emit credentials or record contents.
+`cargo build --release -p nominal-streaming --example log_capacity`.
+It enables debug tracing for `nominal_streaming::log` and records elapsed request time,
+compressed bytes, encoding time, retry decisions and delivery outcomes.
 
-## Diagnostic timing
+These are the same structured tracing events used by the library. Log filtering does
+not change request bodies, connection behavior or tracing headers. The existing
+`instrument` feature remains available for time-series work counters; logs do not
+require it for diagnostics.
 
-Build with `instrument` to record protobuf encoding and zstd durations, aggregate
-connection setup time (DNS/TCP/TLS together), negotiated HTTP version/status, and
-first/final request-body handoff offsets. The diagnostic body supplies exact-length,
-64 KiB slices of the already compressed buffer; it does not re-encode per retry.
-Non-instrumented builds retain the original reusable byte body.
-
-`body_last_chunk_micros` means the HTTP stack consumed the last chunk. It is **not**
-a socket-write completion or TCP acknowledgement. The remaining interval until response
-headers includes HTTP/TLS/socket buffering, network transit, ingress and backend work.
-Connection timings are independent events, not reliably attributable to a single request
-because pooled HTTP/2 connections can be shared. They combine DNS, TCP and TLS; they do
-not split those phases. Instrumentation may affect scheduling and chunking, so compare
-runs using the same build. No payloads, headers or tokens are logged.
+Request elapsed time spans the send until response headers arrive. It does not split
+network, ingress and backend time. Credentials and message contents are not logged.
 
 ## Fixture settings
 

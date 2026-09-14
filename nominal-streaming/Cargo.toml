@@ -12,11 +12,9 @@ default = ["logging"]
 logging = ["tracing-subscriber"]
 
 # measures total work done in background threads
-instrument = ["dep:http-body", "dep:tower"]
+instrument = []
 
 [dependencies]
-http-body = { version = "1", optional = true }
-tower = { version = "0.5", features = ["util"], optional = true }
 apache-avro = { workspace = true }
 async-channel = { workspace = true }
 bytes = { workspace = true }
@@ -46,4 +44,4 @@ tempfile = { workspace = true }
 
 [[example]]
 name = "log_capacity"
-required-features = ["logging", "instrument"]
+required-features = ["logging"]

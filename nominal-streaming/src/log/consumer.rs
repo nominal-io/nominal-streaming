@@ -41,15 +41,6 @@ impl LogConsumer {
         request: &wire::WriteBatchesRequest,
         mut on_attempt: impl FnMut(bool),
     ) -> Result<DeliveryOutcome, String> {
-        #[cfg(feature = "instrument")]
-        let batch_id = format!("{:x}-{:x}", std::process::id(), {
-            static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-        });
-        #[cfg(feature = "instrument")]
-        let span = tracing::info_span!(target: "nominal_streaming::log::attempt", "batch", batch_id = %batch_id);
-        #[cfg(feature = "instrument")]
-        let _entered = span.enter();
         let error = match &self.target {
             Some(target) => match self.upload(target.as_ref(), request, &mut on_attempt) {
                 Ok(()) => return Ok(DeliveryOutcome::Acknowledged),
@@ -58,7 +49,7 @@ impl LogConsumer {
             None => None,
         };
         if let Some(error) = &error {
-            tracing::warn!("Log batch delivery unconfirmed; attempting journal backup: {error}");
+            tracing::warn!(error = %error, "Log batch delivery unconfirmed");
         }
         let directory = self
             .backup
@@ -70,11 +61,7 @@ impl LogConsumer {
                 error.as_deref().unwrap_or("file-only stream")
             )
         })?;
-        #[cfg(feature = "instrument")]
-        tracing::info!(target: "nominal_streaming::log::attempt", "{}", serde_json::json!({
-            "event": "batch_backed_up", "completed_utc": chrono::Utc::now().to_rfc3339(),
-            "reason": error.as_deref().unwrap_or("file-only stream"),
-        }));
+        tracing::debug!("Preserved log batch in journal");
         Ok(DeliveryOutcome::BackedUp {
             delivery_error: error,
         })
@@ -91,10 +78,7 @@ impl LogConsumer {
         let mut delay = self.opts.initial_backoff;
         for attempt in 0..=self.opts.max_retries {
             on_attempt(attempt > 0);
-            #[cfg(feature = "instrument")]
-            let span = tracing::info_span!(target: "nominal_streaming::log::attempt", "attempt", attempt = attempt + 1);
-            #[cfg(feature = "instrument")]
-            let _entered = span.enter();
+            tracing::debug!(attempt = attempt + 1, "Attempting log delivery");
             let error = match target.send(&body) {
                 Ok(()) => return Ok(()),
                 Err(error) => error,
@@ -111,14 +95,16 @@ impl LogConsumer {
             } else {
                 None
             };
-            if let Some(_reason) = reason {
-                #[cfg(feature = "instrument")]
-                tracing::info!(target: "nominal_streaming::log::attempt", "{}", serde_json::json!({
-                    "event": "delivery_abandoned", "completed_utc": chrono::Utc::now().to_rfc3339(),
-                    "reason": _reason, "error": error.message,
-                }));
+            if let Some(reason) = reason {
+                tracing::debug!(reason, error = %error.message, "Log delivery unconfirmed");
                 return Err(error.message);
             }
+            tracing::debug!(
+                attempt = attempt + 1,
+                backoff_ms = delay.max(error.retry_after.unwrap_or_default()).as_millis() as u64,
+                error = %error.message,
+                "Retrying log delivery"
+            );
             thread::sleep(delay.max(error.retry_after.unwrap_or_default()));
             delay = delay.saturating_mul(2).min(self.opts.max_backoff);
         }

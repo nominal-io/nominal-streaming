@@ -7,6 +7,7 @@
 //!   - LogStreamStats          Delivery and preservation counters
 
 mod lazy_dataset_stream_builder;
+mod log_runtime;
 mod nominal_dataset_stream;
 mod nominal_log_stream;
 mod nominal_log_stream_opts;

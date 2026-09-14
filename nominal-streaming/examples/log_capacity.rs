@@ -84,7 +84,7 @@ fn record(
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt()
-        .with_env_filter("nominal_streaming::log::attempt=info")
+        .with_env_filter("nominal_streaming::log=debug")
         .with_ansi(false)
         .with_writer(std::io::stderr)
         .init();

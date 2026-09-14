@@ -2,10 +2,8 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::Mutex;
 
 use nominal_streaming::log::LogRecord;
-use nominal_streaming::log::LogStreamError;
 use nominal_streaming::log::LogStreamOptions;
 use nominal_streaming::log::LogStreamStats;
 use nominal_streaming::log::NominalLogStream;
@@ -15,6 +13,7 @@ use pyo3::exceptions::PyRuntimeError;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
+use crate::log_runtime::LogRuntime;
 use crate::nominal_log_stream_opts::PyNominalLogStreamOpts;
 
 fn error(err: impl std::fmt::Display) -> PyErr {
@@ -46,23 +45,6 @@ impl From<LogStreamStats> for PyLogStreamStats {
     }
 }
 
-struct OwnedStream {
-    // Field order ensures stream drop precedes runtime drop even without explicit close.
-    stream: NominalLogStream,
-    runtime: Mutex<Option<tokio::runtime::Runtime>>,
-}
-impl OwnedStream {
-    fn close(&self) -> Result<LogStreamStats, LogStreamError> {
-        let result = self.stream.close();
-        if result.is_ok() {
-            if let Some(runtime) = self.runtime.lock().unwrap().take() {
-                runtime.shutdown_background();
-            }
-        }
-        result
-    }
-}
-
 #[pyclass]
 pub struct PyNominalLogStream {
     log_level: Option<String>,
@@ -71,10 +53,10 @@ pub struct PyNominalLogStream {
     core: Option<(BearerToken, ResourceIdentifier)>,
     file: Option<PathBuf>,
     fallback: Option<PathBuf>,
-    owned: Option<Arc<OwnedStream>>,
+    owned: Option<Arc<LogRuntime>>,
 }
 impl PyNominalLogStream {
-    fn stream(&self) -> PyResult<&Arc<OwnedStream>> {
+    fn stream(&self) -> PyResult<&Arc<LogRuntime>> {
         self.owned.as_ref().ok_or_else(|| error("stream not open"))
     }
     fn configuring(&self) -> PyResult<()> {
@@ -155,7 +137,7 @@ impl PyNominalLogStream {
     }
     fn open(&mut self, py: Python<'_>) -> PyResult<()> {
         self.configuring()?;
-        let owned = py.detach(|| -> PyResult<OwnedStream> {
+        let owned = py.detach(|| -> PyResult<LogRuntime> {
             let runtime = tokio::runtime::Builder::new_multi_thread()
                 .worker_threads(self.num_runtime_workers)
                 .thread_name("nominal-log-runtime")
@@ -176,10 +158,7 @@ impl PyNominalLogStream {
             if let Some(dir) = &self.fallback {
                 builder = builder.with_file_fallback(dir);
             }
-            Ok(OwnedStream {
-                stream: builder.build().map_err(error)?,
-                runtime: Mutex::new(Some(runtime)),
-            })
+            Ok(LogRuntime::new(builder.build().map_err(error)?, runtime))
         })?;
         self.owned = Some(Arc::new(owned));
         Ok(())
@@ -270,13 +249,7 @@ impl PyNominalLogStream {
                 .map(|s| Some(s.into()))
                 .map_err(error)
         } else {
-            let owned = Arc::clone(owned);
-            std::thread::Builder::new()
-                .name("nominal-log-drain".into())
-                .spawn(move || {
-                    let _ = owned.close();
-                })
-                .map_err(error)?;
+            owned.close_in_background().map_err(error)?;
             Ok(None)
         }
     }
@@ -284,10 +257,10 @@ impl PyNominalLogStream {
 impl Drop for PyNominalLogStream {
     fn drop(&mut self) {
         if let Some(owned) = self.owned.take() {
-            // Destructors run with the GIL held; explicit close reports errors and waits.
-            std::thread::spawn(move || {
-                let _ = owned.close();
-            });
+            // Reuse an existing drain, including one completed by explicit close.
+            if let Err(error) = owned.close_in_background() {
+                tracing::error!("Could not start log stream shutdown: {error}");
+            }
         }
     }
 }

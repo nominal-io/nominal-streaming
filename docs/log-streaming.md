@@ -72,7 +72,7 @@ Supply a multi-thread Tokio runtime with I/O and timers enabled, and keep it ali
 - A record exceeding the request budget or an input batch exceeding the total memory budget is rejected before any of that call is accepted. Split large caller batches explicitly. When previously accepted work occupies the budget, producers block; Python releases the GIL during this wait.
 - Buffering delay is a dispatch target under available capacity, not an end-to-end visibility SLA. Slow uploads and retry waits apply backpressure. Concurrent uploads do not preserve request order.
 - `flush()` blocks new enqueue calls while draining accepted work. `close()` stops acceptance, wakes blocked producers, drains and joins upload workers. Both report fatal delivery/preservation errors.
-- Python `close(wait=False)` stops acceptance and drains in a background native thread. Follow with `close(wait=True)` to wait and inspect the outcome. It does not cancel or deliberately discard accepted records. Explicit close is required before interpreter/process exit when delivery matters.
+- Python `close(wait=False)` stops acceptance and starts one background drain; repeated calls reuse it. Follow with `close(wait=True)` to wait and inspect the outcome. It does not cancel or deliberately discard accepted records. Explicit close is required before interpreter/process exit when delivery matters.
 - Stats distinguish accepted, acknowledged, backed-up and unpreserved failed records. `last_error` reports the most recent delivery/preservation error even if backup succeeded. A successful flush can therefore include backed-up records; it does not mean all records reached Core.
 
 ## Serialized requests and memory budgets
@@ -122,6 +122,19 @@ More memory and workers do not guarantee higher throughput. Measure request late
 acknowledged records and fallback counts with representative messages before raising limits.
 See [the capacity probe](log-capacity.md) for development diagnostics.
 
+## Logging
+
+Log and time-series streams use the same `tracing` subscriber and filter configuration.
+Use `.enable_logging()` or `.enable_logging_with_directive("info")` on the Rust builder,
+or `.enable_logging("info")` in Python. Applications that already configure `tracing`
+can keep their subscriber; the stream does not replace it.
+
+Request completion, encoding durations, retries and successful journal writes are debug
+messages. Unconfirmed delivery produces a warning; failure to preserve records produces
+an error. Filters such as `nominal_streaming::log=debug` enable log diagnostics without
+changing request bodies or adding tracing headers. No credentials or record contents
+are included in these events.
+
 ## Retry and backup
 
 The stream makes an initial attempt plus at most three retries. Transport failures and HTTP 408, 429, 500, 502, 503 and 504 are retryable. Other HTTP statuses go directly to backup. There is one retry loop, with no additional reqwest retry layer.
@@ -130,7 +143,7 @@ Default exponential backoff starts at 100 ms and caps at 5 seconds. Each HTTP at
 
 **A positively acknowledged batch is never written to backup.** After retry exhaustion or a non-retryable error, only the unconfirmed batch is written to journal files. A request whose acknowledgement was lost can already exist remotely; retries or later recovery may duplicate it. This tradeoff favors preservation and requires no exactly-once protocol.
 
-Journal writes flush and sync before completion is reported. Disk errors stop admission, surface through flush/close, and leave unpreserved batches owned by the stream. After correcting the disk problem, `save_failed(other_directory)` can rescue them. Do not discard the stream after a failed close unless you accept losing those retained records. Partial multi-channel backup/rescue may leave some completed segments before an error; inspect manifests to avoid unnecessary re-import.
+Journal writes flush and sync before completion is reported. Recovery keeps statistics readable while disk I/O runs. Disk errors stop admission, surface through flush/close, and leave unpreserved batches owned by the stream. After correcting the disk problem, `save_failed(other_directory)` can rescue them. Do not discard the stream after a failed close unless you accept losing those retained records. Partial multi-channel backup/rescue may leave some completed segments before an error; inspect manifests to avoid unnecessary re-import.
 
 File-only operation is available through `.stream_to_file(directory)` in Rust or `.to_file(directory)` in Python. Configure either a file-only destination or a Core target with optional fallback. Combining file-only operation with a Core target or a fallback directory is an error.
 
