@@ -8,6 +8,7 @@ use std::sync::LazyLock;
 
 use apache_avro::types::Record;
 use apache_avro::types::Value;
+use conjure_object::BearerToken;
 use conjure_object::ResourceIdentifier;
 use nominal_api::tonic::google::protobuf::Timestamp;
 use nominal_api::tonic::io::nominal::scout::api::proto::array_points::ArrayType;
@@ -26,8 +27,10 @@ use prost::Message;
 use tracing::warn;
 
 use crate::client::NominalApiClients;
+use crate::client::WriteRequest;
 use crate::client::{self};
 use crate::listener::NominalStreamListener;
+use crate::metrics::PendingMetrics;
 use crate::types::AuthProvider;
 
 #[derive(Debug, thiserror::Error)]
@@ -56,8 +59,8 @@ pub struct NominalCoreConsumer<A: AuthProvider> {
     handle: tokio::runtime::Handle,
     auth_provider: A,
     data_source_rid: ResourceIdentifier,
-    metrics: Option<Arc<crate::metrics::PendingMetrics>>,
-    metric_channels: HashSet<String>,
+    metrics: Option<Arc<PendingMetrics>>,
+    additional_metric_channels: HashSet<String>,
 }
 
 impl<A: AuthProvider> NominalCoreConsumer<A> {
@@ -73,7 +76,7 @@ impl<A: AuthProvider> NominalCoreConsumer<A> {
             auth_provider,
             data_source_rid,
             metrics: None,
-            metric_channels: HashSet::new(),
+            additional_metric_channels: HashSet::new(),
         }
     }
 
@@ -89,14 +92,37 @@ impl<A: AuthProvider> NominalCoreConsumer<A> {
     }
 
     /// Name channels the caller emits through the stream as metrics rather than data, so
-    /// they are excluded from request latency measurements. Only relevant when metrics
-    /// tracking is enabled.
-    pub fn with_metric_channels(
+    /// they are excluded from request latency measurements. The request metrics this
+    /// consumer emits itself are always excluded. Only relevant when metrics tracking is
+    /// enabled.
+    pub fn with_additional_metric_channels(
         mut self,
         channels: impl IntoIterator<Item = impl Into<String>>,
     ) -> Self {
-        self.metric_channels = channels.into_iter().map(Into::into).collect();
+        self.additional_metric_channels = channels.into_iter().map(Into::into).collect();
         self
+    }
+
+    fn encode(
+        &self,
+        request: &WriteRequestNominal,
+        token: &BearerToken,
+    ) -> ConsumerResult<WriteRequest<'static>> {
+        Ok(client::encode_request(
+            &request.encode_to_vec(),
+            token,
+            &self.data_source_rid,
+        )?)
+    }
+
+    fn send(&self, request: WriteRequest<'static>) -> ConsumerResult<()> {
+        self.handle.block_on(async {
+            self.client
+                .send(request)
+                .await
+                .map_err(|e| ConsumerError::RequestError(format!("{e:?}")))
+        })?;
+        Ok(())
     }
 }
 
@@ -115,24 +141,18 @@ impl<T: AuthProvider + 'static> WriteRequestConsumer for NominalCoreConsumer<T> 
             .auth_provider
             .token()
             .ok_or(ConsumerError::MissingTokenError)?;
-        let encode = |request: &WriteRequestNominal| {
-            client::encode_request(&request.encode_to_vec(), &token, &self.data_source_rid)
-                .map_err(ConsumerError::from)
+        let measured = self
+            .metrics
+            .as_ref()
+            .and_then(|metrics| metrics.prepare(request, &self.additional_metric_channels));
+        let Some((request, measurement)) = measured else {
+            return self.send(self.encode(request, &token)?);
         };
-        let send = |write_request| {
-            self.handle.block_on(async {
-                self.client
-                    .send(write_request)
-                    .await
-                    .map(|_| ())
-                    .map_err(|e| ConsumerError::RequestError(format!("{e:?}")))
-            })
-        };
-        if let Some(metrics) = &self.metrics {
-            metrics.consume(request, &self.metric_channels, encode, send)
-        } else {
-            send(encode(request)?)
-        }
+        let encoded = self.encode(&request, &token)?;
+        let in_flight = measurement.start();
+        self.send(encoded)?;
+        in_flight.complete();
+        Ok(())
     }
 }
 

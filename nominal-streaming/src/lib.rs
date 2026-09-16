@@ -140,7 +140,7 @@ NominalStreamOpts {
   max_buffered_requests: usize,
   request_dispatcher_tasks: usize,
   track_metrics: bool, // defaults to false
-  metric_channels: Vec<String>, // stream-emitted metric channels excluded from latency bounds
+  additional_metric_channels: Vec<String>, // caller-emitted metric channels excluded from latency bounds
 }
 ```
 
@@ -156,7 +156,7 @@ The `track_metrics` option enables request latency metrics tracking directly on 
 | `__nominal.metric.largest_latency_after_request` | Wall time after HTTP send minus the oldest data timestamp in the batch | Request completion time |
 | `__nominal.metric.smallest_latency_after_request` | Wall time after HTTP send minus the newest data timestamp in the batch | Request completion time |
 
-If there are metrics provided by upstream users of this library - such as the Python client - they can be provided as `metric_channels`. They will
+If there are metrics provided by upstream users of this library - such as the Python client - they can be provided as `additional_metric_channels`. They will
 be excluded from the metrics above (where possible - e.g for metric-only requests and when fetching newest/oldest data timestamps). All metrics - including the
 ones added by this library - are appended into the existing requests the library makes, so overhead is minimal.
 
@@ -282,7 +282,7 @@ mod tests {
                 request_dispatcher_tasks: 4,
                 base_api_url: PRODUCTION_API_URL.to_string(),
                 track_metrics: false,
-                metric_channels: Vec::new(),
+                additional_metric_channels: Vec::new(),
             },
         );
 
@@ -807,7 +807,7 @@ mod tests {
                 request_dispatcher_tasks: 1,
                 base_api_url: PRODUCTION_API_URL.to_string(),
                 track_metrics: false,
-                metric_channels: Vec::new(),
+                additional_metric_channels: Vec::new(),
             },
         );
 
