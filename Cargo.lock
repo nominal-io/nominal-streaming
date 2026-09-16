@@ -1210,7 +1210,7 @@ dependencies = [
  "libc",
  "percent-encoding",
  "pin-project-lite",
- "socket2 0.5.10",
+ "socket2 0.6.5",
  "system-configuration",
  "tokio",
  "tower-service",
@@ -1595,9 +1595,9 @@ dependencies = [
 
 [[package]]
 name = "nominal-api"
-version = "0.1434.0"
+version = "0.1435.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ca5a78d1373c93d0d31c82f6256c73f7dce745bdda84a944a597cbb139328b22"
+checksum = "5a60172668ee3ef5267b7852c1554f1498664d927eb739f59a99391f6ac99581"
 dependencies = [
  "nominal-api-conjure",
  "nominal-api-proto",
@@ -1605,9 +1605,9 @@ dependencies = [
 
 [[package]]
 name = "nominal-api-conjure"
-version = "0.1434.0"
+version = "0.1435.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6a7044a3b26b858652f08ffc6338462b0b40f7f533c93226e43727b5504161bb"
+checksum = "534aad357abc732db2e3f005eb7abfc118d3ad8956ac2afe23e67f6bbaef8d59"
 dependencies = [
  "conjure-error",
  "conjure-http",
@@ -1616,9 +1616,9 @@ dependencies = [
 
 [[package]]
 name = "nominal-api-proto"
-version = "0.1434.0"
+version = "0.1435.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "02ae73180cc5052ac2b144ef66a0c0cd14ad70b324fc1fd06773f4b12b3d60a3"
+checksum = "9c85f1fb268d56ad8f94a6b1d24238e80a7581b63786c600b6657d9545338586"
 dependencies = [
  "prost",
  "tonic",
@@ -2021,7 +2021,7 @@ dependencies = [
  "quinn-udp",
  "rustc-hash",
  "rustls",
- "socket2 0.5.10",
+ "socket2 0.6.5",
  "thiserror 2.0.20",
  "tokio",
  "tracing",
@@ -2059,7 +2059,7 @@ dependencies = [
  "cfg_aliases",
  "libc",
  "once_cell",
- "socket2 0.5.10",
+ "socket2 0.6.5",
  "tracing",
  "windows-sys 0.60.2",
 ]
