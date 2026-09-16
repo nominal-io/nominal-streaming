@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use std::error::Error;
 use std::fmt::Debug;
 use std::fmt::Formatter;
@@ -30,7 +29,7 @@ use crate::client::NominalApiClients;
 use crate::client::WriteRequest;
 use crate::client::{self};
 use crate::listener::NominalStreamListener;
-use crate::metrics::PendingMetrics;
+use crate::metrics::RequestMetrics;
 use crate::types::AuthProvider;
 
 #[derive(Debug, thiserror::Error)]
@@ -59,8 +58,7 @@ pub struct NominalCoreConsumer<A: AuthProvider> {
     handle: tokio::runtime::Handle,
     auth_provider: A,
     data_source_rid: ResourceIdentifier,
-    metrics: Option<Arc<PendingMetrics>>,
-    additional_metric_channels: HashSet<String>,
+    metrics: RequestMetrics,
 }
 
 impl<A: AuthProvider> NominalCoreConsumer<A> {
@@ -75,19 +73,14 @@ impl<A: AuthProvider> NominalCoreConsumer<A> {
             handle,
             auth_provider,
             data_source_rid,
-            metrics: None,
-            additional_metric_channels: HashSet::new(),
+            metrics: RequestMetrics::default(),
         }
     }
 
     /// Piggyback completed request metrics on later data requests to the same dataset.
     /// Pending metrics are bounded and best-effort; no extra requests are sent.
     pub fn with_track_metrics(mut self, enabled: bool) -> Self {
-        if enabled {
-            self.metrics.get_or_insert_with(Default::default);
-        } else {
-            self.metrics = None;
-        }
+        self.metrics.set_enabled(enabled);
         self
     }
 
@@ -99,7 +92,7 @@ impl<A: AuthProvider> NominalCoreConsumer<A> {
         mut self,
         channels: impl IntoIterator<Item = impl Into<String>>,
     ) -> Self {
-        self.additional_metric_channels = channels.into_iter().map(Into::into).collect();
+        self.metrics.set_additional_metric_channels(channels);
         self
     }
 
@@ -141,13 +134,7 @@ impl<T: AuthProvider + 'static> WriteRequestConsumer for NominalCoreConsumer<T> 
             .auth_provider
             .token()
             .ok_or(ConsumerError::MissingTokenError)?;
-        let measured = self
-            .metrics
-            .as_ref()
-            .and_then(|metrics| metrics.prepare(request, &self.additional_metric_channels));
-        let Some((request, measurement)) = measured else {
-            return self.send(self.encode(request, &token)?);
-        };
+        let (request, measurement) = self.metrics.prepare(request);
         let encoded = self.encode(&request, &token)?;
         let in_flight = measurement.start();
         self.send(encoded)?;
