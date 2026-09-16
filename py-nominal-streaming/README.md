@@ -60,5 +60,4 @@ if __name__ == "__main__":
 
 Enable `PyNominalStreamOpts(track_metrics=True)` (or pass `track_metrics=True` to
 `NominalDatasetStream.create`) to emit dictionary enqueue staleness and Core
-request latency metrics. Metrics are disabled by default. See the
-[metric inventory and delivery semantics](../docs/runtime-metrics.md).
+request latency metrics. Metrics are disabled by default.
