@@ -29,21 +29,24 @@ const REQUEST_METRICS: [&str; 5] = [
 // At most 320 metric points are retained, regardless of dispatcher concurrency.
 const MAX_PENDING_REQUESTS: usize = 64;
 
+/// The five series recorded for one measured send.
+type MetricSeries = [Series; REQUEST_METRICS.len()];
+
 /// Request metrics for one consumer. Every step is a no-op while disabled, so
 /// the consumer runs the same send path whether or not metrics are tracked.
+///
+/// Completed measurements wait in a bounded queue shared across dispatcher
+/// threads until the next data request carries them, so metrics never cost an
+/// extra request.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct RequestMetrics {
-    pending: Option<Arc<PendingMetrics>>,
+    pending: Option<Arc<Mutex<VecDeque<MetricSeries>>>>,
     additional_metric_channels: HashSet<String>,
 }
 
 impl RequestMetrics {
     pub(crate) fn set_enabled(&mut self, enabled: bool) {
-        if enabled {
-            self.pending.get_or_insert_with(Default::default);
-        } else {
-            self.pending = None;
-        }
+        self.pending = enabled.then(Default::default);
     }
 
     /// Channels the caller emits through the stream as metrics rather than data.
@@ -56,10 +59,10 @@ impl RequestMetrics {
         self.additional_metric_channels = channels.into_iter().map(Into::into).collect();
     }
 
-    /// Prepares a request for a measured send. Earlier measurements for the same
-    /// session are attached to a copy of the request, so metrics never cost an
-    /// extra request. While disabled, or when the request has nothing to measure,
-    /// the request is returned unchanged with a measurement that records nothing.
+    /// Prepares a request for a measured send, attaching every pending
+    /// measurement to a copy of the request. While disabled, or when the request
+    /// has nothing to measure, the request is returned unchanged with a
+    /// measurement that records nothing.
     pub(crate) fn prepare<'a>(
         &'a self,
         request: &'a WriteRequestNominal,
@@ -76,51 +79,20 @@ impl RequestMetrics {
     ) -> Option<(Cow<'a, WriteRequestNominal>, Bounds<'a>)> {
         let pending = self.pending.as_deref()?;
         let (oldest, newest) = timestamp_bounds(request, &self.additional_metric_channels)?;
-        let attached = pending.take(&request.session_name);
+        let attached: Vec<MetricSeries> = pending.lock().drain(..).collect();
         let to_send = if attached.is_empty() {
             Cow::Borrowed(request)
         } else {
             let mut combined = request.clone();
-            combined.series.extend(attached);
+            combined.series.extend(attached.into_iter().flatten());
             Cow::Owned(combined)
         };
         let bounds = Bounds {
             pending,
-            session_name: request.session_name.clone(),
             oldest,
             newest,
         };
         Some((to_send, bounds))
-    }
-}
-
-/// Measurements waiting to be piggybacked onto a later data request, shared
-/// across dispatcher threads.
-#[derive(Debug, Default)]
-struct PendingMetrics {
-    pending: Mutex<VecDeque<WriteRequestNominal>>,
-}
-
-impl PendingMetrics {
-    fn take(&self, session_name: &Option<String>) -> Vec<Series> {
-        let mut attached = Vec::new();
-        self.pending.lock().retain(|metrics| {
-            if metrics.session_name == *session_name {
-                attached.extend(metrics.series.iter().cloned());
-                false
-            } else {
-                true
-            }
-        });
-        attached
-    }
-
-    fn push(&self, metrics: WriteRequestNominal) {
-        let mut pending = self.pending.lock();
-        if pending.len() == MAX_PENDING_REQUESTS {
-            pending.pop_front();
-        }
-        pending.push_back(metrics);
     }
 }
 
@@ -131,8 +103,7 @@ pub(crate) struct RequestMeasurement<'a>(Option<Bounds<'a>>);
 /// The data timestamp bounds of a request that is about to be sent.
 #[derive(Debug)]
 struct Bounds<'a> {
-    pending: &'a PendingMetrics,
-    session_name: Option<String>,
+    pending: &'a Mutex<VecDeque<MetricSeries>>,
     oldest: i128,
     newest: i128,
 }
@@ -161,9 +132,9 @@ struct InFlight<'a> {
 }
 
 impl InFlightRequest<'_> {
-    /// Records the completed send so it piggybacks onto a later request in the
-    /// same session. Call only after a successful send; dropping an in-flight
-    /// request after a failure records nothing.
+    /// Records the completed send so it piggybacks onto a later request. Call
+    /// only after a successful send; dropping an in-flight request after a
+    /// failure records nothing.
     pub(crate) fn complete(self) {
         let Some(InFlight {
             bounds,
@@ -175,9 +146,12 @@ impl InFlightRequest<'_> {
         };
         let rtt = start.elapsed().as_secs_f64();
         let after = UNIX_EPOCH.elapsed().unwrap().as_nanos() as i128;
-        let mut metrics = metric_request(bounds.oldest, bounds.newest, before, after, rtt);
-        metrics.session_name = bounds.session_name;
-        bounds.pending.push(metrics);
+        let metrics = metric_series(bounds.oldest, bounds.newest, before, after, rtt);
+        let mut pending = bounds.pending.lock();
+        if pending.len() == MAX_PENDING_REQUESTS {
+            pending.pop_front();
+        }
+        pending.push_back(metrics);
     }
 }
 
@@ -240,13 +214,7 @@ fn timestamp_bounds(
 
 /// Builds the five request-latency series for one completed send, using the
 /// channel names and units (seconds) that nominal-client dashboards expect.
-fn metric_request(
-    oldest: i128,
-    newest: i128,
-    before: i128,
-    after: i128,
-    rtt: f64,
-) -> WriteRequestNominal {
+fn metric_series(oldest: i128, newest: i128, before: i128, after: i128, rtt: f64) -> MetricSeries {
     let timestamp = Timestamp {
         seconds: after.div_euclid(1_000_000_000) as i64,
         nanos: after.rem_euclid(1_000_000_000) as i32,
@@ -258,27 +226,20 @@ fn metric_request(
         (after - oldest) as f64 / 1e9,
         (after - newest) as f64 / 1e9,
     ];
-    WriteRequestNominal {
-        session_name: None,
-        series: REQUEST_METRICS
-            .into_iter()
-            .zip(values)
-            .map(|(name, value)| Series {
-                channel: Some(Channel {
-                    name: name.to_string(),
-                }),
-                tags: Default::default(),
-                points: Some(Points {
-                    points_type: Some(PointsType::DoublePoints(DoublePoints {
-                        points: vec![DoublePoint {
-                            timestamp: Some(timestamp),
-                            value,
-                        }],
-                    })),
-                }),
-            })
-            .collect(),
-    }
+    std::array::from_fn(|index| Series {
+        channel: Some(Channel {
+            name: REQUEST_METRICS[index].to_string(),
+        }),
+        tags: Default::default(),
+        points: Some(Points {
+            points_type: Some(PointsType::DoublePoints(DoublePoints {
+                points: vec![DoublePoint {
+                    timestamp: Some(timestamp),
+                    value: values[index],
+                }],
+            })),
+        }),
+    })
 }
 
 /// Metric channels are excluded from latency bounds so metrics never measure
@@ -303,8 +264,8 @@ mod tests {
         metrics
     }
 
-    fn queue(metrics: &RequestMetrics) -> VecDeque<WriteRequestNominal> {
-        metrics.pending.as_ref().unwrap().pending.lock().clone()
+    fn queue(metrics: &RequestMetrics) -> VecDeque<MetricSeries> {
+        metrics.pending.as_ref().unwrap().lock().clone()
     }
 
     fn none() -> HashSet<String> {
@@ -327,6 +288,20 @@ mod tests {
         }
     }
 
+    /// A request carrying only the request metrics for one send.
+    fn metric_only_request(
+        oldest: i128,
+        newest: i128,
+        before: i128,
+        after: i128,
+        rtt: f64,
+    ) -> WriteRequestNominal {
+        WriteRequestNominal {
+            session_name: None,
+            series: metric_series(oldest, newest, before, after, rtt).to_vec(),
+        }
+    }
+
     /// A one-point request with well-defined timestamp bounds.
     fn data_request() -> WriteRequestNominal {
         request(
@@ -343,7 +318,7 @@ mod tests {
 
     #[test]
     fn metrics_have_compatible_names_units_and_timestamps() {
-        let request = metric_request(
+        let request = metric_only_request(
             1_000_000_000,
             4_000_000_000,
             3_000_000_000,
@@ -437,7 +412,7 @@ mod tests {
         assert!(matches!(sent, Cow::Borrowed(_)));
         assert_eq!(*sent, original);
         measurement.start().complete();
-        let expected = queue(&metrics)[0].series.clone();
+        let expected = queue(&metrics)[0].clone();
         let (sent, measurement) = metrics.prepare(&original);
         assert_eq!(sent.series[0], original.series[0]);
         assert_eq!(&sent.series[1..], expected.as_slice());
@@ -457,19 +432,21 @@ mod tests {
         let request = data_request();
         let (_, measurement) = metrics.prepare(&request);
         measurement.start().complete();
-        let (sent, measurement) = metrics.prepare(&request);
-        assert_eq!(sent.series.len(), 6);
-        assert!(queue(&metrics).is_empty());
-        // Encoding failed before the clock started.
-        drop(measurement);
+        {
+            let (sent, _measurement) = metrics.prepare(&request);
+            assert_eq!(sent.series.len(), 6);
+            assert!(queue(&metrics).is_empty());
+            // Encoding fails here, so the measurement is discarded before the clock starts.
+        }
         assert!(queue(&metrics).is_empty());
         let (_, measurement) = metrics.prepare(&request);
         measurement.start().complete();
-        let (sent, measurement) = metrics.prepare(&request);
-        assert_eq!(sent.series.len(), 6);
-        let in_flight = measurement.start();
-        // The send failed.
-        drop(in_flight);
+        {
+            let (sent, measurement) = metrics.prepare(&request);
+            assert_eq!(sent.series.len(), 6);
+            let _in_flight = measurement.start();
+            // The send fails here, so the in-flight request is discarded.
+        }
         assert!(queue(&metrics).is_empty());
     }
 
@@ -488,7 +465,7 @@ mod tests {
         measurement.start().complete();
         for request in [
             WriteRequestNominal::default(),
-            metric_request(0, 0, 0, 0, 0.0),
+            metric_only_request(0, 0, 0, 0, 0.0),
             custom,
         ] {
             let (sent, measurement) = metrics.prepare(&request);
@@ -500,24 +477,32 @@ mod tests {
     }
 
     #[test]
-    fn pending_metrics_are_bounded_and_keep_sessions_separate() {
+    fn pending_metrics_are_bounded_and_drop_the_oldest() {
         let metrics = enabled();
-        for index in 0..MAX_PENDING_REQUESTS + 1 {
-            let mut request = data_request();
-            request.session_name = Some(index.to_string());
+        let request = data_request();
+        for _ in 0..MAX_PENDING_REQUESTS + 1 {
             let (sent, measurement) = metrics.prepare(&request);
-            assert_eq!(sent.series.len(), 1);
+            // Each send drains everything recorded before it.
+            assert!(sent.series.len() <= 6);
             measurement.start().complete();
         }
+        assert_eq!(queue(&metrics).len(), 1);
+        for _ in 0..MAX_PENDING_REQUESTS + 1 {
+            RequestMeasurement(Some(Bounds {
+                pending: metrics.pending.as_ref().unwrap(),
+                oldest: 0,
+                newest: 0,
+            }))
+            .start()
+            .complete();
+        }
         assert_eq!(queue(&metrics).len(), MAX_PENDING_REQUESTS);
-        assert_eq!(queue(&metrics)[0].session_name.as_deref(), Some("1"));
-        let mut request = data_request();
-        request.session_name = Some("1".into());
-        let (sent, measurement) = metrics.prepare(&request);
-        assert_eq!(sent.series.len(), 6);
-        assert_eq!(sent.session_name, request.session_name);
-        measurement.start().complete();
-        assert_eq!(queue(&metrics).len(), MAX_PENDING_REQUESTS);
+        let (sent, _) = metrics.prepare(&request);
+        assert_eq!(
+            sent.series.len(),
+            1 + MAX_PENDING_REQUESTS * REQUEST_METRICS.len()
+        );
+        assert!(queue(&metrics).is_empty());
     }
 
     #[test]
