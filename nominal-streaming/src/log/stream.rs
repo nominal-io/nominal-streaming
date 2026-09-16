@@ -21,22 +21,28 @@ use super::transport::HttpTransport;
 use super::transport::LogTransport;
 use super::LogRecord;
 use super::LogStreamError;
-use super::LogStreamOptions;
 use super::LogStreamStats;
+use super::NominalLogStreamOpts;
 use crate::types::AuthProvider;
+use crate::types::IntoTimestamp;
 
 /// Configure a Core or file target and the log stream resource limits.
 #[derive(Default)]
 pub struct NominalLogStreamBuilder {
-    opts: LogStreamOptions,
+    opts: NominalLogStreamOpts,
     core: Option<CoreTarget>,
     backup: Option<PathBuf>,
     file: Option<PathBuf>,
 }
 
 impl NominalLogStreamBuilder {
+    /// Create a builder with default log stream options.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
     /// Set batching, buffering and retry limits.
-    pub fn with_options(mut self, opts: LogStreamOptions) -> Self {
+    pub fn with_options(mut self, opts: NominalLogStreamOpts) -> Self {
         self.opts = opts;
         self
     }
@@ -127,7 +133,7 @@ struct FailedBatch {
 struct Shared {
     state: Mutex<State>,
     changed: Condvar,
-    opts: LogStreamOptions,
+    opts: NominalLogStreamOpts,
     consumer: LogConsumer,
     dataset_rid: String,
     backup: Option<PathBuf>,
@@ -149,7 +155,7 @@ impl NominalLogStream {
     }
 
     pub(super) fn start(
-        opts: LogStreamOptions,
+        opts: NominalLogStreamOpts,
         target: Option<Arc<dyn LogTransport>>,
         dataset_rid: String,
         backup: Option<PathBuf>,
@@ -294,12 +300,12 @@ impl NominalLogStream {
     }
 
     /// Cache a channel name and common arguments for convenient repeated writes.
-    pub fn writer(
+    pub fn log_writer(
         &self,
         channel: impl Into<String>,
         args: HashMap<String, String>,
-    ) -> LogWriter<'_> {
-        LogWriter {
+    ) -> NominalLogWriter<'_> {
+        NominalLogWriter {
             stream: self,
             channel: channel.into(),
             args,
@@ -392,19 +398,26 @@ impl Drop for NominalLogStream {
 }
 
 /// A channel writer with common per-record arguments.
-pub struct LogWriter<'a> {
+pub struct NominalLogWriter<'a> {
     stream: &'a NominalLogStream,
     channel: String,
     args: HashMap<String, String>,
 }
 
-impl LogWriter<'_> {
+impl NominalLogWriter<'_> {
     /// Enqueue a message with the writer's common arguments.
     pub fn push(
         &self,
-        timestamp_ns: i64,
+        timestamp: impl IntoTimestamp,
         message: impl Into<String>,
     ) -> Result<(), LogStreamError> {
+        let timestamp = timestamp.try_into_timestamp().map_err(|_| {
+            LogStreamError::Invalid("timestamp exceeds signed nanosecond range".into())
+        })?;
+        let timestamp_ns = i64::try_from(
+            i128::from(timestamp.seconds) * 1_000_000_000 + i128::from(timestamp.nanos),
+        )
+        .map_err(|_| LogStreamError::Invalid("timestamp exceeds signed nanosecond range".into()))?;
         self.stream.enqueue(
             &self.channel,
             LogRecord::new(timestamp_ns, message, self.args.clone()),
@@ -607,7 +620,7 @@ mod pressure_tests {
             calls: AtomicUsize::new(0),
             sizes: Mutex::new(Vec::new()),
         });
-        let opts = LogStreamOptions {
+        let opts = NominalLogStreamOpts {
             max_batch_bytes: charge * 2,
             max_buffered_bytes: charge * 3,
             max_records_per_batch: 2,

@@ -8,8 +8,8 @@ use std::time::Duration;
 use std::time::Instant;
 
 use nominal_streaming::log::LogRecord;
-use nominal_streaming::log::LogStreamOptions;
 use nominal_streaming::log::NominalLogStreamBuilder;
+use nominal_streaming::log::NominalLogStreamOpts;
 use serde_json::json;
 
 fn env(name: &str) -> String {
@@ -142,7 +142,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let buffer_bytes = (batch_bytes * (workers + 1)).min(6 * 1024 * 1024 * 1024);
     let policy = std::env::var("BENCH_POLICY").unwrap_or_else(|_| "stress".into());
     let opts = match policy.as_str() {
-        "defaults" => LogStreamOptions {
+        "defaults" => NominalLogStreamOpts {
             base_api_url: url,
             ..Default::default()
         },
@@ -158,7 +158,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if !(16..=64).contains(&batch_mib) || !(64..=512).contains(&buffer_mib) {
                 return Err("bounded probe memory limits exceeded".into());
             }
-            LogStreamOptions {
+            NominalLogStreamOpts {
                 base_api_url: url,
                 max_request_bytes: request_mib * 1024 * 1024,
                 max_batch_bytes: batch_mib * 1024 * 1024,
@@ -167,7 +167,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ..Default::default()
             }
         }
-        "stress" => LogStreamOptions {
+        "stress" => NominalLogStreamOpts {
             base_api_url: url,
             max_request_bytes: batch_bytes,
             max_records_per_batch: batch,

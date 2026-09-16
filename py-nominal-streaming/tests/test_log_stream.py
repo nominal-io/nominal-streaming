@@ -9,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import Mock
 
-from nominal_streaming import NominalLogStream, PyNominalLogStreamOpts
+from nominal_streaming import NominalDatasetStream, NominalLogStream, PyNominalLogStreamOpts
 from nominal_streaming._nominal_streaming import PyNominalLogStream
 from nominal_streaming.nominal_log_stream import _timestamp_ns
 
@@ -24,7 +24,7 @@ class LogStreamTests(unittest.TestCase):
             "max_request_bytes": 4096,
             "max_batch_bytes": 8192,
             "max_buffered_bytes": 32768,
-            "max_records_per_batch": 5,
+            "max_points_per_batch": 5,
             "max_request_delay_secs": 0.5,
             "num_upload_workers": 3,
             "num_runtime_workers": 1,
@@ -98,6 +98,30 @@ class LogStreamTests(unittest.TestCase):
                     stream.enable_logging()
                 stream.enqueue("app", 1, "ready")
             self.assertEqual(stream.stats().backed_up_records, 1)
+
+    def test_shared_enqueue_keywords_work_for_both_stream_types(self):
+        for stream_type in [NominalDatasetStream, NominalLogStream]:
+            stream = stream_type()
+            stream._impl = Mock()
+            stream.enqueue(channel_name="app", timestamp=1, value="started", tags={"service": "api"})
+            stream._impl.enqueue.assert_called_once_with("app", 1, "started", {"service": "api"})
+            stream.enqueue_batch(channel_name="app", timestamps=[1, 2], values=["started", "ready"])
+            self.assertEqual(stream._impl.enqueue_batch.call_args.args[:3], ("app", [1, 2], ["started", "ready"]))
+
+    def test_log_factory_and_keyword_methods_use_configured_limits(self):
+        with tempfile.TemporaryDirectory() as directory:
+            stream = NominalLogStream.create(
+                "test-token", "https://example.com/api", max_request_bytes=512, max_points_per_batch=1
+            ).to_file(path=Path(directory))
+            with stream:
+                stream.enqueue(channel_name="app", timestamp=1, value="started")
+                stream.enqueue_batch(channel_name="app", timestamps=[2], values=["ready"])
+                with self.assertRaisesRegex(RuntimeError, "max_request_bytes"):
+                    stream.enqueue(channel_name="app", timestamp=3, value="x" * 1024)
+            self.assertEqual(stream.stats().backed_up_records, 2)
+            self.assertEqual(len(list(Path(directory).glob("*.jsonl"))), 2)
+            native = PyNominalLogStream().with_file_fallback(path=Path(directory))
+            self.assertIsInstance(native, PyNominalLogStream)
 
     def test_exact_timestamps(self):
         self.assertEqual(_timestamp_ns("2026-09-14T00:00:00.123456789Z") % 1_000_000_000, 123456789)

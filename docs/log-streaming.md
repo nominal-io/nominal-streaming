@@ -51,7 +51,7 @@ let stream = NominalLogStream::builder()
     .with_file_fallback("log-backup")
     .build()?;
 
-let writer = stream.writer("application", HashMap::from([("service".into(), "api".into())]));
+let writer = stream.log_writer("application", HashMap::from([("service".into(), "api".into())]));
 writer.push(1_789_392_441_123_456_789, "Started")?;
 stream.enqueue_batch("application", vec![
     LogRecord::new(1_789_392_442_123_456_789, "Ready", HashMap::new()),
@@ -88,7 +88,7 @@ A record that cannot fit by itself is rejected explicitly before any record in i
 ## Configuring larger batches
 
 The default record and byte limits are configurable, not hard caps. A throughput-oriented
-configuration can raise `max_records_per_batch`, `max_request_bytes`, `max_batch_bytes`,
+configuration can raise `max_records_per_batch` (`max_points_per_batch` in Python), `max_request_bytes`, `max_batch_bytes`,
 `max_buffered_bytes`, `num_upload_workers`, and `max_request_delay` together
 (`max_request_delay_secs` in Python). A request closes at whichever batch limit it reaches
 first. Accounted bytes include allocation overhead, so 50,000 records may require much
@@ -176,3 +176,35 @@ assert file.ingest_status is IngestStatus.SUCCESS
 ```
 
 Retain the local segment until terminal success is verified. Importing it again can create duplicates. Backend-added internal ingest metadata is normal bookkeeping. Journal files are uncompressed JSONL for compatibility; zstd here describes wire content encoding, not a claim that `.jsonl.zst` file ingestion is supported.
+
+## Consistency with time-series streams
+
+Python uses the same shared call shapes as `NominalDatasetStream`:
+
+- `NominalLogStream(auth_header, opts)` or `NominalLogStream.create(auth_header, base_api_url, ...)`.
+- `enqueue(channel_name=..., timestamp=..., value=...)` for a message string.
+- `enqueue_batch(channel_name=..., timestamps=..., values=...)` for message strings.
+- `enqueue_from_dict(timestamp=..., channel_values=...)` for several channels.
+- `to_file(path=...)`, `with_file_fallback(path=...)`, context management and `close(wait=...)`.
+- `PyNominalLogStreamOpts(max_points_per_batch=...)` and `.with_max_points_per_batch(...)`.
+
+Rust exposes `NominalLogStreamOpts`, `NominalLogStreamBuilder::new()` and
+`stream.log_writer(...) -> NominalLogWriter`, including through the prelude.
+Writer `push` accepts the existing `IntoTimestamp` inputs: signed nanoseconds,
+`Duration` since the epoch, and chrono datetimes. Out-of-range timestamps are rejected.
+`LogRecord` keeps an explicit signed-nanosecond field for bulk input.
+
+Some differences are intentional:
+
+| Concern | Log stream behavior |
+|---|---|
+| Values | Strings plus per-record string arguments; no numeric, struct or array enqueue methods |
+| Arguments | `args` / `per_record_args` are log fields; legacy `tags` aliases common arguments, not series identity |
+| Capacity | Byte budgets supplement message counts; a count alone cannot bound message and argument size |
+| File target | A directory of journal JSONL segments and import manifests, rather than an Avro file |
+| Completion | `flush` / `close` return delivery statistics and surface preservation failures; `save_failed` rescues retained data |
+| Configuration | Frozen after opening; streams cannot be reopened and install no signal handlers |
+| Timestamps | Aware datetimes and explicit-timezone ISO strings preserve nanoseconds; ambiguous timestamps are rejected |
+
+The shared method names do not imply identical delivery guarantees. A successful log
+close may include backed-up records; inspect its statistics for backend acknowledgments.

@@ -15,7 +15,7 @@
 //! let stream = NominalLogStream::builder()
 //!     .stream_to_file("logs")
 //!     .build()?;
-//! let writer = stream.writer("application", HashMap::new());
+//! let writer = stream.log_writer("application", HashMap::new());
 //! writer.push(1_789_392_441_123_456_789, "Started")?;
 //! let stats = stream.close()?;
 //! assert_eq!(stats.backed_up_records, 1);
@@ -41,9 +41,9 @@ mod transport;
 use std::collections::HashMap;
 use std::time::Duration;
 
-pub use stream::LogWriter;
 pub use stream::NominalLogStream;
 pub use stream::NominalLogStreamBuilder;
+pub use stream::NominalLogWriter;
 
 /// One log event. Integer timestamps are signed nanoseconds since the Unix epoch.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -85,7 +85,7 @@ impl LogRecord {
 
 /// Limits include ready and in-flight batches, so a stalled backend applies backpressure.
 #[derive(Clone, Debug)]
-pub struct LogStreamOptions {
+pub struct NominalLogStreamOpts {
     /// Maximum uncompressed protobuf request size, including all framing.
     pub max_request_bytes: usize,
     /// Charged memory per batch, including raw/compressed encoding reservations.
@@ -106,7 +106,7 @@ pub struct LogStreamOptions {
     pub max_retry_after: Duration,
 }
 
-impl Default for LogStreamOptions {
+impl Default for NominalLogStreamOpts {
     fn default() -> Self {
         Self {
             max_request_bytes: 8 * 1024 * 1024,
@@ -125,7 +125,7 @@ impl Default for LogStreamOptions {
     }
 }
 
-impl LogStreamOptions {
+impl NominalLogStreamOpts {
     fn validate(&self) -> Result<(), LogStreamError> {
         if self.max_request_bytes < 512
             || self.max_batch_bytes < 512

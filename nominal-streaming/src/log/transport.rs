@@ -11,7 +11,7 @@ use reqwest::header::CONTENT_TYPE;
 use reqwest::header::RETRY_AFTER;
 
 use super::LogStreamError;
-use super::LogStreamOptions;
+use super::NominalLogStreamOpts;
 
 type TokenProvider = Arc<dyn Fn() -> Option<BearerToken> + Send + Sync>;
 
@@ -37,7 +37,7 @@ impl HttpTransport {
     pub fn new(
         auth: TokenProvider,
         handle: tokio::runtime::Handle,
-        opts: &LogStreamOptions,
+        opts: &NominalLogStreamOpts,
     ) -> Result<Self, LogStreamError> {
         if handle.runtime_flavor() != tokio::runtime::RuntimeFlavor::MultiThread {
             return Err(LogStreamError::Invalid(
@@ -234,7 +234,7 @@ mod tests {
         let transport = HttpTransport::new(
             Arc::new(|| None),
             runtime.handle().clone(),
-            &LogStreamOptions::default(),
+            &NominalLogStreamOpts::default(),
         )
         .unwrap();
         let body = Bytes::from_static(b"encoded request");
@@ -280,7 +280,7 @@ mod tests {
         let transport = HttpTransport::new(
             Arc::new(|| None),
             runtime.handle().clone(),
-            &LogStreamOptions::default(),
+            &NominalLogStreamOpts::default(),
         );
         assert!(matches!(transport, Err(LogStreamError::Invalid(_))));
     }

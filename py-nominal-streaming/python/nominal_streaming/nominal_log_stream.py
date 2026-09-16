@@ -60,6 +60,47 @@ class NominalLogStream:
         self._auth_header = auth_header
         self._impl = PyNominalLogStream(opts)
 
+    @classmethod
+    def create(
+        cls,
+        auth_header: str,
+        base_api_url: str,
+        max_points_per_batch: int = 10_000,
+        max_request_delay_secs: float = 0.25,
+        num_upload_workers: int = 4,
+        num_runtime_workers: int = 2,
+        *,
+        max_request_bytes: int = 8 * 1024 * 1024,
+        max_batch_bytes: int = 16 * 1024 * 1024,
+        max_buffered_bytes: int = 64 * 1024 * 1024,
+    ) -> Self:
+        """Create a stream with connection, batching and runtime options.
+
+        Args:
+            auth_header: API key or access token for Nominal.
+            base_api_url: Base URL of the Nominal API.
+            max_points_per_batch: Maximum number of log messages per request.
+            max_request_delay_secs: Maximum buffering delay when capacity is available.
+            num_upload_workers: Number of upload workers.
+            num_runtime_workers: Number of asynchronous I/O runtime workers.
+            max_request_bytes: Maximum uncompressed protobuf request size.
+            max_batch_bytes: Charged memory limit per batch.
+            max_buffered_bytes: Charged memory limit across all accepted records.
+        """
+        return cls(
+            auth_header,
+            PyNominalLogStreamOpts(
+                base_api_url=base_api_url,
+                max_points_per_batch=max_points_per_batch,
+                max_request_delay_secs=max_request_delay_secs,
+                num_upload_workers=num_upload_workers,
+                num_runtime_workers=num_runtime_workers,
+                max_request_bytes=max_request_bytes,
+                max_batch_bytes=max_batch_bytes,
+                max_buffered_bytes=max_buffered_bytes,
+            ),
+        )
+
     def enable_logging(self, log_directive: str = "debug") -> Self:
         """Enable Rust stream logging when the stream opens.
 
@@ -82,12 +123,12 @@ class NominalLogStream:
         self._impl = self._impl.with_core_consumer(dataset_rid, self._auth_header)
         return self
 
-    def with_file_fallback(self, directory: str | Path) -> Self:
-        self._impl = self._impl.with_file_fallback(Path(directory))
+    def with_file_fallback(self, path: str | Path) -> Self:
+        self._impl = self._impl.with_file_fallback(Path(path))
         return self
 
-    def to_file(self, directory: str | Path) -> Self:
-        self._impl = self._impl.to_file(Path(directory))
+    def to_file(self, path: str | Path) -> Self:
+        self._impl = self._impl.to_file(Path(path))
         return self
 
     def open(self) -> Self:
@@ -126,22 +167,22 @@ class NominalLogStream:
 
     def enqueue(
         self,
-        channel: str,
+        channel_name: str,
         timestamp: TimestampLike,
-        message: str,
+        value: str,
         tags: Mapping[str, str] | None = None,
         *,
         args: Mapping[str, str] | None = None,
     ) -> None:
         self._impl.enqueue(
-            channel, timestamp if type(timestamp) is int else _timestamp_ns(timestamp), message, _args(tags, args)
+            channel_name, timestamp if type(timestamp) is int else _timestamp_ns(timestamp), value, _args(tags, args)
         )
 
     def enqueue_batch(
         self,
-        channel: str,
+        channel_name: str,
         timestamps: Sequence[TimestampLike],
-        messages: Sequence[str],
+        values: Sequence[str],
         tags: Mapping[str, str] | None = None,
         *,
         args: Mapping[str, str] | None = None,
@@ -149,15 +190,15 @@ class NominalLogStream:
     ) -> None:
         """Enqueue a batch in one native call; record args override common args."""
         common = _args(tags, args)
-        if len(timestamps) != len(messages):
-            raise ValueError("timestamps and messages must have equal lengths")
-        if per_record_args is not None and len(per_record_args) != len(messages):
-            raise ValueError("per_record_args and messages must have equal lengths")
+        if len(timestamps) != len(values):
+            raise ValueError("timestamps and values must have equal lengths")
+        if per_record_args is not None and len(per_record_args) != len(values):
+            raise ValueError("per_record_args and values must have equal lengths")
         normalized = timestamps if _is_nanoseconds(timestamps) else [_timestamp_ns(ts) for ts in timestamps]
         self._impl.enqueue_batch(
-            channel,
+            channel_name,
             normalized,
-            messages,
+            values,
             common,
             [dict(item) for item in per_record_args] if per_record_args is not None else None,
         )
@@ -172,5 +213,5 @@ class NominalLogStream:
     ) -> None:
         normalized = timestamp if type(timestamp) is int else _timestamp_ns(timestamp)
         common = _args(tags, args)
-        for channel, message in channel_values.items():
-            self._impl.enqueue(channel, normalized, message, common)
+        for channel_name, value in channel_values.items():
+            self._impl.enqueue(channel_name, normalized, value, common)

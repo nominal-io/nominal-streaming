@@ -4,9 +4,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use nominal_streaming::log::LogRecord;
-use nominal_streaming::log::LogStreamOptions;
 use nominal_streaming::log::LogStreamStats;
 use nominal_streaming::log::NominalLogStream;
+use nominal_streaming::log::NominalLogStreamOpts;
 use nominal_streaming::prelude::BearerToken;
 use nominal_streaming::prelude::ResourceIdentifier;
 use pyo3::exceptions::PyRuntimeError;
@@ -48,7 +48,7 @@ impl From<LogStreamStats> for PyLogStreamStats {
 #[pyclass]
 pub struct PyNominalLogStream {
     log_level: Option<String>,
-    opts: LogStreamOptions,
+    opts: NominalLogStreamOpts,
     num_runtime_workers: usize,
     core: Option<(BearerToken, ResourceIdentifier)>,
     file: Option<PathBuf>,
@@ -119,20 +119,17 @@ impl PyNominalLogStream {
         Ok(slf)
     }
     #[pyo3(name = "to_file")]
-    fn set_file_target(
-        mut slf: PyRefMut<'_, Self>,
-        directory: PathBuf,
-    ) -> PyResult<PyRefMut<'_, Self>> {
+    fn set_file_target(mut slf: PyRefMut<'_, Self>, path: PathBuf) -> PyResult<PyRefMut<'_, Self>> {
         slf.configuring()?;
-        slf.file = Some(directory);
+        slf.file = Some(path);
         Ok(slf)
     }
     fn with_file_fallback(
         mut slf: PyRefMut<'_, Self>,
-        directory: PathBuf,
+        path: PathBuf,
     ) -> PyResult<PyRefMut<'_, Self>> {
         slf.configuring()?;
-        slf.fallback = Some(directory);
+        slf.fallback = Some(path);
         Ok(slf)
     }
     fn open(&mut self, py: Python<'_>) -> PyResult<()> {
@@ -163,41 +160,41 @@ impl PyNominalLogStream {
         self.owned = Some(Arc::new(owned));
         Ok(())
     }
-    #[pyo3(signature = (channel, timestamp, message, args=None))]
+    #[pyo3(signature = (channel_name, timestamp, value, args=None))]
     fn enqueue(
         &self,
         py: Python<'_>,
-        channel: &str,
+        channel_name: &str,
         timestamp: i64,
-        message: String,
+        value: String,
         args: Option<HashMap<String, String>>,
     ) -> PyResult<()> {
         let owned = self.stream()?;
         py.detach(|| {
             owned.stream.enqueue(
-                channel,
-                LogRecord::new(timestamp, message, args.unwrap_or_default()),
+                channel_name,
+                LogRecord::new(timestamp, value, args.unwrap_or_default()),
             )
         })
         .map_err(error)
     }
-    #[pyo3(signature = (channel, timestamps, messages, args=None, per_record_args=None))]
+    #[pyo3(signature = (channel_name, timestamps, values, args=None, per_record_args=None))]
     fn enqueue_batch(
         &self,
         py: Python<'_>,
-        channel: &str,
+        channel_name: &str,
         timestamps: Vec<i64>,
-        messages: Vec<String>,
+        values: Vec<String>,
         args: Option<HashMap<String, String>>,
         per_record_args: Option<Vec<HashMap<String, String>>>,
     ) -> PyResult<()> {
-        if timestamps.len() != messages.len()
+        if timestamps.len() != values.len()
             || per_record_args
                 .as_ref()
-                .is_some_and(|a| a.len() != messages.len())
+                .is_some_and(|a| a.len() != values.len())
         {
             return Err(PyValueError::new_err(
-                "timestamps, messages, and per_record_args must have equal lengths",
+                "timestamps, values, and per_record_args must have equal lengths",
             ));
         }
         let owned = self.stream()?;
@@ -206,7 +203,7 @@ impl PyNominalLogStream {
             let mut per_record = per_record_args.unwrap_or_default().into_iter();
             let records = timestamps
                 .into_iter()
-                .zip(messages)
+                .zip(values)
                 .map(|(ts, msg)| {
                     let mut args = common.clone();
                     if let Some(extra) = per_record.next() {
@@ -215,7 +212,7 @@ impl PyNominalLogStream {
                     LogRecord::new(ts, msg, args)
                 })
                 .collect();
-            owned.stream.enqueue_batch(channel, records)
+            owned.stream.enqueue_batch(channel_name, records)
         })
         .map_err(error)
     }

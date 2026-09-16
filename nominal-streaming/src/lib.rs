@@ -195,6 +195,13 @@ pub mod prelude {
     pub use nominal_api::tonic::io::nominal::scout::api::proto::WriteRequestNominal;
 
     pub use crate::consumer::NominalCoreConsumer;
+    pub use crate::log::LogRecord;
+    pub use crate::log::LogStreamError;
+    pub use crate::log::LogStreamStats;
+    pub use crate::log::NominalLogStream;
+    pub use crate::log::NominalLogStreamBuilder;
+    pub use crate::log::NominalLogStreamOpts;
+    pub use crate::log::NominalLogWriter;
     pub use crate::stream::NominalDatasetStream;
     #[expect(deprecated)]
     pub use crate::stream::NominalDatasourceStream;

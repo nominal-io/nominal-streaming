@@ -9,7 +9,7 @@ use nominal_api::tonic::nominal::direct_channel_writer::v2 as wire;
 use super::journal;
 use super::transport::LogTransport;
 use super::transport::{self};
-use super::LogStreamOptions;
+use super::NominalLogStreamOpts;
 
 pub(super) enum DeliveryOutcome {
     Acknowledged,
@@ -18,14 +18,14 @@ pub(super) enum DeliveryOutcome {
 
 /// The stream owns admission and draining; the consumer owns delivery and preservation.
 pub(super) struct LogConsumer {
-    opts: LogStreamOptions,
+    opts: NominalLogStreamOpts,
     target: Option<Arc<dyn LogTransport>>,
     backup: Option<PathBuf>,
 }
 
 impl LogConsumer {
     pub fn new(
-        opts: LogStreamOptions,
+        opts: NominalLogStreamOpts,
         target: Option<Arc<dyn LogTransport>>,
         backup: Option<PathBuf>,
     ) -> Self {

@@ -46,8 +46,8 @@ fn target(failures: usize, retryable: bool) -> Arc<ScriptedTransport> {
     })
 }
 
-fn fast_options() -> LogStreamOptions {
-    LogStreamOptions {
+fn fast_options() -> NominalLogStreamOpts {
+    NominalLogStreamOpts {
         initial_backoff: Duration::ZERO,
         max_backoff: Duration::ZERO,
         ..Default::default()
@@ -92,7 +92,7 @@ fn file_only_flush_preserves_nanoseconds_and_message() {
 #[test]
 fn invalid_options_and_reserved_keys_fail_before_acceptance() {
     let dir = tempfile::tempdir().unwrap();
-    let opts = LogStreamOptions {
+    let opts = NominalLogStreamOpts {
         max_batch_bytes: 0,
         ..Default::default()
     };
@@ -118,7 +118,7 @@ fn invalid_options_and_reserved_keys_fail_before_acceptance() {
 #[test]
 fn byte_and_record_limits_rotate_batches_and_timer_flushes() {
     let dir = tempfile::tempdir().unwrap();
-    let opts = LogStreamOptions {
+    let opts = NominalLogStreamOpts {
         max_records_per_batch: 2,
         max_request_delay: Duration::from_millis(10),
         ..Default::default()
@@ -204,7 +204,7 @@ fn exhausted_retries_preserve_records_and_surface_delivery_status() {
 fn concurrent_producers_upload_every_record_once_without_retries() {
     let transport = target(0, false);
     let stream = NominalLogStream::start(
-        LogStreamOptions {
+        NominalLogStreamOpts {
             max_records_per_batch: 73,
             max_request_delay: Duration::from_millis(1),
             num_upload_workers: 4,
@@ -252,7 +252,7 @@ fn concurrent_producers_upload_every_record_once_without_retries() {
 fn mixed_delivery_backs_up_only_the_unconfirmed_batch() {
     let dir = tempfile::tempdir().unwrap();
     let stream = NominalLogStream::start(
-        LogStreamOptions {
+        NominalLogStreamOpts {
             num_upload_workers: 1,
             max_records_per_batch: 1,
             ..fast_options()
@@ -326,7 +326,7 @@ fn disk_failure_is_observable_and_retained_records_can_be_rescued() {
 #[test]
 fn oversized_record_and_batch_are_rejected_atomically() {
     let dir = tempfile::tempdir().unwrap();
-    let options = LogStreamOptions {
+    let options = NominalLogStreamOpts {
         max_batch_bytes: 512,
         max_buffered_bytes: 512,
         ..Default::default()
@@ -358,7 +358,7 @@ fn backpressure_counts_inflight_bytes_and_close_wakes_blocked_producer() {
     }
     let (started_tx, started_rx) = crossbeam_channel::bounded(1);
     let (finish_tx, finish_rx) = crossbeam_channel::bounded(1);
-    let options = LogStreamOptions {
+    let options = NominalLogStreamOpts {
         max_batch_bytes: 512,
         max_buffered_bytes: 512,
         max_records_per_batch: 1,
@@ -419,7 +419,7 @@ fn negative_nanoseconds_encode_with_normalized_seconds() {
 
 #[test]
 fn partial_rescue_keeps_accounting_and_never_overwrites_reserved_arguments() {
-    let options = LogStreamOptions {
+    let options = NominalLogStreamOpts {
         max_records_per_batch: 1,
         num_upload_workers: 1,
         ..fast_options()
@@ -449,7 +449,7 @@ fn partial_rescue_keeps_accounting_and_never_overwrites_reserved_arguments() {
 #[test]
 fn exponential_backoff_is_bounded_and_actually_delays_retries() {
     let transport = target(3, true);
-    let options = LogStreamOptions {
+    let options = NominalLogStreamOpts {
         initial_backoff: Duration::from_millis(10),
         max_backoff: Duration::from_millis(20),
         ..Default::default()
@@ -494,7 +494,7 @@ fn excessive_retry_after_backs_up_without_retrying_early() {
 #[test]
 fn serialized_limit_splits_unicode_and_arguments_independently_of_memory_budget() {
     let transport = target(0, true);
-    let opts = LogStreamOptions {
+    let opts = NominalLogStreamOpts {
         max_request_bytes: 512,
         ..fast_options()
     };
@@ -522,7 +522,7 @@ fn serialized_limit_splits_unicode_and_arguments_independently_of_memory_budget(
 #[test]
 fn serialized_oversized_singleton_rejects_entire_input() {
     let transport = target(0, true);
-    let opts = LogStreamOptions {
+    let opts = NominalLogStreamOpts {
         max_request_bytes: 512,
         ..fast_options()
     };
@@ -540,7 +540,7 @@ fn admission_reserves_encoding_capacity_before_accepting() {
     let input = record(&"x".repeat(2048));
     let record_only = input.accounted_bytes("a");
     let transport = target(0, true);
-    let opts = LogStreamOptions {
+    let opts = NominalLogStreamOpts {
         max_batch_bytes: record_only,
         max_buffered_bytes: record_only,
         ..fast_options()
@@ -555,7 +555,7 @@ fn admission_reserves_encoding_capacity_before_accepting() {
 #[test]
 fn request_limit_includes_multiple_channels_and_dataset_envelope() {
     let transport = target(0, true);
-    let opts = LogStreamOptions {
+    let opts = NominalLogStreamOpts {
         max_request_bytes: 512,
         max_request_delay: Duration::from_secs(60),
         ..fast_options()
@@ -596,7 +596,7 @@ fn exactly_full_serialized_batch_dispatches_without_waiting_for_timer() {
     let input = record(&"x".repeat(600));
     let limit = super::batch::RecordSize::new(&input).singleton_len("channel", "fixture");
     let transport = target(0, true);
-    let opts = LogStreamOptions {
+    let opts = NominalLogStreamOpts {
         max_request_bytes: limit,
         max_request_delay: Duration::from_secs(60),
         ..fast_options()
@@ -663,7 +663,7 @@ fn channel_writer_merges_common_arguments_with_record_overrides() {
     let stream =
         NominalLogStream::start(fast_options(), Some(target.clone()), "fixture".into(), None)
             .unwrap();
-    let writer = stream.writer("app", HashMap::from([("service".into(), "api".into())]));
+    let writer = stream.log_writer("app", HashMap::from([("service".into(), "api".into())]));
     writer.push(1, "started").unwrap();
     writer
         .enqueue_batch(vec![LogRecord::new(
@@ -715,4 +715,48 @@ fn file_only_target_rejects_fallback_in_either_configuration_order() {
     }
     assert!(!file.exists());
     assert!(!fallback.exists());
+}
+
+#[test]
+fn public_builder_and_writer_accept_timeseries_timestamp_inputs() {
+    use crate::prelude::NominalLogStreamBuilder;
+    use crate::prelude::NominalLogStreamOpts;
+    let directory = tempfile::tempdir().unwrap();
+    let stream = NominalLogStreamBuilder::new()
+        .with_options(NominalLogStreamOpts::default())
+        .stream_to_file(directory.path())
+        .build()
+        .unwrap();
+    let writer = stream.log_writer("app", HashMap::new());
+    writer.push(-1_i64, "before epoch").unwrap();
+    writer.push(Duration::from_nanos(1), "duration").unwrap();
+    writer
+        .push(chrono::DateTime::from_timestamp(1, 2).unwrap(), "datetime")
+        .unwrap();
+    assert!(writer
+        .push(Duration::from_secs(10_000_000_000), "outside range")
+        .is_err());
+    assert!(writer
+        .push(Duration::from_secs(u64::MAX), "overflow seconds")
+        .is_err());
+    assert!(writer.push(Duration::MAX, "overflow duration").is_err());
+    assert_eq!(stream.close().unwrap().accepted_records, 3);
+    let mut timestamps = Vec::new();
+    for entry in std::fs::read_dir(directory.path()).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().is_some_and(|ext| ext == "jsonl") {
+            for line in std::fs::read_to_string(path).unwrap().lines() {
+                let row: serde_json::Value = serde_json::from_str(line).unwrap();
+                timestamps.push(
+                    row["__REALTIME_TIMESTAMP"]
+                        .as_str()
+                        .unwrap()
+                        .parse::<i64>()
+                        .unwrap(),
+                );
+            }
+        }
+    }
+    timestamps.sort();
+    assert_eq!(timestamps, vec![-1, 1, 1_000_000_002]);
 }
