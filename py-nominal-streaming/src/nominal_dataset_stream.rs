@@ -25,6 +25,12 @@ use crate::point::*;
 use crate::runtime::spawn_runtime_worker;
 use crate::runtime::StreamRuntime;
 
+/// Runtime metric channels emitted by `enqueue_from_dict`. Names match nominal-client's
+/// experimental backend, including the `enque_dict` spelling.
+pub const ENQUE_DICT_START_STALENESS: &str = "enque_dict_start_staleness";
+pub const ENQUE_DICT_END_STALENESS: &str = "enque_dict_end_staleness";
+pub const DICT_METRIC_CHANNELS: [&str; 2] = [ENQUE_DICT_START_STALENESS, ENQUE_DICT_END_STALENESS];
+
 static JSON_DUMPS: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
 
 fn json_dumps<'py>(py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
@@ -344,11 +350,11 @@ impl PyNominalDatasetStream {
                 py,
                 vec![
                     (
-                        ChannelDescriptor::new("enque_dict_start_staleness"),
+                        ChannelDescriptor::new(ENQUE_DICT_START_STALENESS),
                         single_double(ts, (start - i128::from(timestamp)) as f64 / 1e9),
                     ),
                     (
-                        ChannelDescriptor::new("enque_dict_end_staleness"),
+                        ChannelDescriptor::new(ENQUE_DICT_END_STALENESS),
                         single_double(ts, (end - i128::from(timestamp)) as f64 / 1e9),
                     ),
                 ],

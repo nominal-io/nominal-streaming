@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::error::Error;
 use std::fmt::Debug;
 use std::fmt::Formatter;
@@ -56,6 +57,7 @@ pub struct NominalCoreConsumer<A: AuthProvider> {
     auth_provider: A,
     data_source_rid: ResourceIdentifier,
     metrics: Option<Arc<crate::metrics::PendingMetrics>>,
+    metric_channels: HashSet<String>,
 }
 
 impl<A: AuthProvider> NominalCoreConsumer<A> {
@@ -71,6 +73,7 @@ impl<A: AuthProvider> NominalCoreConsumer<A> {
             auth_provider,
             data_source_rid,
             metrics: None,
+            metric_channels: HashSet::new(),
         }
     }
 
@@ -82,6 +85,17 @@ impl<A: AuthProvider> NominalCoreConsumer<A> {
         } else {
             self.metrics = None;
         }
+        self
+    }
+
+    /// Name channels the caller emits through the stream as metrics rather than data, so
+    /// they are excluded from request latency measurements. Only relevant when metrics
+    /// tracking is enabled.
+    pub fn with_metric_channels(
+        mut self,
+        channels: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Self {
+        self.metric_channels = channels.into_iter().map(Into::into).collect();
         self
     }
 }
@@ -115,7 +129,7 @@ impl<T: AuthProvider + 'static> WriteRequestConsumer for NominalCoreConsumer<T> 
             })
         };
         if let Some(metrics) = &self.metrics {
-            metrics.consume(request, encode, send)
+            metrics.consume(request, &self.metric_channels, encode, send)
         } else {
             send(encode(request)?)
         }

@@ -6,6 +6,8 @@ use std::time::Duration;
 use nominal_streaming::stream::NominalStreamOpts;
 use pyo3::prelude::*;
 
+use crate::nominal_dataset_stream::DICT_METRIC_CHANNELS;
+
 // `from_py_object` opts in to the derived `FromPyObject`, which pyo3 0.29 deprecates as an
 // implicit behaviour for `Clone` pyclasses. It is required here: `NominalDatasetStream` takes
 // this class by value (see `nominal_dataset_stream.rs`).
@@ -64,6 +66,7 @@ impl PyNominalStreamOpts {
                 request_dispatcher_tasks: num_upload_workers,
                 base_api_url: base_api_url.to_string(),
                 track_metrics,
+                metric_channels: DICT_METRIC_CHANNELS.map(String::from).to_vec(),
             },
             num_runtime_workers,
         }

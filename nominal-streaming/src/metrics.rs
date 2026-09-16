@@ -1,5 +1,6 @@
 //! Runtime metric channels compatible with nominal-client's experimental backend.
 
+use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::time::Instant;
 use std::time::UNIX_EPOCH;
@@ -38,15 +39,17 @@ pub(crate) struct PendingMetrics {
 impl PendingMetrics {
     /// Sends a data request while measuring its latency, attaching any earlier
     /// measurements for the same session so metrics never cost an extra request.
-    /// Requests with nothing to measure are sent unchanged. A failed send drops
-    /// the attached measurements and records none of its own.
+    /// Series in `metric_channels` are excluded from the measurement. Requests
+    /// with nothing to measure are sent unchanged. A failed send drops the
+    /// attached measurements and records none of its own.
     pub(crate) fn consume<T>(
         &self,
         request: &WriteRequestNominal,
+        metric_channels: &HashSet<String>,
         encode: impl FnOnce(&WriteRequestNominal) -> ConsumerResult<T>,
         send: impl FnOnce(T) -> ConsumerResult<()>,
     ) -> ConsumerResult<()> {
-        let Some((oldest, newest)) = timestamp_bounds(request) else {
+        let Some((oldest, newest)) = timestamp_bounds(request, metric_channels) else {
             return send(encode(request)?);
         };
         let attached = {
@@ -86,10 +89,14 @@ impl PendingMetrics {
 }
 
 /// Finds the oldest and newest data timestamps in a request, which anchor the
-/// staleness metrics for that send. Returns `None` when the request has no
-/// timestamped data points, including empty and metric-only requests, since
-/// metric channels are ignored.
-fn timestamp_bounds(request: &WriteRequestNominal) -> Option<(i128, i128)> {
+/// staleness metrics for that send. Returns `None` when no non-metric series
+/// carries a timestamp. That happens when a flush separates caller-emitted
+/// metric channels from the data they describe, or when raw points are
+/// enqueued without timestamps.
+fn timestamp_bounds(
+    request: &WriteRequestNominal,
+    metric_channels: &HashSet<String>,
+) -> Option<(i128, i128)> {
     let mut bounds: Option<(i128, i128)> = None;
     let mut add = |timestamp: &Option<Timestamp>| {
         if let Some(timestamp) = timestamp {
@@ -104,7 +111,7 @@ fn timestamp_bounds(request: &WriteRequestNominal) -> Option<(i128, i128)> {
         if series
             .channel
             .as_ref()
-            .is_some_and(|channel| is_metric(&channel.name))
+            .is_some_and(|channel| is_metric(&channel.name, metric_channels))
         {
             continue;
         }
@@ -181,12 +188,11 @@ fn metric_request(
     }
 }
 
-fn is_metric(name: &str) -> bool {
-    REQUEST_METRICS.contains(&name)
-        || matches!(
-            name,
-            "enque_dict_start_staleness" | "enque_dict_end_staleness"
-        )
+/// Metric channels are excluded from latency bounds so metrics never measure
+/// themselves. Beyond the request metrics emitted here, the caller names any
+/// metric channels it sends through the stream.
+fn is_metric(name: &str, metric_channels: &HashSet<String>) -> bool {
+    REQUEST_METRICS.contains(&name) || metric_channels.contains(name)
 }
 
 fn timestamp_ns(timestamp: &Timestamp) -> i128 {
@@ -198,6 +204,10 @@ mod tests {
     use super::*;
     use crate::consumer::ConsumerError;
     use crate::types::IntoPoints;
+
+    fn none() -> HashSet<String> {
+        HashSet::new()
+    }
 
     /// Builds a minimal non-metric request around the given points.
     fn request(points: PointsType) -> WriteRequestNominal {
@@ -258,7 +268,7 @@ mod tests {
             );
         }
         // Metrics never contribute to latency bounds or generate more metrics.
-        assert_eq!(timestamp_bounds(&request), None);
+        assert_eq!(timestamp_bounds(&request, &none()), None);
     }
 
     #[test]
@@ -290,7 +300,7 @@ mod tests {
                 ]
                 .into_points();
                 assert_eq!(
-                    timestamp_bounds(&request(points)),
+                    timestamp_bounds(&request(points), &none()),
                     Some((-1, 2_000_000_001))
                 );
             }};
@@ -312,6 +322,7 @@ mod tests {
         metrics
             .consume(
                 &original,
+                &none(),
                 |r| Ok(r.clone()),
                 |r| {
                     sent.push(r);
@@ -324,6 +335,7 @@ mod tests {
         metrics
             .consume(
                 &original,
+                &none(),
                 |r| Ok(r.clone()),
                 |r| {
                     sent.push(r);
@@ -333,7 +345,10 @@ mod tests {
             .unwrap();
         assert_eq!(sent.len(), 2);
         assert_eq!(&sent[1].series[1..], expected.as_slice());
-        assert_eq!(timestamp_bounds(&sent[1]), timestamp_bounds(&original));
+        assert_eq!(
+            timestamp_bounds(&sent[1], &none()),
+            timestamp_bounds(&original, &none())
+        );
         assert_eq!(original.series.len(), 1);
         assert_eq!(metrics.pending.lock().len(), 1);
         // Dropping the buffer performs no send, including the final measurement.
@@ -345,10 +360,11 @@ mod tests {
     fn failures_propagate_without_metrics_or_replaying_attached_samples() {
         let metrics = PendingMetrics::default();
         metrics
-            .consume(&data_request(), |_| Ok(()), |_| Ok(()))
+            .consume(&data_request(), &none(), |_| Ok(()), |_| Ok(()))
             .unwrap();
         let result = metrics.consume(
             &data_request(),
+            &none(),
             |r| {
                 assert_eq!(r.series.len(), 6);
                 Ok(())
@@ -358,10 +374,11 @@ mod tests {
         assert!(matches!(result, Err(ConsumerError::MissingTokenError)));
         assert!(metrics.pending.lock().is_empty());
         metrics
-            .consume(&data_request(), |_| Ok(()), |_| Ok(()))
+            .consume(&data_request(), &none(), |_| Ok(()), |_| Ok(()))
             .unwrap();
         let result = metrics.consume(
             &data_request(),
+            &none(),
             |r| {
                 assert_eq!(r.series.len(), 6);
                 Err::<(), _>(ConsumerError::MissingTokenError)
@@ -375,16 +392,25 @@ mod tests {
     #[test]
     fn empty_and_metric_only_requests_leave_pending_metrics_untouched() {
         let metrics = PendingMetrics::default();
+        let channels = HashSet::from(["custom_metric".to_string()]);
+        let mut custom = data_request();
+        custom.series[0].channel = Some(Channel {
+            name: "custom_metric".into(),
+        });
+        // Caller-named metric channels are only excluded when configured.
+        assert!(timestamp_bounds(&custom, &none()).is_some());
         metrics
-            .consume(&data_request(), |_| Ok(()), |_| Ok(()))
+            .consume(&data_request(), &channels, |_| Ok(()), |_| Ok(()))
             .unwrap();
         for request in [
             WriteRequestNominal::default(),
             metric_request(0, 0, 0, 0, 0.0),
+            custom,
         ] {
             metrics
                 .consume(
                     &request,
+                    &channels,
                     |r| {
                         assert_eq!(r, &request);
                         Ok(())
@@ -405,6 +431,7 @@ mod tests {
             metrics
                 .consume(
                     &request,
+                    &none(),
                     |r| {
                         assert_eq!(r.series.len(), 1);
                         Ok(())
@@ -420,6 +447,7 @@ mod tests {
         metrics
             .consume(
                 &request,
+                &none(),
                 |r| {
                     assert_eq!(r.series.len(), 6);
                     assert_eq!(r.session_name, request.session_name);
@@ -443,6 +471,7 @@ mod tests {
                     metrics
                         .consume(
                             &data_request(),
+                            &none(),
                             |_| Ok(()),
                             |_| {
                                 barrier.wait();
@@ -457,6 +486,7 @@ mod tests {
         metrics
             .consume(
                 &data_request(),
+                &none(),
                 |r| {
                     assert_eq!(r.series.len(), 41);
                     Ok(())

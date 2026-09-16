@@ -60,6 +60,9 @@ pub struct NominalStreamOpts {
     /// File-only streams are unaffected.
     /// Configure manually supplied consumers separately.
     pub track_metrics: bool,
+    /// Channels emitted through the stream that carry metrics rather than data. They are
+    /// excluded from request latency measurements when `track_metrics` is enabled.
+    pub metric_channels: Vec<String>,
 }
 
 impl Default for NominalStreamOpts {
@@ -71,6 +74,7 @@ impl Default for NominalStreamOpts {
             request_dispatcher_tasks: 8,
             base_api_url: PRODUCTION_API_URL.to_string(),
             track_metrics: false,
+            metric_channels: Vec::new(),
         }
     }
 }
@@ -223,6 +227,7 @@ impl NominalDatasetStreamBuilder {
                     dataset.clone(),
                 )
                 .with_track_metrics(self.opts.track_metrics)
+                .with_metric_channels(self.opts.metric_channels.iter().cloned())
             })
     }
 
