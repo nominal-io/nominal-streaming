@@ -139,8 +139,26 @@ NominalStreamOpts {
   max_request_delay: Duration,
   max_buffered_requests: usize,
   request_dispatcher_tasks: usize,
+  track_metrics: bool, // defaults to false
+  additional_metric_channels: Vec<String>, // caller-emitted metric channels excluded from latency bounds
 }
 ```
+
+#### Metrics
+
+The `track_metrics` option enables request latency metrics tracking directly on the dataset. It adds the following metric fields:
+
+| Channel | Value | Point timestamp |
+| --- | --- | --- |
+| `__nominal.metric.largest_latency_before_request` | Wall time before HTTP send minus the oldest data timestamp in the batch | Request completion time |
+| `__nominal.metric.smallest_latency_before_request` | Wall time before HTTP send minus the newest data timestamp in the batch | Request completion time |
+| `__nominal.metric.request_rtt` | Elapsed HTTP send time, including client retries | Request completion time |
+| `__nominal.metric.largest_latency_after_request` | Wall time after HTTP send minus the oldest data timestamp in the batch | Request completion time |
+| `__nominal.metric.smallest_latency_after_request` | Wall time after HTTP send minus the newest data timestamp in the batch | Request completion time |
+
+If there are metrics provided by upstream users of this library - such as the Python client - they can be provided as `additional_metric_channels`. They will
+be excluded from the metrics above (where possible - e.g for metric-only requests and when fetching newest/oldest data timestamps). All metrics - including the
+ones added by this library - are appended into the existing requests the library makes, so overhead is minimal.
 
 ### Logging errors
 
@@ -158,6 +176,7 @@ let stream = NominalDatasetStreamBuilder::new()
 pub mod client;
 pub mod consumer;
 pub mod listener;
+mod metrics;
 #[cfg(test)]
 mod simulated_consumer;
 pub mod stream;
@@ -262,6 +281,8 @@ mod tests {
                 max_buffered_requests: 2,
                 request_dispatcher_tasks: 4,
                 base_api_url: PRODUCTION_API_URL.to_string(),
+                track_metrics: false,
+                additional_metric_channels: Vec::new(),
             },
         );
 
@@ -785,6 +806,8 @@ mod tests {
                 max_buffered_requests: 1,
                 request_dispatcher_tasks: 1,
                 base_api_url: PRODUCTION_API_URL.to_string(),
+                track_metrics: false,
+                additional_metric_channels: Vec::new(),
             },
         );
 

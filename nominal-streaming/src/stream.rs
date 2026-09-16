@@ -53,6 +53,17 @@ pub struct NominalStreamOpts {
     pub max_buffered_requests: usize,
     pub request_dispatcher_tasks: usize,
     pub base_api_url: String,
+    /// Emit request runtime metrics from the builder's Core consumer. Disabled by default.
+    ///
+    /// Completed request metrics piggyback on later data requests to the same dataset.
+    /// Pending metrics are bounded and discarded on shutdown; no extra requests are sent.
+    /// File-only streams are unaffected.
+    /// Configure manually supplied consumers separately.
+    pub track_metrics: bool,
+    /// Channels the caller emits through the stream that carry metrics rather than data,
+    /// beyond the request metrics `track_metrics` emits itself. They are excluded from
+    /// request latency measurements when `track_metrics` is enabled.
+    pub additional_metric_channels: Vec<String>,
 }
 
 impl Default for NominalStreamOpts {
@@ -63,6 +74,8 @@ impl Default for NominalStreamOpts {
             max_buffered_requests: 4,
             request_dispatcher_tasks: 8,
             base_api_url: PRODUCTION_API_URL.to_string(),
+            track_metrics: false,
+            additional_metric_channels: Vec::new(),
         }
     }
 }
@@ -213,6 +226,10 @@ impl NominalDatasetStreamBuilder {
                     handle.clone(),
                     auth_provider.clone(),
                     dataset.clone(),
+                )
+                .with_track_metrics(self.opts.track_metrics)
+                .with_additional_metric_channels(
+                    self.opts.additional_metric_channels.iter().cloned(),
                 )
             })
     }
@@ -893,10 +910,7 @@ impl SeriesBuffer {
                 }
             })
             .collect();
-        let result_count = points
-            .count
-            .fetch_update(Ordering::Release, Ordering::Acquire, |_| Some(0))
-            .unwrap();
+        let result_count = points.count.swap(0, Ordering::AcqRel);
         (result_count, result)
     }
 
