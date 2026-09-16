@@ -25,18 +25,70 @@ const REQUEST_METRICS: [&str; 5] = [
     "__nominal.metric.smallest_latency_after_request",
 ];
 
-fn is_metric(name: &str) -> bool {
-    REQUEST_METRICS.contains(&name)
-        || matches!(
-            name,
-            "enque_dict_start_staleness" | "enque_dict_end_staleness"
-        )
+// At most 320 metric points are retained, regardless of dispatcher concurrency.
+const MAX_PENDING_REQUESTS: usize = 64;
+
+/// Measurements waiting to be piggybacked onto a later data request, shared
+/// across dispatcher threads.
+#[derive(Debug, Default)]
+pub(crate) struct PendingMetrics {
+    pending: Mutex<VecDeque<WriteRequestNominal>>,
 }
 
-fn timestamp_ns(timestamp: &Timestamp) -> i128 {
-    i128::from(timestamp.seconds) * 1_000_000_000 + i128::from(timestamp.nanos)
+impl PendingMetrics {
+    /// Sends a data request while measuring its latency, attaching any earlier
+    /// measurements for the same session so metrics never cost an extra request.
+    /// Requests with nothing to measure are sent unchanged. A failed send drops
+    /// the attached measurements and records none of its own.
+    pub(crate) fn consume<T>(
+        &self,
+        request: &WriteRequestNominal,
+        encode: impl FnOnce(&WriteRequestNominal) -> ConsumerResult<T>,
+        send: impl FnOnce(T) -> ConsumerResult<()>,
+    ) -> ConsumerResult<()> {
+        let Some((oldest, newest)) = timestamp_bounds(request) else {
+            return send(encode(request)?);
+        };
+        let attached = {
+            let mut pending = self.pending.lock();
+            let mut attached = Vec::new();
+            pending.retain(|metrics| {
+                if metrics.session_name == request.session_name {
+                    attached.extend(metrics.series.iter().cloned());
+                    false
+                } else {
+                    true
+                }
+            });
+            attached
+        };
+        let encoded = if attached.is_empty() {
+            encode(request)?
+        } else {
+            let mut combined = request.clone();
+            combined.series.extend(attached);
+            encode(&combined)?
+        };
+        let before = UNIX_EPOCH.elapsed().unwrap().as_nanos() as i128;
+        let start = Instant::now();
+        send(encoded)?;
+        let rtt = start.elapsed().as_secs_f64();
+        let after = UNIX_EPOCH.elapsed().unwrap().as_nanos() as i128;
+        let mut metrics = metric_request(oldest, newest, before, after, rtt);
+        metrics.session_name = request.session_name.clone();
+        let mut pending = self.pending.lock();
+        if pending.len() == MAX_PENDING_REQUESTS {
+            pending.pop_front();
+        }
+        pending.push_back(metrics);
+        Ok(())
+    }
 }
 
+/// Finds the oldest and newest data timestamps in a request, which anchor the
+/// staleness metrics for that send. Returns `None` when the request has no
+/// timestamped data points, including empty and metric-only requests, since
+/// metric channels are ignored.
 fn timestamp_bounds(request: &WriteRequestNominal) -> Option<(i128, i128)> {
     let mut bounds: Option<(i128, i128)> = None;
     let mut add = |timestamp: &Option<Timestamp>| {
@@ -86,6 +138,8 @@ fn timestamp_bounds(request: &WriteRequestNominal) -> Option<(i128, i128)> {
     bounds
 }
 
+/// Builds the five request-latency series for one completed send, using the
+/// channel names and units (seconds) that nominal-client dashboards expect.
 fn metric_request(
     oldest: i128,
     newest: i128,
@@ -127,60 +181,16 @@ fn metric_request(
     }
 }
 
-// At most 320 metric points are retained, regardless of dispatcher concurrency.
-const MAX_PENDING_REQUESTS: usize = 64;
-
-#[derive(Debug, Default)]
-pub(crate) struct PendingMetrics {
-    pending: Mutex<VecDeque<WriteRequestNominal>>,
+fn is_metric(name: &str) -> bool {
+    REQUEST_METRICS.contains(&name)
+        || matches!(
+            name,
+            "enque_dict_start_staleness" | "enque_dict_end_staleness"
+        )
 }
 
-impl PendingMetrics {
-    /// Attach completed measurements before encoding, then measure only the send.
-    /// Never holds the pending lock during encoding or network I/O.
-    pub(crate) fn consume<T>(
-        &self,
-        request: &WriteRequestNominal,
-        encode: impl FnOnce(&WriteRequestNominal) -> ConsumerResult<T>,
-        send: impl FnOnce(T) -> ConsumerResult<()>,
-    ) -> ConsumerResult<()> {
-        let Some((oldest, newest)) = timestamp_bounds(request) else {
-            return send(encode(request)?);
-        };
-        let attached = {
-            let mut pending = self.pending.lock();
-            let mut attached = Vec::new();
-            pending.retain(|metrics| {
-                if metrics.session_name == request.session_name {
-                    attached.extend(metrics.series.iter().cloned());
-                    false
-                } else {
-                    true
-                }
-            });
-            attached
-        };
-        let encoded = if attached.is_empty() {
-            encode(request)?
-        } else {
-            let mut combined = request.clone();
-            combined.series.extend(attached);
-            encode(&combined)?
-        };
-        let before = UNIX_EPOCH.elapsed().unwrap().as_nanos() as i128;
-        let start = Instant::now();
-        send(encoded)?;
-        let rtt = start.elapsed().as_secs_f64();
-        let after = UNIX_EPOCH.elapsed().unwrap().as_nanos() as i128;
-        let mut metrics = metric_request(oldest, newest, before, after, rtt);
-        metrics.session_name = request.session_name.clone();
-        let mut pending = self.pending.lock();
-        if pending.len() == MAX_PENDING_REQUESTS {
-            pending.pop_front();
-        }
-        pending.push_back(metrics);
-        Ok(())
-    }
+fn timestamp_ns(timestamp: &Timestamp) -> i128 {
+    i128::from(timestamp.seconds) * 1_000_000_000 + i128::from(timestamp.nanos)
 }
 
 #[cfg(test)]
@@ -189,6 +199,7 @@ mod tests {
     use crate::consumer::ConsumerError;
     use crate::types::IntoPoints;
 
+    /// Builds a minimal non-metric request around the given points.
     fn request(points: PointsType) -> WriteRequestNominal {
         WriteRequestNominal {
             session_name: None,
@@ -204,6 +215,7 @@ mod tests {
         }
     }
 
+    /// A one-point request with well-defined timestamp bounds.
     fn data_request() -> WriteRequestNominal {
         request(
             vec![DoublePoint {

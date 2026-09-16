@@ -902,10 +902,7 @@ impl SeriesBuffer {
                 }
             })
             .collect();
-        let result_count = points
-            .count
-            .fetch_update(Ordering::Release, Ordering::Acquire, |_| Some(0))
-            .unwrap();
+        let result_count = points.count.swap(0, Ordering::AcqRel);
         (result_count, result)
     }
 
