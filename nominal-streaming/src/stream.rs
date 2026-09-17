@@ -580,7 +580,7 @@ where
             self.unflushed.len()
         );
         self.stream.when_capacity(self.unflushed.len(), |mut buf| {
-            let to_flush: Vec<T> = self.unflushed.drain(..).collect();
+            let to_flush = std::mem::take(&mut self.unflushed);
             buf.extend(&self.channel, to_flush);
             self.last_flushed_at = Instant::now();
         })

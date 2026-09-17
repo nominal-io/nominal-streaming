@@ -14,7 +14,6 @@ conjure-http = "5"
 conjure-object = "5"
 conjure-runtime-rustls-platform-verifier = "0.2"
 crossbeam-channel = "0.5.15"
-derive_more = { version = "2", features = ["from"] }
 futures = "0.3"
 nominal-api = "0.1435.0"
 parking_lot = "0.12"
@@ -36,7 +35,6 @@ tempfile = "3"
 
 # Allow workspace packages to access core package
 nominal-streaming = { path = "nominal-streaming" }
-py-nominal-streaming = { path = "py-nominal-streaming" }
 
 [profile.release]
 debug = true

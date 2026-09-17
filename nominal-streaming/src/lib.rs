@@ -172,6 +172,7 @@ let stream = NominalDatasetStreamBuilder::new()
     .build();
 ```
 */
+#![recursion_limit = "256"]
 
 pub mod client;
 pub mod consumer;
@@ -273,7 +274,7 @@ mod tests {
     where
         C: WriteRequestConsumer + 'static,
     {
-        let stream = NominalDatasetStream::new_with_consumer(
+        NominalDatasetStream::new_with_consumer(
             consumer,
             NominalStreamOpts {
                 max_points_per_record,
@@ -284,9 +285,7 @@ mod tests {
                 track_metrics: false,
                 additional_metric_channels: Vec::new(),
             },
-        );
-
-        stream
+        )
     }
 
     fn create_stream_with_consumer_and_options<C>(
