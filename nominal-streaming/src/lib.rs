@@ -689,6 +689,8 @@ mod tests {
 
     #[test_log::test]
     fn test_time_flush() {
+        // A writer should flush on the next push after the time limit, even when
+        // it has too few points to trigger a size-based flush.
         let (test_consumer, stream) = create_test_stream();
 
         let cd = ChannelDescriptor::new("channel_1");
@@ -697,6 +699,10 @@ mod tests {
         writer.push(UNIX_EPOCH.elapsed().unwrap(), 1.0);
         thread::sleep(Duration::from_millis(101));
         writer.push(UNIX_EPOCH.elapsed().unwrap(), 2.0); // first flush
+
+        // Wait for delivery before the next write so worker scheduling cannot
+        // combine the two writer flushes into one request. The request-count
+        // assertion below should reflect writer behavior, not worker timing.
         let deadline = std::time::Instant::now() + Duration::from_secs(2);
         while test_consumer.requests.lock().unwrap().is_empty() {
             assert!(
