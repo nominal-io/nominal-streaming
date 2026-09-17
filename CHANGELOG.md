@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0](https://github.com/nominal-io/nominal-streaming/compare/v0.9.10...v0.10.0) - 2026-09-17
+
+### Added
+
+- add opt-in runtime metric writing ([#340](https://github.com/nominal-io/nominal-streaming/pull/340))
+
+### Other
+
+- mark opts structs and error enums non_exhaustive ([#350](https://github.com/nominal-io/nominal-streaming/pull/350))
+- fix clippy and nightly warnings, build CI on stable ([#349](https://github.com/nominal-io/nominal-streaming/pull/349))
+
 ## [0.9.10](https://github.com/nominal-io/nominal-streaming/compare/v0.9.9...v0.9.10) - 2026-09-16
 
 ### Other
