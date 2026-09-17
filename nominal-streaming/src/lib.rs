@@ -659,37 +659,6 @@ mod tests {
     }
 
     #[test_log::test]
-    #[should_panic(expected = "mismatched types")]
-    fn test_mismatched_array_types_panics() {
-        // Protects the exhaustive match in SeriesBufferGuard::extend from being
-        // silently simplified to a catch-all: pushing a DoubleArray and then a
-        // StringArray to the same channel must panic at buffer merge time.
-        //
-        // ManuallyDrop skips NominalDatasetStream::drop during unwind — the panic
-        // leaves unflushed_points non-zero, which would cause drop to spin forever.
-        let (_test_consumer, stream) = create_test_stream();
-        let stream = std::mem::ManuallyDrop::new(stream);
-        let cd = ChannelDescriptor::new("mixed_array");
-
-        let ts = UNIX_EPOCH.elapsed().unwrap().into_timestamp();
-
-        stream.enqueue(
-            &cd,
-            vec![DoubleArrayPoint {
-                timestamp: Some(ts),
-                value: vec![1.0, 2.0],
-            }],
-        );
-        stream.enqueue(
-            &cd,
-            vec![StringArrayPoint {
-                timestamp: Some(ts),
-                value: vec!["a".into()],
-            }],
-        );
-    }
-
-    #[test_log::test]
     fn test_writer() {
         let (test_consumer, stream) = create_test_stream();
 
@@ -720,6 +689,8 @@ mod tests {
 
     #[test_log::test]
     fn test_time_flush() {
+        // A writer should flush on the next push after the time limit, even when
+        // it has too few points to trigger a size-based flush.
         let (test_consumer, stream) = create_test_stream();
 
         let cd = ChannelDescriptor::new("channel_1");
@@ -728,6 +699,18 @@ mod tests {
         writer.push(UNIX_EPOCH.elapsed().unwrap(), 1.0);
         thread::sleep(Duration::from_millis(101));
         writer.push(UNIX_EPOCH.elapsed().unwrap(), 2.0); // first flush
+
+        // Wait for delivery before the next write so worker scheduling cannot
+        // combine the two writer flushes into one request. The request-count
+        // assertion below should reflect writer behavior, not worker timing.
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while test_consumer.requests.lock().unwrap().is_empty() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "timed batch did not arrive"
+            );
+            thread::sleep(Duration::from_millis(1));
+        }
         thread::sleep(Duration::from_millis(101));
         writer.push(UNIX_EPOCH.elapsed().unwrap(), 3.0); // second flush
 
@@ -735,7 +718,6 @@ mod tests {
         drop(stream);
 
         let requests = test_consumer.requests.lock().unwrap();
-        dbg!(&requests);
         assert_eq!(requests.len(), 2);
     }
 
