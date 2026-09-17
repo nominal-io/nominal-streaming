@@ -131,8 +131,7 @@ async fn async_main() {
 ### Stream options
 
 Above, you saw an example using [`NominalStreamOpts::default`](https://docs.rs/nominal-streaming/latest/nominal_streaming/stream/struct.NominalStreamOpts.html).
-`NominalStreamOpts` is `#[non_exhaustive]`, so start from `default()` and override fields with
-the `with_*` setters, then pass the result to `.with_options(...)` on the StreamBuilder:
+Stream options can be customised with the `with_*` setters and set using `.with_options(...)` on the StreamBuilder:
 
 ```rust
 use std::time::Duration;
