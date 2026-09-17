@@ -156,6 +156,7 @@ async fn upload_and_ingest_file(
 }
 
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum UploaderError {
     #[error("Conjure error: {0}")]
     Conjure(String),
@@ -169,7 +170,12 @@ pub enum UploaderError {
     Other(String),
 }
 
+/// Configuration for [`FileObjectStoreUploader`].
+///
+/// Marked `#[non_exhaustive]` so new options can be added without a breaking change.
+/// Construct with [`UploaderOpts::default`] and customise via the `with_*` methods.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct UploaderOpts {
     pub chunk_size: usize,
     pub max_retries: usize,
@@ -183,6 +189,23 @@ impl Default for UploaderOpts {
             max_retries: 3,
             max_concurrent_uploads: 1,
         }
+    }
+}
+
+impl UploaderOpts {
+    pub fn with_chunk_size(mut self, chunk_size: usize) -> Self {
+        self.chunk_size = chunk_size;
+        self
+    }
+
+    pub fn with_max_retries(mut self, max_retries: usize) -> Self {
+        self.max_retries = max_retries;
+        self
+    }
+
+    pub fn with_max_concurrent_uploads(mut self, max_concurrent_uploads: usize) -> Self {
+        self.max_concurrent_uploads = max_concurrent_uploads;
+        self
     }
 }
 

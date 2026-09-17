@@ -59,15 +59,14 @@ impl PyNominalStreamOpts {
         track_metrics: bool,
     ) -> Self {
         PyNominalStreamOpts {
-            inner: NominalStreamOpts {
-                max_points_per_record: max_points_per_batch,
-                max_request_delay: Duration::from_secs_f64(max_request_delay_secs),
-                max_buffered_requests,
-                request_dispatcher_tasks: num_upload_workers,
-                base_api_url: base_api_url.to_string(),
-                track_metrics,
-                additional_metric_channels: DICT_METRIC_CHANNELS.map(String::from).to_vec(),
-            },
+            inner: NominalStreamOpts::default()
+                .with_max_points_per_record(max_points_per_batch)
+                .with_max_request_delay(Duration::from_secs_f64(max_request_delay_secs))
+                .with_max_buffered_requests(max_buffered_requests)
+                .with_request_dispatcher_tasks(num_upload_workers)
+                .with_base_api_url(base_api_url)
+                .with_track_metrics(track_metrics)
+                .with_additional_metric_channels(DICT_METRIC_CHANNELS),
             num_runtime_workers,
         }
     }

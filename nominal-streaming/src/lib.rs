@@ -131,17 +131,21 @@ async fn async_main() {
 ### Stream options
 
 Above, you saw an example using [`NominalStreamOpts::default`](https://docs.rs/nominal-streaming/latest/nominal_streaming/stream/struct.NominalStreamOpts.html).
-The following stream options can be set using `.with_options(...)` on the StreamBuilder:
+`NominalStreamOpts` is `#[non_exhaustive]`, so start from `default()` and override fields with
+the `with_*` setters, then pass the result to `.with_options(...)` on the StreamBuilder:
 
-```text
-NominalStreamOpts {
-  max_points_per_record: usize,
-  max_request_delay: Duration,
-  max_buffered_requests: usize,
-  request_dispatcher_tasks: usize,
-  track_metrics: bool, // defaults to false
-  additional_metric_channels: Vec<String>, // caller-emitted metric channels excluded from latency bounds
-}
+```rust
+use std::time::Duration;
+use nominal_streaming::stream::NominalStreamOpts;
+
+let opts = NominalStreamOpts::default()
+    .with_max_points_per_record(100_000)
+    .with_max_request_delay(Duration::from_millis(250))
+    .with_max_buffered_requests(4)
+    .with_request_dispatcher_tasks(8)
+    .with_track_metrics(true) // defaults to false
+    // caller-emitted metric channels excluded from latency bounds
+    .with_additional_metric_channels(["my.metric.channel"]);
 ```
 
 #### Metrics
