@@ -84,7 +84,9 @@ impl LogRecord {
 }
 
 /// Limits include ready and in-flight batches, so a stalled backend applies backpressure.
+/// Construct with `Default` and customize its public fields before passing to the builder.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct NominalLogStreamOpts {
     /// Maximum uncompressed protobuf request size, including all framing.
     pub max_request_bytes: usize,
@@ -158,6 +160,7 @@ pub struct LogStreamStats {
 }
 
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum LogStreamError {
     #[error("log stream is closed")]
     Closed,

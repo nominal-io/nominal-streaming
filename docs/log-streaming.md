@@ -20,18 +20,15 @@ with (
     .with_file_fallback(Path("log-backup"))
 ) as stream:
     stream.enqueue("application", 1_789_392_441_123_456_789, "Started", args={"service": "api"})
-    stream.enqueue_batch(
-        "application",
-        [1_789_392_442_123_456_789, 1_789_392_442_123_456_790],
-        ["Connected", "Ready"],
-        args={"service": "api"},
-        per_record_args=[{"peer": "one"}, {"peer": "two"}],
+    stream.enqueue(
+        "application", 1_789_392_442_123_456_789, "Connected",
+        args={"service": "api", "peer": "one"},
     )
     stats = stream.flush()
     print(stats.acknowledged_records, stats.backed_up_records, stats.last_error)
 ```
 
-Arguments supplied through legacy `tags=` or the fourth positional argument are log arguments. `tags` and `args` cannot both be provided. Common batch arguments are merged with per-record arguments; the per-record value wins. Batch operations cross into native code once, with validation before acceptance.
+Arguments supplied through legacy `tags=` or the fourth positional argument are log arguments. `tags` and `args` cannot both be provided. Each enqueue call accepts one event; Rust automatically batches these events into requests. There is no public Python bulk-write method.
 
 Integer timestamps are signed Unix nanoseconds. Timezone-aware datetimes and explicit-timezone ISO 8601 strings with up to nine fractional digits are supported. Integers are the preferred high-throughput input. Naive datetimes are rejected rather than guessing a timezone. This API intentionally omits telemetry array/struct enqueue methods.
 
@@ -117,7 +114,7 @@ opts = PyNominalLogStreamOpts(
 ```
 
 Measure four workers first, then eight if delivery latency and errors remain acceptable.
-Use `enqueue_batch` with integer timestamps to amortize Python/native call overhead.
+Use integer timestamps to avoid Python timestamp parsing in the write path.
 More memory and workers do not guarantee higher throughput. Measure request latency,
 acknowledged records and fallback counts with representative messages before raising limits.
 See [the capacity probe](log-capacity.md) for development diagnostics.
@@ -183,7 +180,6 @@ Python uses the same shared call shapes as `NominalDatasetStream`:
 
 - `NominalLogStream(auth_header, opts)` or `NominalLogStream.create(auth_header, base_api_url, ...)`.
 - `enqueue(channel_name=..., timestamp=..., value=...)` for a message string.
-- `enqueue_batch(channel_name=..., timestamps=..., values=...)` for message strings.
 - `enqueue_from_dict(timestamp=..., channel_values=...)` for several channels.
 - `to_file(path=...)`, `with_file_fallback(path=...)`, context management and `close(wait=...)`.
 - `PyNominalLogStreamOpts(max_points_per_batch=...)` and `.with_max_points_per_batch(...)`.
@@ -199,7 +195,7 @@ Some differences are intentional:
 | Concern | Log stream behavior |
 |---|---|
 | Values | Strings plus per-record string arguments; no numeric, struct or array enqueue methods |
-| Arguments | `args` / `per_record_args` are log fields; legacy `tags` aliases common arguments, not series identity |
+| Arguments | `args` are per-event log fields; legacy `tags` aliases common arguments, not series identity |
 | Capacity | Byte budgets supplement message counts; a count alone cannot bound message and argument size |
 | File target | A directory of journal JSONL segments and import manifests, rather than an Avro file |
 | Completion | `flush` / `close` return delivery statistics and surface preservation failures; `save_failed` rescues retained data |

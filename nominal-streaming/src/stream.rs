@@ -46,13 +46,29 @@ use crate::types::ChannelDescriptor;
 use crate::types::IntoPoints;
 use crate::types::IntoTimestamp;
 
+/// Configuration for a [`NominalDatasetStream`].
+///
+/// Marked `#[non_exhaustive]` so new options can be added without a breaking change.
+/// Construct with [`NominalStreamOpts::default`] and customise via the `with_*` methods.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct NominalStreamOpts {
     pub max_points_per_record: usize,
     pub max_request_delay: Duration,
     pub max_buffered_requests: usize,
     pub request_dispatcher_tasks: usize,
     pub base_api_url: String,
+    /// Emit request runtime metrics from the builder's Core consumer. Disabled by default.
+    ///
+    /// Completed request metrics piggyback on later data requests to the same dataset.
+    /// Pending metrics are bounded and discarded on shutdown; no extra requests are sent.
+    /// File-only streams are unaffected.
+    /// Configure manually supplied consumers separately.
+    pub track_metrics: bool,
+    /// Channels the caller emits through the stream that carry metrics rather than data,
+    /// beyond the request metrics `track_metrics` emits itself. They are excluded from
+    /// request latency measurements when `track_metrics` is enabled.
+    pub additional_metric_channels: Vec<String>,
 }
 
 impl Default for NominalStreamOpts {
@@ -63,7 +79,49 @@ impl Default for NominalStreamOpts {
             max_buffered_requests: 4,
             request_dispatcher_tasks: 8,
             base_api_url: PRODUCTION_API_URL.to_string(),
+            track_metrics: false,
+            additional_metric_channels: Vec::new(),
         }
+    }
+}
+
+impl NominalStreamOpts {
+    pub fn with_max_points_per_record(mut self, max_points_per_record: usize) -> Self {
+        self.max_points_per_record = max_points_per_record;
+        self
+    }
+
+    pub fn with_max_request_delay(mut self, max_request_delay: Duration) -> Self {
+        self.max_request_delay = max_request_delay;
+        self
+    }
+
+    pub fn with_max_buffered_requests(mut self, max_buffered_requests: usize) -> Self {
+        self.max_buffered_requests = max_buffered_requests;
+        self
+    }
+
+    pub fn with_request_dispatcher_tasks(mut self, request_dispatcher_tasks: usize) -> Self {
+        self.request_dispatcher_tasks = request_dispatcher_tasks;
+        self
+    }
+
+    pub fn with_base_api_url(mut self, base_api_url: impl Into<String>) -> Self {
+        self.base_api_url = base_api_url.into();
+        self
+    }
+
+    pub fn with_track_metrics(mut self, track_metrics: bool) -> Self {
+        self.track_metrics = track_metrics;
+        self
+    }
+
+    pub fn with_additional_metric_channels(
+        mut self,
+        channels: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Self {
+        self.additional_metric_channels = channels.into_iter().map(Into::into).collect();
+        self
     }
 }
 
@@ -191,6 +249,10 @@ impl NominalDatasetStreamBuilder {
                     handle.clone(),
                     auth_provider.clone(),
                     dataset.clone(),
+                )
+                .with_track_metrics(self.opts.track_metrics)
+                .with_additional_metric_channels(
+                    self.opts.additional_metric_channels.iter().cloned(),
                 )
             })
     }
@@ -541,7 +603,7 @@ where
             self.unflushed.len()
         );
         self.stream.when_capacity(self.unflushed.len(), |mut buf| {
-            let to_flush: Vec<T> = self.unflushed.drain(..).collect();
+            let to_flush = std::mem::take(&mut self.unflushed);
             buf.extend(&self.channel, to_flush);
             self.last_flushed_at = Instant::now();
         })
@@ -871,10 +933,7 @@ impl SeriesBuffer {
                 }
             })
             .collect();
-        let result_count = points
-            .count
-            .fetch_update(Ordering::Release, Ordering::Acquire, |_| Some(0))
-            .unwrap();
+        let result_count = points.count.swap(0, Ordering::AcqRel);
         (result_count, result)
     }
 

@@ -131,16 +131,37 @@ async fn async_main() {
 ### Stream options
 
 Above, you saw an example using [`NominalStreamOpts::default`](https://docs.rs/nominal-streaming/latest/nominal_streaming/stream/struct.NominalStreamOpts.html).
-The following stream options can be set using `.with_options(...)` on the StreamBuilder:
+Stream options can be customised with the `with_*` setters and set using `.with_options(...)` on the StreamBuilder:
 
-```text
-NominalStreamOpts {
-  max_points_per_record: usize,
-  max_request_delay: Duration,
-  max_buffered_requests: usize,
-  request_dispatcher_tasks: usize,
-}
+```rust
+use std::time::Duration;
+use nominal_streaming::stream::NominalStreamOpts;
+
+let opts = NominalStreamOpts::default()
+    .with_max_points_per_record(100_000)
+    .with_max_request_delay(Duration::from_millis(250))
+    .with_max_buffered_requests(4)
+    .with_request_dispatcher_tasks(8)
+    .with_track_metrics(true) // defaults to false
+    // caller-emitted metric channels excluded from latency bounds
+    .with_additional_metric_channels(["my.metric.channel"]);
 ```
+
+#### Metrics
+
+The `track_metrics` option enables request latency metrics tracking directly on the dataset. It adds the following metric fields:
+
+| Channel | Value | Point timestamp |
+| --- | --- | --- |
+| `__nominal.metric.largest_latency_before_request` | Wall time before HTTP send minus the oldest data timestamp in the batch | Request completion time |
+| `__nominal.metric.smallest_latency_before_request` | Wall time before HTTP send minus the newest data timestamp in the batch | Request completion time |
+| `__nominal.metric.request_rtt` | Elapsed HTTP send time, including client retries | Request completion time |
+| `__nominal.metric.largest_latency_after_request` | Wall time after HTTP send minus the oldest data timestamp in the batch | Request completion time |
+| `__nominal.metric.smallest_latency_after_request` | Wall time after HTTP send minus the newest data timestamp in the batch | Request completion time |
+
+If there are metrics provided by upstream users of this library - such as the Python client - they can be provided as `additional_metric_channels`. They will
+be excluded from the metrics above (where possible - e.g for metric-only requests and when fetching newest/oldest data timestamps). All metrics - including the
+ones added by this library - are appended into the existing requests the library makes, so overhead is minimal.
 
 ### Logging errors
 
@@ -154,6 +175,7 @@ let stream = NominalDatasetStreamBuilder::new()
     .build();
 ```
 */
+#![recursion_limit = "256"]
 
 pub mod client;
 pub mod consumer;
@@ -161,6 +183,7 @@ pub mod listener;
 pub mod log;
 #[cfg(feature = "logging")]
 mod logging;
+mod metrics;
 #[cfg(test)]
 mod simulated_consumer;
 pub mod stream;
@@ -272,6 +295,8 @@ mod tests {
                 max_buffered_requests: 2,
                 request_dispatcher_tasks: 4,
                 base_api_url: PRODUCTION_API_URL.to_string(),
+                track_metrics: false,
+                additional_metric_channels: Vec::new(),
             },
         )
     }
@@ -793,6 +818,8 @@ mod tests {
                 max_buffered_requests: 1,
                 request_dispatcher_tasks: 1,
                 base_api_url: PRODUCTION_API_URL.to_string(),
+                track_metrics: false,
+                additional_metric_channels: Vec::new(),
             },
         );
 

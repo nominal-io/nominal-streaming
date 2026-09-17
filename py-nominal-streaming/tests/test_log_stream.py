@@ -105,8 +105,6 @@ class LogStreamTests(unittest.TestCase):
             stream._impl = Mock()
             stream.enqueue(channel_name="app", timestamp=1, value="started", tags={"service": "api"})
             stream._impl.enqueue.assert_called_once_with("app", 1, "started", {"service": "api"})
-            stream.enqueue_batch(channel_name="app", timestamps=[1, 2], values=["started", "ready"])
-            self.assertEqual(stream._impl.enqueue_batch.call_args.args[:3], ("app", [1, 2], ["started", "ready"]))
 
     def test_log_factory_and_keyword_methods_use_configured_limits(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -115,7 +113,7 @@ class LogStreamTests(unittest.TestCase):
             ).to_file(path=Path(directory))
             with stream:
                 stream.enqueue(channel_name="app", timestamp=1, value="started")
-                stream.enqueue_batch(channel_name="app", timestamps=[2], values=["ready"])
+                stream.enqueue(channel_name="app", timestamp=2, value="ready")
                 with self.assertRaisesRegex(RuntimeError, "max_request_bytes"):
                     stream.enqueue(channel_name="app", timestamp=3, value="x" * 1024)
             self.assertEqual(stream.stats().backed_up_records, 2)
@@ -131,17 +129,12 @@ class LogStreamTests(unittest.TestCase):
             with self.assertRaises((TypeError, ValueError)):
                 _timestamp_ns(invalid)
 
-    def test_file_batch_and_close(self):
+    def test_file_writes_and_close(self):
         handler = signal.getsignal(signal.SIGINT)
         with tempfile.TemporaryDirectory() as directory:
             stream = NominalLogStream().to_file(Path(directory)).open()
-            stream.enqueue_batch(
-                "engine",
-                [1, 2],
-                ["start", "stop"],
-                args={"shared": "yes"},
-                per_record_args=[{"shared": "override"}, {"other": "value"}],
-            )
+            stream.enqueue("engine", 1, "start", args={"shared": "override"})
+            stream.enqueue("engine", 2, "stop", args={"shared": "yes", "other": "value"})
             stream.close(wait=False)
             with ThreadPoolExecutor(4) as pool:
                 list(pool.map(lambda _: stream.close(), range(4)))
@@ -167,25 +160,9 @@ class LogStreamTests(unittest.TestCase):
             with NominalLogStream().to_file(Path(directory)) as stream:
                 with self.assertRaises(ValueError):
                     stream.enqueue("x", 0, "message", {}, args={})
-                with self.assertRaises(ValueError):
-                    stream.enqueue_batch("x", [1], ["one", "two"])
-                with self.assertRaises(ValueError):
-                    stream.enqueue_batch("x", [1], ["one"], per_record_args=[])
                 self.assertEqual(stream.stats().accepted_records, 0)
                 stream.enqueue_from_dict(1, {"x": "one", "y": "two"})
                 self.assertEqual(stream.flush().backed_up_records, 2)
-
-    def test_batch_crosses_native_boundary_once(self):
-        stream = NominalLogStream()
-        stream._impl = Mock()
-        timestamps = [1, 2, 3]
-        stream.enqueue_batch("x", timestamps, ["a", "b", "c"])
-        stream._impl.enqueue_batch.assert_called_once()
-        self.assertIs(stream._impl.enqueue_batch.call_args.args[1], timestamps)
-        stream._impl.reset_mock()
-        stream.enqueue_batch("x", ["1970-01-01T00:00:00.000000001Z"], ["a"])
-        stream._impl.enqueue_batch.assert_called_once()
-        self.assertEqual(stream._impl.enqueue_batch.call_args.args[1], [1])
 
     def test_reserved_keys_and_overflow(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -240,14 +217,15 @@ class LogStreamTests(unittest.TestCase):
             self.assertEqual(stats.failed_records, 0)
             stream.close()
 
-    def test_serialized_byte_limit_rejects_atomically_and_splits(self):
+    def test_serialized_byte_limit_rejects_oversized_records_and_splits(self):
         with tempfile.TemporaryDirectory() as directory:
             opts = PyNominalLogStreamOpts(max_request_bytes=512)
             stream = NominalLogStream(opts=opts).to_file(Path(directory)).open()
             with self.assertRaisesRegex(RuntimeError, "max_request_bytes"):
-                stream.enqueue_batch("channel", [0, 1], ["small", "🚀" * 128])
+                stream.enqueue("channel", 0, "🚀" * 128)
             self.assertEqual(stream.stats().accepted_records, 0)
-            stream.enqueue_batch("channel", list(range(20)), ["🚀" * 60] * 20)
+            for timestamp in range(20):
+                stream.enqueue("channel", timestamp, "🚀" * 60)
             stream.close()
             files = list(Path(directory).glob("*.jsonl"))
             self.assertGreater(len(files), 1)

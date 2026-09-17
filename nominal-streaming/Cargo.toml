@@ -3,7 +3,7 @@ name = "nominal-streaming"
 description = "Library for durable, low-latency streaming into Nominal Core"
 edition = "2021"
 license = "MIT"
-version = "0.9.9"
+version = "0.10.0"
 readme = "../README.md"
 repository = "https://github.com/nominal-io/nominal-streaming"
 
@@ -24,7 +24,6 @@ conjure-http = { workspace = true }
 conjure-object = { workspace = true }
 conjure-runtime-rustls-platform-verifier = { workspace = true }
 crossbeam-channel = { workspace = true }
-derive_more = { workspace = true }
 futures = { workspace = true }
 nominal-api = { workspace = true }
 parking_lot = { workspace = true }

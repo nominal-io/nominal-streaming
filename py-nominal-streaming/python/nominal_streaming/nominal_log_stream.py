@@ -6,9 +6,9 @@ import datetime as dt
 import re
 from pathlib import Path
 from types import TracebackType
-from typing import Mapping, Sequence
+from typing import Mapping
 
-from typing_extensions import Self, TypeGuard
+from typing_extensions import Self
 
 from nominal_streaming._nominal_streaming import LogStreamStats, PyNominalLogStream, PyNominalLogStreamOpts
 
@@ -34,10 +34,6 @@ def _timestamp_ns(value: TimestampLike) -> int:
         raise ValueError("datetime timestamp must include a timezone")
     delta = value.astimezone(dt.timezone.utc) - _EPOCH
     return ((delta.days * 86400 + delta.seconds) * 1_000_000 + delta.microseconds) * 1000 + fraction
-
-
-def _is_nanoseconds(values: Sequence[TimestampLike]) -> TypeGuard[Sequence[int]]:
-    return all(type(value) is int for value in values)
 
 
 def _args(tags: Mapping[str, str] | None, args: Mapping[str, str] | None) -> dict[str, str] | None:
@@ -176,31 +172,6 @@ class NominalLogStream:
     ) -> None:
         self._impl.enqueue(
             channel_name, timestamp if type(timestamp) is int else _timestamp_ns(timestamp), value, _args(tags, args)
-        )
-
-    def enqueue_batch(
-        self,
-        channel_name: str,
-        timestamps: Sequence[TimestampLike],
-        values: Sequence[str],
-        tags: Mapping[str, str] | None = None,
-        *,
-        args: Mapping[str, str] | None = None,
-        per_record_args: Sequence[Mapping[str, str]] | None = None,
-    ) -> None:
-        """Enqueue a batch in one native call; record args override common args."""
-        common = _args(tags, args)
-        if len(timestamps) != len(values):
-            raise ValueError("timestamps and values must have equal lengths")
-        if per_record_args is not None and len(per_record_args) != len(values):
-            raise ValueError("per_record_args and values must have equal lengths")
-        normalized = timestamps if _is_nanoseconds(timestamps) else [_timestamp_ns(ts) for ts in timestamps]
-        self._impl.enqueue_batch(
-            channel_name,
-            normalized,
-            values,
-            common,
-            [dict(item) for item in per_record_args] if per_record_args is not None else None,
         )
 
     def enqueue_from_dict(

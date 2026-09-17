@@ -25,6 +25,7 @@ class PyNominalStreamOpts:
         num_upload_workers: int = 8,
         num_runtime_workers: int = 8,
         base_api_url: str = "https://api.gov.nominal.io/api",
+        track_metrics: bool = False,
     ) -> None:
         """Initialize a PyNominalStreamOpts instance.
 
@@ -35,8 +36,16 @@ class PyNominalStreamOpts:
             num_upload_workers: Number of concurrent network dispatches to perform.
                 NOTE: should be less than the number of `num_runtime_workers`
             num_runtime_workers: Number of runtime worker threads for concurrent processing.
+            track_metrics: Emit runtime metric channels; disabled by default.
             base_api_url: Base URL of the Nominal API endpoint to stream data to.
         """
+
+    @property
+    def track_metrics(self) -> bool:
+        """Whether runtime metric channels are enabled."""
+
+    def with_track_metrics(self, enabled: bool) -> Self:
+        """Enable or disable runtime metric channels."""
 
     @property
     def max_points_per_batch(self) -> int:
@@ -543,11 +552,3 @@ class PyNominalLogStream:
     def stats(self) -> LogStreamStats: ...
     def flush(self) -> LogStreamStats: ...
     def enqueue(self, channel_name: str, timestamp: int, value: str, args: dict[str, str] | None = None) -> None: ...
-    def enqueue_batch(
-        self,
-        channel_name: str,
-        timestamps: Sequence[int],
-        values: Sequence[str],
-        args: dict[str, str] | None = None,
-        per_record_args: Sequence[dict[str, str]] | None = None,
-    ) -> None: ...

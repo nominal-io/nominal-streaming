@@ -56,12 +56,18 @@ if __name__ == "__main__":
         )
 ```
 
+### Runtime metrics
+
+Enable `PyNominalStreamOpts(track_metrics=True)` (or pass `track_metrics=True` to
+`NominalDatasetStream.create`) to emit dictionary enqueue staleness and Core
+request latency metrics. Metrics are disabled by default.
+
 ## Log streams
 
 `NominalLogStream` sends timestamped string messages and per-record string arguments to
 an existing dataset's log channel. It uses bounded native buffering: enqueue blocks
-when the byte budget is full, while releasing the Python GIL. Batch enqueue crosses
-into Rust once and merges common arguments with per-record overrides.
+when the byte budget is full, while releasing the Python GIL. Individual writes are
+automatically batched into requests by Rust.
 
 ```python
 import os
@@ -74,9 +80,10 @@ with (NominalLogStream(os.environ["NOMINAL_TOKEN"], opts)
       .with_file_fallback(Path("log-backup"))) as stream:
     stream.enqueue("engine", "2026-09-14T12:00:00.123456789Z", "started",
                    args={"engine": "left"})
-    stream.enqueue_batch("engine", [1_800_000_000_000_000_001, 1_800_000_000_000_000_002],
-                         ["running", "stopped"], args={"engine": "left"},
-                         per_record_args=[{"phase": "test"}, {"phase": "done"}])
+    stream.enqueue("engine", 1_800_000_000_000_000_001, "running",
+                   args={"engine": "left", "phase": "test"})
+    stream.enqueue("engine", 1_800_000_000_000_000_002, "stopped",
+                   args={"engine": "left", "phase": "done"})
     print(stream.flush().acknowledged_records)
 ```
 

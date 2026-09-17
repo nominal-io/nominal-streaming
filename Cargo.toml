@@ -15,9 +15,8 @@ conjure-http = "5"
 conjure-object = "5"
 conjure-runtime-rustls-platform-verifier = "0.2"
 crossbeam-channel = "0.5.15"
-derive_more = { version = "2", features = ["from"] }
 futures = "0.3"
-nominal-api = "0.1434.0"
+nominal-api = "0.1439.0"
 parking_lot = "0.12"
 prost = "0.13"
 reqwest = "0.13.4"
@@ -29,7 +28,7 @@ tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 url = "2.5.8"
 # default-features = false drops zstd's `legacy`, `arrays`, and `zdict_builder` features; the
 # request encoder needs none of them, and it trims the zstd-sys C build for every consumer.
-zstd = { version = "0.13", default-features = false }
+zstd = { version = "0.14", default-features = false }
 
 # Test dependencies
 test-log = { version = "0.2.20", features = ["trace"] }
@@ -37,7 +36,6 @@ tempfile = "3"
 
 # Allow workspace packages to access core package
 nominal-streaming = { path = "nominal-streaming" }
-py-nominal-streaming = { path = "py-nominal-streaming" }
 
 [profile.release]
 debug = true

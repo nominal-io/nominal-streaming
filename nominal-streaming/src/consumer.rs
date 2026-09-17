@@ -7,6 +7,7 @@ use std::sync::LazyLock;
 
 use apache_avro::types::Record;
 use apache_avro::types::Value;
+use conjure_object::BearerToken;
 use conjure_object::ResourceIdentifier;
 use nominal_api::tonic::google::protobuf::Timestamp;
 use nominal_api::tonic::io::nominal::scout::api::proto::array_points::ArrayType;
@@ -25,11 +26,14 @@ use prost::Message;
 use tracing::warn;
 
 use crate::client::NominalApiClients;
+use crate::client::WriteRequest;
 use crate::client::{self};
 use crate::listener::NominalStreamListener;
+use crate::metrics::RequestMetrics;
 use crate::types::AuthProvider;
 
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum ConsumerError {
     #[error("io error: {0}")]
     IoError(#[from] std::io::Error),
@@ -55,6 +59,7 @@ pub struct NominalCoreConsumer<A: AuthProvider> {
     handle: tokio::runtime::Handle,
     auth_provider: A,
     data_source_rid: ResourceIdentifier,
+    metrics: RequestMetrics,
 }
 
 impl<A: AuthProvider> NominalCoreConsumer<A> {
@@ -69,7 +74,49 @@ impl<A: AuthProvider> NominalCoreConsumer<A> {
             handle,
             auth_provider,
             data_source_rid,
+            metrics: RequestMetrics::default(),
         }
+    }
+
+    /// Piggyback completed request metrics on later data requests to the same dataset.
+    /// Pending metrics are bounded and best-effort; no extra requests are sent.
+    pub fn with_track_metrics(mut self, enabled: bool) -> Self {
+        self.metrics.set_enabled(enabled);
+        self
+    }
+
+    /// Name channels the caller emits through the stream as metrics rather than data, so
+    /// they are excluded from request latency measurements. The request metrics this
+    /// consumer emits itself are always excluded. Only relevant when metrics tracking is
+    /// enabled.
+    pub fn with_additional_metric_channels(
+        mut self,
+        channels: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Self {
+        self.metrics.set_additional_metric_channels(channels);
+        self
+    }
+
+    fn encode(
+        &self,
+        request: &WriteRequestNominal,
+        token: &BearerToken,
+    ) -> ConsumerResult<WriteRequest<'static>> {
+        Ok(client::encode_request(
+            &request.encode_to_vec(),
+            token,
+            &self.data_source_rid,
+        )?)
+    }
+
+    fn send(&self, request: WriteRequest<'static>) -> ConsumerResult<()> {
+        self.handle.block_on(async {
+            self.client
+                .send(request)
+                .await
+                .map_err(|e| ConsumerError::RequestError(format!("{e:?}")))
+        })?;
+        Ok(())
     }
 }
 
@@ -88,14 +135,11 @@ impl<T: AuthProvider + 'static> WriteRequestConsumer for NominalCoreConsumer<T> 
             .auth_provider
             .token()
             .ok_or(ConsumerError::MissingTokenError)?;
-        let write_request =
-            client::encode_request(&request.encode_to_vec(), &token, &self.data_source_rid)?;
-        self.handle.block_on(async {
-            self.client
-                .send(write_request)
-                .await
-                .map_err(|e| ConsumerError::RequestError(format!("{e:?}")))
-        })?;
+        let (request, measurement) = self.metrics.prepare(request);
+        let encoded = self.encode(&request, &token)?;
+        let in_flight = measurement.start();
+        self.send(encoded)?;
+        in_flight.complete();
         Ok(())
     }
 }

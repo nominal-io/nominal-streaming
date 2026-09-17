@@ -46,22 +46,22 @@ impl PyNominalLogStreamOpts {
                 "num_runtime_workers must be positive",
             ));
         }
+        let mut inner = NominalLogStreamOpts::default();
+        inner.max_request_bytes = max_request_bytes;
+        inner.max_batch_bytes = max_batch_bytes;
+        inner.max_buffered_bytes = max_buffered_bytes;
+        inner.max_records_per_batch = max_points_per_batch;
+        inner.max_request_delay = duration(max_request_delay_secs)?;
+        inner.num_upload_workers = num_upload_workers;
+        inner.base_api_url = base_api_url.into();
+        inner.request_timeout = duration(request_timeout_secs)?;
+        inner.max_retries = max_retries;
+        inner.initial_backoff = duration(initial_backoff_secs)?;
+        inner.max_backoff = duration(max_backoff_secs)?;
+        inner.max_retry_after = duration(max_retry_after_secs)?;
         Ok(Self {
             num_runtime_workers,
-            inner: NominalLogStreamOpts {
-                max_request_bytes,
-                max_batch_bytes,
-                max_buffered_bytes,
-                max_records_per_batch: max_points_per_batch,
-                max_request_delay: duration(max_request_delay_secs)?,
-                num_upload_workers,
-                base_api_url: base_api_url.into(),
-                request_timeout: duration(request_timeout_secs)?,
-                max_retries,
-                initial_backoff: duration(initial_backoff_secs)?,
-                max_backoff: duration(max_backoff_secs)?,
-                max_retry_after: duration(max_retry_after_secs)?,
-            },
+            inner,
         })
     }
     #[getter]

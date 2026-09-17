@@ -10,7 +10,6 @@ use nominal_streaming::log::NominalLogStreamOpts;
 use nominal_streaming::prelude::BearerToken;
 use nominal_streaming::prelude::ResourceIdentifier;
 use pyo3::exceptions::PyRuntimeError;
-use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
 use crate::log_runtime::LogRuntime;
@@ -175,44 +174,6 @@ impl PyNominalLogStream {
                 channel_name,
                 LogRecord::new(timestamp, value, args.unwrap_or_default()),
             )
-        })
-        .map_err(error)
-    }
-    #[pyo3(signature = (channel_name, timestamps, values, args=None, per_record_args=None))]
-    fn enqueue_batch(
-        &self,
-        py: Python<'_>,
-        channel_name: &str,
-        timestamps: Vec<i64>,
-        values: Vec<String>,
-        args: Option<HashMap<String, String>>,
-        per_record_args: Option<Vec<HashMap<String, String>>>,
-    ) -> PyResult<()> {
-        if timestamps.len() != values.len()
-            || per_record_args
-                .as_ref()
-                .is_some_and(|a| a.len() != values.len())
-        {
-            return Err(PyValueError::new_err(
-                "timestamps, values, and per_record_args must have equal lengths",
-            ));
-        }
-        let owned = self.stream()?;
-        py.detach(|| {
-            let common = args.unwrap_or_default();
-            let mut per_record = per_record_args.unwrap_or_default().into_iter();
-            let records = timestamps
-                .into_iter()
-                .zip(values)
-                .map(|(ts, msg)| {
-                    let mut args = common.clone();
-                    if let Some(extra) = per_record.next() {
-                        args.extend(extra);
-                    }
-                    LogRecord::new(ts, msg, args)
-                })
-                .collect();
-            owned.stream.enqueue_batch(channel_name, records)
         })
         .map_err(error)
     }

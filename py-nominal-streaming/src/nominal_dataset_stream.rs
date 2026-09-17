@@ -25,6 +25,12 @@ use crate::point::*;
 use crate::runtime::spawn_runtime_worker;
 use crate::runtime::StreamRuntime;
 
+/// Runtime metric channels emitted by `enqueue_from_dict`. Names match nominal-client's
+/// experimental backend, including the `enque_dict` spelling.
+pub const ENQUE_DICT_START_STALENESS: &str = "enque_dict_start_staleness";
+pub const ENQUE_DICT_END_STALENESS: &str = "enque_dict_end_staleness";
+pub const DICT_METRIC_CHANNELS: [&str; 2] = [ENQUE_DICT_START_STALENESS, ENQUE_DICT_END_STALENESS];
+
 static JSON_DUMPS: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
 
 fn json_dumps<'py>(py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
@@ -318,6 +324,12 @@ impl PyNominalDatasetStream {
         tags: Option<HashMap<String, String>>,
     ) -> PyResult<()> {
         let ts = parse_timestamp(timestamp);
+        let start = self
+            .builder
+            .opts
+            .as_ref()
+            .filter(|opts| opts.inner.track_metrics)
+            .map(|_| std::time::UNIX_EPOCH.elapsed().unwrap().as_nanos() as i128);
         // built once for the whole record rather than per channel
         let tags = into_tag_map(tags);
         let mut entries: Vec<(ChannelDescriptor, PointsType)> =
@@ -331,7 +343,24 @@ impl PyNominalDatasetStream {
             entries.push((ch, extract_single_points(ts, &v)?));
         }
 
-        self.push_many(py, entries)
+        self.push_many(py, entries)?;
+        if let Some(start) = start {
+            let end = std::time::UNIX_EPOCH.elapsed().unwrap().as_nanos() as i128;
+            self.push_many(
+                py,
+                vec![
+                    (
+                        ChannelDescriptor::new(ENQUE_DICT_START_STALENESS),
+                        single_double(ts, (start - i128::from(timestamp)) as f64 / 1e9),
+                    ),
+                    (
+                        ChannelDescriptor::new(ENQUE_DICT_END_STALENESS),
+                        single_double(ts, (end - i128::from(timestamp)) as f64 / 1e9),
+                    ),
+                ],
+            )?;
+        }
+        Ok(())
     }
 
     #[pyo3(

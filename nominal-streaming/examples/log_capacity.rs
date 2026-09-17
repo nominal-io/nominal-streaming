@@ -141,11 +141,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let batch_bytes = batch * (4096 + extra_args * 512 + extra_message_bytes * 4);
     let buffer_bytes = (batch_bytes * (workers + 1)).min(6 * 1024 * 1024 * 1024);
     let policy = std::env::var("BENCH_POLICY").unwrap_or_else(|_| "stress".into());
-    let opts = match policy.as_str() {
-        "defaults" => NominalLogStreamOpts {
-            base_api_url: url,
-            ..Default::default()
-        },
+    let mut opts = NominalLogStreamOpts::default();
+    opts.base_api_url = url;
+    match policy.as_str() {
+        "defaults" => {}
         "bounded" => {
             let request_mib: usize = std::env::var("BENCH_REQUEST_MIB")
                 .unwrap_or_else(|_| "8".into())
@@ -158,25 +157,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if !(16..=64).contains(&batch_mib) || !(64..=512).contains(&buffer_mib) {
                 return Err("bounded probe memory limits exceeded".into());
             }
-            NominalLogStreamOpts {
-                base_api_url: url,
-                max_request_bytes: request_mib * 1024 * 1024,
-                max_batch_bytes: batch_mib * 1024 * 1024,
-                max_buffered_bytes: buffer_mib * 1024 * 1024,
-                num_upload_workers: workers,
-                ..Default::default()
-            }
+            opts.max_request_bytes = request_mib * 1024 * 1024;
+            opts.max_batch_bytes = batch_mib * 1024 * 1024;
+            opts.max_buffered_bytes = buffer_mib * 1024 * 1024;
+            opts.num_upload_workers = workers;
         }
-        "stress" => NominalLogStreamOpts {
-            base_api_url: url,
-            max_request_bytes: batch_bytes,
-            max_records_per_batch: batch,
-            max_batch_bytes: batch_bytes,
-            max_buffered_bytes: buffer_bytes,
-            max_request_delay: Duration::from_secs(2),
-            num_upload_workers: workers,
-            ..Default::default()
-        },
+        "stress" => {
+            opts.max_request_bytes = batch_bytes;
+            opts.max_records_per_batch = batch;
+            opts.max_batch_bytes = batch_bytes;
+            opts.max_buffered_bytes = buffer_bytes;
+            opts.max_request_delay = Duration::from_secs(2);
+            opts.num_upload_workers = workers;
+        }
         _ => return Err("BENCH_POLICY must be defaults, bounded or stress".into()),
     };
     let batch = opts.max_records_per_batch;
