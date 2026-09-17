@@ -15,6 +15,7 @@ dev = [
   "maturin>=1.6,<2.0",
   "nominal>=1.70.0",
   "types-python-dateutil>=2.9.0.20250822",
+  "fastavro[snappy]>=1.12.0",
 ]
 
 [tool.ruff]

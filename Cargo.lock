@@ -1609,6 +1609,7 @@ version = "0.10.0"
 dependencies = [
  "apache-avro",
  "async-channel",
+ "bytes",
  "chrono",
  "conjure-error",
  "conjure-http",
@@ -1916,6 +1917,7 @@ dependencies = [
  "once_cell",
  "openssl",
  "pyo3",
+ "tempfile",
  "tokio",
  "tokio-util",
  "tracing",
