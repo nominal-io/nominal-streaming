@@ -141,11 +141,7 @@ pub fn async_conjure_client(service: &'static str, uri: Url) -> Result<Client, E
 pub type WriteRequest<'a> = Request<AsyncRequestBody<'a, BodyWriter>>;
 
 /// Zstd compression level for request bodies.
-///
-/// Level 1 compresses at speeds comparable to snappy while producing a substantially smaller body
-/// (snappy has no entropy coder), and every byte saved feeds straight into per-request upload
-/// time. Higher levels shrink telemetry payloads little further and cost disproportionate CPU.
-const ZSTD_LEVEL: i32 = 1;
+const ZSTD_LEVEL: i32 = 3;
 
 pub fn encode_request(
     write_request_bytes: &[u8],
