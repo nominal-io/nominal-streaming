@@ -1120,3 +1120,31 @@ fn points_len(points_type: &PointsType) -> usize {
         PointsType::StructPoints(points) => points.points.len(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[should_panic(expected = "mismatched types")]
+    fn test_mismatched_array_types_panics() {
+        // Keep both appends under one lock so no worker can flush between them.
+        let buffer = SeriesBuffer::new(100);
+        let mut guard = buffer.lock();
+        let descriptor = ChannelDescriptor::new("mixed_array");
+        guard.extend(
+            &descriptor,
+            vec![DoubleArrayPoint {
+                timestamp: None,
+                value: vec![1.0, 2.0],
+            }],
+        );
+        guard.extend(
+            &descriptor,
+            vec![StringArrayPoint {
+                timestamp: None,
+                value: vec!["a".into()],
+            }],
+        );
+    }
+}
