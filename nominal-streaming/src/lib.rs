@@ -172,6 +172,7 @@ let stream = NominalDatasetStreamBuilder::new()
     .build();
 ```
 */
+#![recursion_limit = "256"]
 
 pub mod client;
 pub mod consumer;
