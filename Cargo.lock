@@ -1938,6 +1938,7 @@ dependencies = [
  "once_cell",
  "openssl",
  "pyo3",
+ "pyo3-build-config",
  "tokio",
  "tokio-util",
  "tracing",
