@@ -33,6 +33,7 @@ use crate::metrics::RequestMetrics;
 use crate::types::AuthProvider;
 
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum ConsumerError {
     #[error("io error: {0}")]
     IoError(#[from] std::io::Error),

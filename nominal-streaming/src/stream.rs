@@ -46,7 +46,12 @@ use crate::types::ChannelDescriptor;
 use crate::types::IntoPoints;
 use crate::types::IntoTimestamp;
 
+/// Configuration for a [`NominalDatasetStream`].
+///
+/// Marked `#[non_exhaustive]` so new options can be added without a breaking change.
+/// Construct with [`NominalStreamOpts::default`] and customise via the `with_*` methods.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct NominalStreamOpts {
     pub max_points_per_record: usize,
     pub max_request_delay: Duration,
@@ -77,6 +82,46 @@ impl Default for NominalStreamOpts {
             track_metrics: false,
             additional_metric_channels: Vec::new(),
         }
+    }
+}
+
+impl NominalStreamOpts {
+    pub fn with_max_points_per_record(mut self, max_points_per_record: usize) -> Self {
+        self.max_points_per_record = max_points_per_record;
+        self
+    }
+
+    pub fn with_max_request_delay(mut self, max_request_delay: Duration) -> Self {
+        self.max_request_delay = max_request_delay;
+        self
+    }
+
+    pub fn with_max_buffered_requests(mut self, max_buffered_requests: usize) -> Self {
+        self.max_buffered_requests = max_buffered_requests;
+        self
+    }
+
+    pub fn with_request_dispatcher_tasks(mut self, request_dispatcher_tasks: usize) -> Self {
+        self.request_dispatcher_tasks = request_dispatcher_tasks;
+        self
+    }
+
+    pub fn with_base_api_url(mut self, base_api_url: impl Into<String>) -> Self {
+        self.base_api_url = base_api_url.into();
+        self
+    }
+
+    pub fn with_track_metrics(mut self, track_metrics: bool) -> Self {
+        self.track_metrics = track_metrics;
+        self
+    }
+
+    pub fn with_additional_metric_channels(
+        mut self,
+        channels: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Self {
+        self.additional_metric_channels = channels.into_iter().map(Into::into).collect();
+        self
     }
 }
 
