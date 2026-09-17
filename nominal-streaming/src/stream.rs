@@ -1036,7 +1036,9 @@ fn batch_processor(
         #[cfg(feature = "instrument")]
         bp_ns.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
-        thread::park_timeout(max_request_delay);
+        if running.load(Ordering::Acquire) {
+            thread::park_timeout(max_request_delay);
+        }
     }
     debug!("batch processor thread exiting");
 }
@@ -1045,6 +1047,8 @@ impl Drop for NominalDatasetStream {
     fn drop(&mut self) {
         debug!("starting drop for NominalDatasetStream");
         self.running.store(false, Ordering::Release);
+        self.primary_handle.thread().unpark();
+        self.secondary_handle.thread().unpark();
         loop {
             let count = self.unflushed_points.load(Ordering::Acquire);
             if count == 0 {
@@ -1152,6 +1156,66 @@ mod tests {
                 timestamp: None,
                 value: vec!["a".into()],
             }],
+        );
+    }
+}
+
+#[cfg(test)]
+mod shutdown_tests {
+    use super::*;
+
+    #[test]
+    fn drop_wakes_partial_batches_before_flush_deadline() {
+        #[derive(Debug)]
+        struct CountingConsumer(Arc<AtomicUsize>);
+        impl WriteRequestConsumer for CountingConsumer {
+            fn consume(
+                &self,
+                request: &WriteRequestNominal,
+            ) -> crate::consumer::ConsumerResult<()> {
+                let count: usize = request
+                    .series
+                    .iter()
+                    .map(|s| points_len(s.points.as_ref().unwrap().points_type.as_ref().unwrap()))
+                    .sum();
+                self.0.fetch_add(count, Ordering::Relaxed);
+                Ok(())
+            }
+        }
+        let accepted = Arc::new(AtomicUsize::new(0));
+        let stream = NominalDatasetStream::new_with_consumer(
+            CountingConsumer(accepted.clone()),
+            NominalStreamOpts {
+                max_request_delay: Duration::from_secs(60),
+                ..Default::default()
+            },
+        );
+        // Let empty processors enter their long idle wait.
+        thread::sleep(Duration::from_millis(100));
+        stream.enqueue(
+            &ChannelDescriptor::new("value"),
+            vec![DoublePoint {
+                timestamp: None,
+                value: 1.0,
+            }],
+        );
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        thread::spawn(move || {
+            drop(stream);
+            let _ = done_tx.send(());
+        });
+        done_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("drop waited for the flush deadline");
+        assert_eq!(accepted.load(Ordering::Relaxed), 1);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while Arc::strong_count(&accepted) != 1 && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(
+            Arc::strong_count(&accepted),
+            1,
+            "idle workers retained the consumer"
         );
     }
 }
