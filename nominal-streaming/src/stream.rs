@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::fmt::Debug;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
@@ -11,6 +10,7 @@ use std::time::Duration;
 use std::time::Instant;
 use std::time::UNIX_EPOCH;
 
+use ahash::AHashMap;
 use conjure_object::BearerToken;
 use conjure_object::ResourceIdentifier;
 use nominal_api::tonic::io::nominal::scout::api::proto::array_points::ArrayType;
@@ -738,7 +738,7 @@ impl NominalStringArrayWriter<'_> {
 }
 
 struct SeriesBuffer {
-    points: Mutex<HashMap<ChannelDescriptor, PointsType>>,
+    points: Mutex<AHashMap<ChannelDescriptor, PointsType>>,
     /// The total number of data points in the buffer.
     ///
     /// To ensure that `count` stays in sync with the contents of the `HashMap`,
@@ -750,7 +750,7 @@ struct SeriesBuffer {
 }
 
 struct SeriesBufferGuard<'sb> {
-    sb: MutexGuard<'sb, HashMap<ChannelDescriptor, PointsType>>,
+    sb: MutexGuard<'sb, AHashMap<ChannelDescriptor, PointsType>>,
     count: &'sb AtomicUsize,
 }
 
@@ -902,7 +902,7 @@ impl PartialOrd for SeriesBuffer {
 impl SeriesBuffer {
     fn new(capacity: usize) -> Self {
         Self {
-            points: Mutex::new(HashMap::new()),
+            points: Mutex::new(AHashMap::default()),
             count: AtomicUsize::new(0),
             flush_time: AtomicU64::new(0),
             condvar: Condvar::new(),
