@@ -53,6 +53,8 @@ use crate::types::IntoTimestamp;
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct NominalStreamOpts {
+    /// Maximum submitted data points per output request. Must be greater than zero.
+    /// Oversized buffers are split by the background processor.
     pub max_points_per_record: usize,
     pub max_request_delay: Duration,
     pub max_buffered_requests: usize,
@@ -336,10 +338,16 @@ impl NominalDatasetStream {
         NominalDatasetStreamBuilder::new()
     }
 
+    /// # Panics
+    /// Panics if `opts.max_points_per_record` is zero.
     pub fn new_with_consumer<C: WriteRequestConsumer + 'static>(
         consumer: C,
         opts: NominalStreamOpts,
     ) -> Self {
+        assert!(
+            opts.max_points_per_record > 0,
+            "max_points_per_record must be greater than zero"
+        );
         let primary_buffer = Arc::new(SeriesBuffer::new(opts.max_points_per_record));
         let secondary_buffer = Arc::new(SeriesBuffer::new(opts.max_points_per_record));
 
@@ -504,10 +512,10 @@ impl NominalDatasetStream {
     /// thousands of channels sharing a timestamp -- that is the difference between one buffer
     /// insertion and thousands of them.
     ///
-    /// A batch larger than `max_points_per_record` is admitted in several pieces rather than all at
-    /// once, so one call can neither build a request larger than that limit nor hold the buffer lock
-    /// for longer than a full record's worth of work. A batch that already fits -- the case this
-    /// exists for -- is admitted whole, and its channels are guaranteed to share a request.
+    /// A batch larger than `max_points_per_record` is admitted in groups of channel entries.
+    /// An individual oversized entry is admitted whole; the background processor splits output
+    /// requests to the configured limit. Fitting buffered records are sent unchanged. Concurrent
+    /// producers can overfill a buffer, in which case even a fitting batch may span requests.
     pub fn enqueue_many(&self, entries: Vec<(ChannelDescriptor, PointsType)>) {
         let total: usize = entries.iter().map(|(_, points)| points_len(points)).sum();
 
@@ -528,7 +536,7 @@ impl NominalDatasetStream {
             }
 
             // A single entry over the limit still goes through whole: the buffer admits an oversized
-            // batch into an empty buffer rather than splitting one channel's points across requests.
+            // batch into an empty buffer. The background processor splits output requests.
             chunk_count += count;
             chunk.push((channel_descriptor, points));
         }
@@ -912,8 +920,8 @@ impl SeriesBuffer {
 
     /// Checks if the buffer has enough capacity to add new points.
     /// Note that the buffer can be larger than MAX_POINTS_PER_RECORD if a single batch of points
-    /// larger than MAX_POINTS_PER_RECORD is inserted while the buffer is empty. This avoids needing
-    /// to handle splitting batches of points across multiple requests.
+    /// larger than MAX_POINTS_PER_RECORD is inserted while the buffer is empty. Output request
+    /// splitting is handled separately by the background processor.
     fn has_capacity(&self, new_points_count: usize) -> bool {
         let count = self.count.load(Ordering::Acquire);
         count == 0 || count + new_points_count <= self.max_capacity
@@ -1017,21 +1025,20 @@ fn batch_processor(
             debug!("notified one waiting thread after clearing points buffer");
         }
 
-        let write_request = WriteRequestNominal {
+        for_each_record(
             series,
-            session_name: None,
-        };
-
-        if request_chan.is_full() {
-            debug!("ready to queue request but request channel is full");
-        }
-        let rep = request_chan.send((write_request, point_count));
-        debug!("queued request for processing");
-        if rep.is_err() {
-            error!("failed to send request to dispatcher");
-        } else {
-            debug!("finished submitting request");
-        }
+            point_count,
+            points_buffer.max_capacity,
+            |series, count| {
+                let request = WriteRequestNominal {
+                    series,
+                    session_name: None,
+                };
+                if let Err(error) = request_chan.send((request, count)) {
+                    error!("failed to send request to dispatcher: {error}");
+                }
+            },
+        );
 
         #[cfg(feature = "instrument")]
         bp_ns.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
@@ -1112,6 +1119,73 @@ fn request_dispatcher<C: WriteRequestConsumer + 'static>(
     );
 }
 
+/// Split detached data without holding the buffer lock; sending applies queue backpressure.
+fn for_each_record(
+    series: Vec<Series>,
+    count: usize,
+    cap: usize,
+    mut send: impl FnMut(Vec<Series>, usize),
+) {
+    if count <= cap {
+        send(series, count);
+        return;
+    }
+    let mut record = Vec::new();
+    let mut count = 0;
+    for mut series in series {
+        let points = series.points.take().unwrap().points_type.unwrap();
+        for_each_points_chunk(points, cap, |points| {
+            let n = points_len(&points);
+            if count > 0 && count + n > cap {
+                send(std::mem::take(&mut record), count);
+                count = 0;
+            }
+            record.push(Series {
+                channel: series.channel.clone(),
+                tags: series.tags.clone(),
+                points: Some(Points {
+                    points_type: Some(points),
+                }),
+            });
+            count += n;
+        });
+    }
+    if !record.is_empty() {
+        send(record, count);
+    }
+}
+
+/// Move oversized inputs into one chunk at a time, leaving fitting inputs untouched.
+fn for_each_points_chunk(points: PointsType, cap: usize, mut submit: impl FnMut(PointsType)) {
+    if points_len(&points) <= cap {
+        submit(points);
+        return;
+    }
+
+    fn submit_chunks<T>(points: Vec<T>, cap: usize, mut submit: impl FnMut(PointsType))
+    where
+        Vec<T>: IntoPoints,
+    {
+        let mut points = points.into_iter();
+        while points.len() > 0 {
+            submit(points.by_ref().take(cap).collect::<Vec<_>>().into_points());
+        }
+    }
+
+    match points {
+        PointsType::DoublePoints(p) => submit_chunks(p.points, cap, submit),
+        PointsType::IntegerPoints(p) => submit_chunks(p.points, cap, submit),
+        PointsType::Uint64Points(p) => submit_chunks(p.points, cap, submit),
+        PointsType::StringPoints(p) => submit_chunks(p.points, cap, submit),
+        PointsType::StructPoints(p) => submit_chunks(p.points, cap, submit),
+        PointsType::ArrayPoints(p) => match p.array_type {
+            Some(ArrayType::DoubleArrayPoints(p)) => submit_chunks(p.points, cap, submit),
+            Some(ArrayType::StringArrayPoints(p)) => submit_chunks(p.points, cap, submit),
+            None => unreachable!("empty array points fit in one chunk"),
+        },
+    }
+}
+
 fn points_len(points_type: &PointsType) -> usize {
     match points_type {
         PointsType::DoublePoints(points) => points.points.len(),
@@ -1130,6 +1204,26 @@ fn points_len(points_type: &PointsType) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn point_chunks_preserve_contents_and_order() {
+        for count in [0, 1, 3, 8] {
+            let points = (0..count)
+                .map(|i| DoublePoint {
+                    timestamp: Some(i.into_timestamp()),
+                    value: i as f64,
+                })
+                .collect::<Vec<_>>()
+                .into_points();
+            let buffer = SeriesBuffer::new(usize::MAX);
+            let channel = ChannelDescriptor::new("value");
+            for_each_points_chunk(points.clone(), 3, |chunk| {
+                assert!(points_len(&chunk) <= 3);
+                buffer.lock().extend(&channel, chunk);
+            });
+            assert_eq!(buffer.lock().sb.get(&channel), Some(&points));
+        }
+    }
 
     #[test]
     #[should_panic(expected = "mismatched types")]
