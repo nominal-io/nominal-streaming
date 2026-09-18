@@ -13,14 +13,14 @@ jobs:
   build-and-test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
         with:
           version: "0.8.x"
           enable-cache: true
           cache-dependency-glob: "uv.lock"
-          python-version: ${{ matrix.python-version }}
+          python-version: "3.14"
       - name: Check uv lockfile metadata
         run: |
           if ! uv lock --check; then 
@@ -28,7 +28,7 @@ jobs:
             exit 1
           fi
       - name: Setup Rust Toolchain
-        uses: actions-rust-lang/setup-rust-toolchain@v1
+        uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
         with:
           toolchain: stable
           rustflags: ""
@@ -46,3 +46,50 @@ jobs:
       - name: Static type check
         run: |
           just python::check-types-all
+          uv run --group test mypy --strict py-nominal-streaming/tests/typing/batch_inputs.py
+
+  wheel-tests:
+    name: wheel-tests (${{ matrix.feature }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { feature: python310, floor: "3.10" }
+          - { feature: python311, floor: "3.11" }
+    env:
+      ABI_FEATURE: ${{ matrix.feature }}
+      PYTHON_FLOOR: ${{ matrix.floor }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+        with:
+          version: "0.8.x"
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+          python-version: ${{ matrix.floor }}
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+        with:
+          toolchain: nightly
+          rustflags: ""
+      - name: Build ABI wheel
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv python install "$PYTHON_FLOOR" 3.14
+          uvx --from 'maturin>=1.6,<2.0' maturin build --release --out "$RUNNER_TEMP/wheels" --manifest-path py-nominal-streaming/Cargo.toml --no-default-features --features "$ABI_FEATURE" -i "$(uv python find "$PYTHON_FLOOR")"
+          uv export --locked --only-group test --format requirements-txt --output-file "$RUNNER_TEMP/test-requirements.txt"
+      - name: Test wheel on minimum and current Python
+        shell: bash
+        run: |
+          set -euo pipefail
+          for runtime in "$PYTHON_FLOOR" 3.14; do
+            echo "::group::Test $ABI_FEATURE on Python $runtime"
+            venv="$RUNNER_TEMP/wheel-$runtime"
+            uv venv "$venv" --python "$runtime"
+            uv pip install --python "$venv/bin/python" "$RUNNER_TEMP/wheels"/*.whl
+            "$venv/bin/python" -I py-nominal-streaming/tests/check_wheel.py "$ABI_FEATURE"
+            uv pip install --python "$venv/bin/python" --requirements "$RUNNER_TEMP/test-requirements.txt"
+            "$venv/bin/python" -I -m unittest discover -s py-nominal-streaming/tests -v
+            echo "::endgroup::"
+          done

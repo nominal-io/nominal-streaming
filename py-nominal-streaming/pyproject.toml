@@ -24,6 +24,9 @@ dependencies = [
   "python-dateutil>=0.0.0",
 ]
 
+[project.optional-dependencies]
+numpy = ["numpy>=1.24"]
+
 [build-system]
 requires = ["maturin>=1.6,<2.0"]
 build-backend = "maturin"
@@ -36,10 +39,7 @@ profile = "release"
 strip = true
 manifest-path = "./Cargo.toml"
 
-features = [
-  "pyo3/extension-module",  # Required on unix platforms to prevent linking against libpython.so
-  "pyo3/abi3-py310"         # Sets the exact minimum python version supported within multi-version wheels
-]
+features = ["pyo3/extension-module"]
 
 # Tell maturin where the python code lives.
 # All files under this directory will be included in the wheel.

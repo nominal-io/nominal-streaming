@@ -11,9 +11,17 @@ repository = "https://github.com/nominal-io/nominal-streaming"
 name = "_nominal_streaming"
 crate-type = ["cdylib"]
 
+[features]
+default = ["python310"]
+python310 = ["pyo3/abi3-py310"]
+python311 = ["pyo3/abi3-py311"]
+
+[build-dependencies]
+pyo3-build-config = "0.29"
+
 [dependencies]
-# PyO3 with a stable ABI across Python 3.10+.
-pyo3 = { version = "0.29", features = ["extension-module", "abi3-py310", "time"] }
+# Select the stable ABI floor through the python310 or python311 feature.
+pyo3 = { version = "0.29", features = ["extension-module", "time"] }
 
 nominal-api = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "time"] }

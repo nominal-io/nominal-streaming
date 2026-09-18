@@ -55,17 +55,6 @@ fn extract_single_points(timestamp: Timestamp, value: &Bound<'_, PyAny>) -> PyRe
     }
 }
 
-fn extract_series_points(
-    timestamps: Vec<Timestamp>,
-    values: &Bound<'_, PyAny>,
-) -> PyResult<PointsType> {
-    match classify_values(values)? {
-        ValueKind::Floats => series_doubles(timestamps, extract_vec_f64(values)?),
-        ValueKind::Ints => series_ints(timestamps, extract_vec_i64(values)?),
-        ValueKind::Strings => series_strings(timestamps, extract_vec_string(values)?),
-    }
-}
-
 /// The PyNominalDatasetStream is a thin layer bound to python that handles two main concerns:
 /// - Configuring and managing a tokio runtime for running streaming code
 /// - Passing data from python, converting it to standard rust types, and pushing into streaming code.
@@ -306,11 +295,11 @@ impl PyNominalDatasetStream {
         &self,
         py: Python<'_>,
         channel_name: &str,
-        timestamps: Vec<u64>,
+        timestamps: &Bound<'_, PyAny>,
         values: &Bound<'_, PyAny>,
         tags: Option<HashMap<String, String>>,
     ) -> PyResult<()> {
-        let tss = extract_vec_ts(timestamps);
+        let tss = extract_vec_ts(extract_timestamp_input(timestamps)?);
         let ch = description_with_tags(channel_name, tags);
         self.push_one(py, ch, extract_series_points(tss, values)?)
     }

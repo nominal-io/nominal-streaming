@@ -61,3 +61,69 @@ if __name__ == "__main__":
 Enable `PyNominalStreamOpts(track_metrics=True)` (or pass `track_metrics=True` to
 `NominalDatasetStream.create`) to emit dictionary enqueue staleness and Core
 request latency metrics. Metrics are disabled by default.
+
+## NumPy batches
+
+NumPy is optional: install `nominal-streaming[numpy]`, or use the NumPy installation
+already provided by your application. Pass arrays directly to `enqueue_batch`:
+
+```python
+import numpy as np
+
+timestamps = np.array([1_700_000_000_000_000_000, 1_700_000_000_000_000_001], dtype="uint64")
+values = np.array([1.25, 2.5], dtype="float64")
+stream.enqueue_batch("temperature", timestamps, values)
+```
+
+Python 3.11+ wheels copy native-endian, aligned, one-dimensional NumPy arrays into
+Rust-owned memory without creating a Python object for every element. The fast path
+supports `int64`/`uint64` timestamps and `float32`/`float64`/`int64`/`uint64` values,
+including strided, reversed, and read-only views. Integer values retain the API's
+existing conversion to doubles. Inputs can be changed or freed after the call returns.
+
+Other dtypes, unaligned or non-native-endian arrays, and ndarray subclasses use the
+existing element-wise conversion. Masked values and datetime/timedelta values still
+require explicit conversion. Lists and tuples continue to work without NumPy.
+
+Python 3.10 wheels retain the element-wise path and emit one `RuntimeWarning` per
+process on the first array batch. On that build, `.tolist()` can be faster; on an
+accelerated build, pass supported arrays directly. Python 3.11+ installers prefer
+the accelerated wheel when both variants are available.
+
+### Building and testing the two wheels
+
+Both variants use the same sources and public API. Build them separately:
+
+```sh
+maturin build --release -m py-nominal-streaming/Cargo.toml --no-default-features --features python310
+maturin build --release -m py-nominal-streaming/Cargo.toml --no-default-features --features python311
+```
+
+The output tags are `cp310-abi3` and `cp311-abi3`, respectively. The default source
+build targets Python 3.10. Cargo features are additive: enabling both selects the
+older ABI and disables buffer acceleration, so use `--no-default-features` for the
+Python 3.11 variant. NumPy is never needed to import the library or use lists.
+
+CI installs each built wheel in a clean environment, checks its compiled
+capability, exercises lists without NumPy, and runs the batch regression tests with
+NumPy on the minimum and newer Python runtimes. To run tests locally after installing
+a wheel and the `test` dependency group:
+
+```sh
+python -m unittest discover -s py-nominal-streaming/tests -v
+```
+
+### Measuring enqueue performance
+
+With a wheel and the `test` dependencies installed:
+
+```sh
+python py-nominal-streaming/benchmarks/enqueue_batch.py
+```
+
+This compares direct arrays, pre-existing lists, and `.tolist()` plus the enqueue
+call. It reports all samples and medians and reads the local Avro output to verify
+point counts and value checksums. It measures the complete public enqueue call with
+buffer capacity available; startup and draining are excluded. It does **not** measure
+network throughput. Downstream serialization, compression, and upload backpressure
+can limit the overall streaming improvement.

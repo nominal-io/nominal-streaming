@@ -9,10 +9,15 @@ use nominal_streaming::prelude::*;
 use nominal_streaming::types::IntoPoints;
 use pyo3::exceptions::PyTypeError;
 use pyo3::exceptions::PyValueError;
+use pyo3::intern;
 use pyo3::prelude::*;
 use pyo3::types::PyAny;
 use pyo3::types::PyAnyMethods;
+use pyo3::types::PyList;
 use pyo3::types::PySequence;
+use pyo3::types::PyTuple;
+
+pyo3::create_exception!(_nominal_streaming, _TimestampTypeError, PyTypeError);
 
 /// Convert a integral nanosecond timestamp into google.protobuf.Timestamp.
 pub fn parse_timestamp(timestamp: u64) -> Timestamp {
@@ -72,7 +77,22 @@ fn make_points<P, V>(
         .collect())
 }
 
-/// Generic method to convert a pysequence into a homogenous vector of rust data
+/// Length of a values argument, rejecting anything we cannot index element by element.
+///
+/// Deliberately not `cast::<PySequence>()`: that requires registration as
+/// `collections.abc.Sequence`, which a numpy array is not, so it rejected the most common way of
+/// holding a column of values. `__len__` plus `__getitem__` is the property actually needed, and
+/// requiring `__len__` still rejects one-shot iterables such as generators, which cannot be
+/// classified and then re-read.
+fn indexable_len(values: &Bound<'_, PyAny>) -> PyResult<usize> {
+    values.len().map_err(|_| {
+        PyTypeError::new_err(
+            "values must be a sized, indexable sequence (list, tuple, or numpy array)",
+        )
+    })
+}
+
+/// Generic method to convert an indexable python object into a homogenous vector of rust data
 fn extract_vec_generic<'py, T>(
     values: &Bound<'py, PyAny>,
     typename_for_error: &'static str,
@@ -80,15 +100,22 @@ fn extract_vec_generic<'py, T>(
 where
     T: FromPyObjectOwned<'py>,
 {
-    let seq = values.cast::<PySequence>()?;
-    let len = seq.len()?;
+    let len = indexable_len(values)?;
     let mut out = Vec::with_capacity(len);
+
+    // Keep the faster sequence access for registered sequences, but use one
+    // extraction loop. ABC membership controls access, never validation.
+    let sequence = values.cast::<PySequence>().ok();
     for i in 0..len {
-        let item = seq.get_item(i)?;
-        let value: T = item
-            .extract()
-            .map_err(|_| PyTypeError::new_err(format!("Values must be {}", typename_for_error)))?;
-        out.push(value);
+        let item = match sequence {
+            Some(seq) => seq.get_item(i)?,
+            None => values.get_item(i)?,
+        };
+        out.push(
+            item.extract().map_err(|_| {
+                PyTypeError::new_err(format!("Values must be {}", typename_for_error))
+            })?,
+        );
     }
     Ok(out)
 }
@@ -145,7 +172,7 @@ pub fn single_string_array(ts: Timestamp, value: Vec<String>) -> PointsType {
 
 // ---- Series (timestamps + values) constructors ------------------------------
 
-pub fn series_doubles(tss: Vec<Timestamp>, vals: Vec<f64>) -> PyResult<PointsType> {
+fn series_doubles(tss: Vec<Timestamp>, vals: Vec<f64>) -> PyResult<PointsType> {
     Ok(make_points(tss, vals, |ts, v| DoublePoint {
         timestamp: Some(ts),
         value: v,
@@ -153,7 +180,7 @@ pub fn series_doubles(tss: Vec<Timestamp>, vals: Vec<f64>) -> PyResult<PointsTyp
     .into_points())
 }
 
-pub fn series_ints(tss: Vec<Timestamp>, vals: Vec<i64>) -> PyResult<PointsType> {
+fn series_ints(tss: Vec<Timestamp>, vals: Vec<i64>) -> PyResult<PointsType> {
     Ok(make_points(tss, vals, |ts, v| IntegerPoint {
         timestamp: Some(ts),
         value: v,
@@ -161,7 +188,7 @@ pub fn series_ints(tss: Vec<Timestamp>, vals: Vec<i64>) -> PyResult<PointsType> 
     .into_points())
 }
 
-pub fn series_strings(tss: Vec<Timestamp>, vals: Vec<String>) -> PyResult<PointsType> {
+fn series_strings(tss: Vec<Timestamp>, vals: Vec<String>) -> PyResult<PointsType> {
     Ok(make_points(tss, vals, |ts, v| StringPoint {
         timestamp: Some(ts),
         value: v,
@@ -171,29 +198,71 @@ pub fn series_strings(tss: Vec<Timestamp>, vals: Vec<String>) -> PyResult<Points
 
 // ---- Python collection helpers ----------------------------------------------
 
-pub enum ValueKind {
-    Floats,
-    Ints,
-    Strings,
+/// Reject array-likes whose elements would be silently reinterpreted rather than written.
+///
+/// Only reachable for objects carrying numpy's attributes; a list or tuple has neither, and the
+/// caller skips this for them. Both cases below otherwise succeed and write plausible, wrong data,
+/// which is worse than refusing.
+fn reject_lossy_arrays(values: &Bound<'_, PyAny>) -> PyResult<()> {
+    if let Ok(dtype) = values.getattr(intern!(values.py(), "dtype")) {
+        if let Ok(kind) = dtype.getattr(intern!(values.py(), "kind")) {
+            let kind: String = kind.extract().unwrap_or_default();
+            // 'M' is datetime64, 'm' is timedelta64. Both convert to a number, so passing one as
+            // values stores an epoch count and looks like it worked.
+            if kind == "M" || kind == "m" {
+                return Err(PyTypeError::new_err(
+                    "values has a datetime64/timedelta64 dtype; these would be written as raw \
+                     epoch counts. Pass the timestamps as the `timestamps` argument, or convert \
+                     explicitly with `.astype('int64')` if the count is what you want.",
+                ));
+            }
+        }
+    }
+
+    // A masked array converts masked elements to NaN on read, so a gap becomes a real data point.
+    if let Ok(mask) = values.getattr(intern!(values.py(), "mask")) {
+        let any_masked = mask
+            .call_method0(intern!(values.py(), "any"))
+            .and_then(|m| m.extract::<bool>())
+            .unwrap_or(false);
+        if any_masked {
+            return Err(PyTypeError::new_err(
+                "values is a masked array with masked elements, which would be written as NaN. \
+                 Choose explicitly: `.filled(float('nan'))` to write NaN, or `.compressed()` with \
+                 matching timestamps to drop them.",
+            ));
+        }
+    }
+
+    Ok(())
 }
 
-/// Peek the first element to decide the homogeneous value kind.
-/// (Full extraction to Vec<T> will still enforce homogeneity.)
-pub fn classify_values(values: &Bound<'_, PyAny>) -> PyResult<ValueKind> {
-    let seq = values.cast::<PySequence>()?;
-    let len = seq.len()?;
-    if len == 0 {
+/// Validate and convert one batch, preserving float-first scalar classification.
+pub fn extract_series_points(
+    timestamps: Vec<Timestamp>,
+    values: &Bound<'_, PyAny>,
+) -> PyResult<PointsType> {
+    if indexable_len(values)? == 0 {
         return Err(pyo3::exceptions::PyValueError::new_err(
             "values cannot be empty",
         ));
     }
-    let first = seq.get_item(0)?;
+    // Only exact built-ins are known to have no dtype or mask. Subclasses and
+    // registered sequences still need validation, regardless of their access path.
+    if !values.is_exact_instance_of::<PyList>() && !values.is_exact_instance_of::<PyTuple>() {
+        reject_lossy_arrays(values)?;
+    }
+    let first = values.get_item(0)?;
     if first.extract::<f64>().is_ok() {
-        Ok(ValueKind::Floats)
+        #[cfg(Py_3_11)]
+        if let Some(values) = crate::numeric_buffer::floats(values)? {
+            return series_doubles(timestamps, values);
+        }
+        series_doubles(timestamps, extract_vec_generic(values, "floats")?)
     } else if first.extract::<i64>().is_ok() {
-        Ok(ValueKind::Ints)
+        series_ints(timestamps, extract_vec_generic(values, "ints")?)
     } else if first.extract::<String>().is_ok() {
-        Ok(ValueKind::Strings)
+        series_strings(timestamps, extract_vec_generic(values, "strings")?)
     } else {
         Err(pyo3::exceptions::PyTypeError::new_err(
             "values must be all floats, ints, or strings",
@@ -201,18 +270,23 @@ pub fn classify_values(values: &Bound<'_, PyAny>) -> PyResult<ValueKind> {
     }
 }
 
-pub fn extract_vec_f64(values: &Bound<'_, PyAny>) -> PyResult<Vec<f64>> {
-    extract_vec_generic(values, "floats")
-}
-
-pub fn extract_vec_i64(values: &Bound<'_, PyAny>) -> PyResult<Vec<i64>> {
-    extract_vec_generic(values, "ints")
-}
-
-pub fn extract_vec_string(values: &Bound<'_, PyAny>) -> PyResult<Vec<String>> {
-    extract_vec_generic(values, "strings")
-}
-
 pub fn extract_vec_ts(timestamps: Vec<u64>) -> Vec<Timestamp> {
     timestamps.into_iter().map(parse_timestamp).collect()
+}
+
+/// Distinguish timestamp extraction failures from value errors in the Python wrapper.
+pub fn extract_timestamp_input(values: &Bound<'_, PyAny>) -> PyResult<Vec<u64>> {
+    #[cfg(Py_3_11)]
+    if let Some(timestamps) = crate::numeric_buffer::timestamps(values)? {
+        return Ok(timestamps);
+    }
+    values.extract().map_err(|error: PyErr| {
+        if error.is_instance_of::<PyTypeError>(values.py()) {
+            let timestamp_error = _TimestampTypeError::new_err(error.to_string());
+            timestamp_error.set_cause(values.py(), Some(error));
+            timestamp_error
+        } else {
+            error
+        }
+    })
 }

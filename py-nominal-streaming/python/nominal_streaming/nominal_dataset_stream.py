@@ -36,37 +36,56 @@ from __future__ import annotations
 
 import datetime
 import logging
+import operator
 import pathlib
 import signal
 import threading
+import warnings
 from types import TracebackType
-from typing import Any, Mapping, Sequence, Type
+from typing import TYPE_CHECKING, Any, Mapping, Sequence, SupportsIndex, Type
 
 import dateutil
 from typing_extensions import Self
 
 from nominal_streaming._nominal_streaming import (
+    _BUFFER_FAST_PATH,
     PyNominalDatasetStream,
     PyNominalStreamOpts,
+    _TimestampTypeError,
 )
 
+if TYPE_CHECKING:
+    import numpy as np
+    from numpy.typing import NDArray
+
 logger = logging.getLogger(__name__)
+_warned_slow_batch = False
 
 TimestampLike = str | int | datetime.datetime
 DataType = int | float | str
 
 
-def _parse_timestamp(ts: str | int | datetime.datetime) -> int:
+def _parse_timestamp(ts: TimestampLike | SupportsIndex) -> int:
     if isinstance(ts, int):
         return ts
     elif isinstance(ts, datetime.datetime):
         secs = ts.astimezone(datetime.timezone.utc).timestamp()
         return int(secs * 1e9)
-    else:
+    elif isinstance(ts, str):
         # TODO(drake): by involving dateutil, this chops off any nano level precision provided
         #              in the timestamp. Update to not lose precision when converting to absolute nanos.
         secs = dateutil.parser.parse(ts).astimezone(datetime.timezone.utc).timestamp()
         return int(secs * 1e9)
+
+    # numpy integers are the common case here: `np.int64` is not an `int` subclass (unlike
+    # `np.float64`, which does subclass `float`), so the isinstance check above misses it.
+    # Anything implementing __index__ is an integer by Python's own definition.
+    try:
+        return operator.index(ts)
+    except TypeError:
+        raise TypeError(
+            f"timestamp must be integral nanoseconds, a datetime, or a string; got {type(ts).__name__}"
+        ) from None
 
 
 class NominalDatasetStream:
@@ -296,8 +315,8 @@ class NominalDatasetStream:
     def enqueue_batch(
         self,
         channel_name: str,
-        timestamps: Sequence[TimestampLike],
-        values: Sequence[DataType],
+        timestamps: Sequence[TimestampLike] | NDArray[np.integer[Any]],
+        values: Sequence[DataType] | NDArray[np.integer[Any] | np.floating[Any] | np.bool_ | np.str_],
         tags: Mapping[str, str] | None = None,
     ) -> None:
         """Add a sequence of messages to the queue to upload to Nominal.
@@ -308,24 +327,45 @@ class NominalDatasetStream:
         NOTE: assumes that all values have the same type as the first value in the batch--
               ensure that any provided value arrays are homogenously typed
 
+        Lists, tuples and numpy arrays are accepted. Python 3.11+ wheels copy supported numeric
+        arrays directly into Rust-owned memory; pass arrays directly rather than using `.tolist()`.
+        Python 3.10 wheels use element-wise conversion and warn once when an array batch is used.
+
+        Numpy arrays whose elements would be silently reinterpreted are rejected rather than
+        written: `datetime64`/`timedelta64` values (which would become raw epoch counts) and
+        masked arrays with masked elements (which would become NaN). Convert explicitly if that
+        is what you want.
+
         Args:
             channel_name: Name of the channel to upload data for.
             timestamps: Absolute UTC timestamps of the data being uploaded.
             values: Values to write to the specified channel.
             tags: Key-value tags associated with the data being uploaded.
         """
+        global _warned_slow_batch
+        if (
+            not _BUFFER_FAST_PATH
+            and not _warned_slow_batch
+            and (hasattr(timestamps, "dtype") or hasattr(values, "dtype"))
+        ):
+            _warned_slow_batch = True
+            warnings.warn(
+                "Numeric array acceleration is unavailable in this build. Use Python 3.11+ "
+                "with an accelerated wheel for faster enqueue_batch calls.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
         normalized_tags = {**tags} if tags else None
         try:
-            # Fast path: a sequence of integral nanoseconds needs no work here, and Rust already
-            # validates every element while extracting it. Rebuilding the sequence in Python costs
-            # more than the rest of the call at any real batch size.
-            # The ignore is the point of the fast path: we hand Rust the caller's sequence and use
-            # its type check as ours, rather than paying for a second one in Python.
             self._impl.enqueue_batch(channel_name, timestamps, values, normalized_tags)  # type: ignore[arg-type]
-        except TypeError:
-            # Some timestamp (or value) was not integral; normalize and let Rust re-check. Nothing
-            # was enqueued by the attempt above -- extraction happens before anything is written.
-            self._impl.enqueue_batch(channel_name, [_parse_timestamp(ts) for ts in timestamps], values, normalized_tags)
+        except _TimestampTypeError:
+            # Only timestamp extraction requests normalization. Value errors propagate unchanged,
+            # and extraction always completes before any points are enqueued.
+            try:
+                normalized_timestamps = [_parse_timestamp(ts) for ts in timestamps]
+            except (TypeError, ValueError) as error:
+                raise TypeError(f"could not interpret `timestamps`: {error}") from error
+            self._impl.enqueue_batch(channel_name, normalized_timestamps, values, normalized_tags)
 
     def enqueue_from_dict(
         self,

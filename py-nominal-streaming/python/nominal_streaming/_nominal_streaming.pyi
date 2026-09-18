@@ -1,12 +1,35 @@
+"""Type declarations for the native streaming extension.
+
+Application code should use ``nominal_streaming.NominalDatasetStream``, whose
+Python wrapper also normalizes datetime and string timestamps. Native methods
+accept integer nanoseconds since the Unix epoch, from 0 through 2**64 - 1.
+NumPy imports here describe optional array inputs; this stub is not executed
+at runtime and does not make NumPy a runtime requirement.
+"""
+
 from __future__ import annotations
 
 import pathlib
 from types import TracebackType
 from typing import Any, Mapping, Sequence, Type
 
+import numpy as np
+from numpy.typing import NDArray
 from typing_extensions import Self
 
 from nominal_streaming.nominal_dataset_stream import DataType
+
+# Private build capability read by the Python wrapper, not a runtime switch.
+# True for the Python 3.11+ ABI build; false for the Python 3.10 ABI build,
+# even when that fallback wheel is loaded on a newer interpreter.
+_BUFFER_FAST_PATH: bool
+
+class _TimestampTypeError(TypeError):
+    """Private signal for the wrapper to normalize batch timestamps and retry.
+
+    Marks timestamp extraction TypeErrors only; value errors and timestamp
+    overflows propagate separately. Applications should catch TypeError.
+    """
 
 class PyNominalStreamOpts:
     """Configuration options for Nominal data streaming.
@@ -34,7 +57,7 @@ class PyNominalStreamOpts:
             max_request_delay_secs: Maximum delay before a request is sent, even if it results in a partial request.
             max_buffered_requests: Maximum number of buffered requests before applying backpressure.
             num_upload_workers: Number of concurrent network dispatches to perform.
-                NOTE: should be less than the number of `num_runtime_workers`
+                Must be at most `num_runtime_workers`.
             num_runtime_workers: Number of runtime worker threads for concurrent processing.
             track_metrics: Emit runtime metric channels; disabled by default.
             base_api_url: Base URL of the Nominal API endpoint to stream data to.
@@ -45,7 +68,14 @@ class PyNominalStreamOpts:
         """Whether runtime metric channels are enabled."""
 
     def with_track_metrics(self, enabled: bool) -> Self:
-        """Enable or disable runtime metric channels."""
+        """Enable or disable runtime metric channels.
+
+        Args:
+            enabled: Whether to emit runtime metrics when this configuration is used.
+
+        Returns:
+            The same configuration instance, updated for fluent chaining.
+        """
 
     @property
     def max_points_per_batch(self) -> int:
@@ -55,8 +85,8 @@ class PyNominalStreamOpts:
             The configured upper bound on points per record.
 
         Example:
-            >>> PyNominalStreamOpts.default().max_points_per_batch
-            50000
+            >>> PyNominalStreamOpts().max_points_per_batch
+            250000
         """
 
     @property
@@ -67,7 +97,7 @@ class PyNominalStreamOpts:
             The maximum time to wait before sending pending data, in seconds.
 
         Example:
-            >>> PyNominalStreamOpts.default().max_request_delay > 0
+            >>> PyNominalStreamOpts().max_request_delay_secs > 0
             True
         """
 
@@ -79,7 +109,7 @@ class PyNominalStreamOpts:
             The maximum number of buffered requests before backpressure is applied.
 
         Example:
-            >>> PyNominalStreamOpts.default().max_buffered_requests >= 0
+            >>> PyNominalStreamOpts().max_buffered_requests >= 0
             True
         """
 
@@ -91,7 +121,7 @@ class PyNominalStreamOpts:
             The number of dispatcher tasks.
 
         Example:
-            >>> PyNominalStreamOpts.default().num_upload_workers >= 1
+            >>> PyNominalStreamOpts().num_upload_workers >= 1
             True
         """
 
@@ -103,7 +133,7 @@ class PyNominalStreamOpts:
             The configured number of runtime workers.
 
         Example:
-            >>> PyNominalStreamOpts.default().num_runtime_workers
+            >>> PyNominalStreamOpts().num_runtime_workers
             8
         """
 
@@ -115,7 +145,7 @@ class PyNominalStreamOpts:
             The fully-qualified base API URL used for streaming requests.
 
         Example:
-            >>> isinstance(PyNominalStreamOpts.default().base_api_url, str)
+            >>> isinstance(PyNominalStreamOpts().base_api_url, str)
             True
         """
 
@@ -129,7 +159,7 @@ class PyNominalStreamOpts:
             The updated instance for fluent chaining.
 
         Example:
-            >>> opts = PyNominalStreamOpts.default().with_max_points_per_batch(1000)
+            >>> opts = PyNominalStreamOpts().with_max_points_per_batch(1000)
         """
 
     def with_max_request_delay_secs(self, delay_secs: float) -> Self:
@@ -142,7 +172,7 @@ class PyNominalStreamOpts:
             The updated instance for fluent chaining.
 
         Example:
-            >>> opts = PyNominalStreamOpts.default().with_max_request_delay_secs(1.0)
+            >>> opts = PyNominalStreamOpts().with_max_request_delay_secs(1.0)
         """
 
     def with_max_buffered_requests(self, n: int) -> Self:
@@ -155,7 +185,7 @@ class PyNominalStreamOpts:
             The updated instance for fluent chaining.
 
         Example:
-            >>> opts = PyNominalStreamOpts.default().with_max_buffered_requests(200)
+            >>> opts = PyNominalStreamOpts().with_max_buffered_requests(200)
         """
 
     def with_num_upload_workers(self, n: int) -> Self:
@@ -168,7 +198,7 @@ class PyNominalStreamOpts:
             The updated instance for fluent chaining.
 
         Example:
-            >>> opts = PyNominalStreamOpts.default().with_num_upload_workers(8)
+            >>> opts = PyNominalStreamOpts().with_num_upload_workers(8)
         """
 
     def with_num_runtime_workers(self, n: int) -> Self:
@@ -181,7 +211,7 @@ class PyNominalStreamOpts:
             The updated instance for fluent chaining.
 
         Example:
-            >>> opts = PyNominalStreamOpts.default().with_num_runtime_workers(16)
+            >>> opts = PyNominalStreamOpts().with_num_runtime_workers(16)
         """
 
     def with_api_base_url(self, url: str) -> Self:
@@ -194,7 +224,7 @@ class PyNominalStreamOpts:
             The updated instance for fluent chaining.
 
         Example:
-            >>> opts = PyNominalStreamOpts.default().with_api_base_url("https://staging.nominal.io")
+            >>> opts = PyNominalStreamOpts().with_api_base_url("https://staging.nominal.io")
         """
 
     def __repr__(self) -> str:
@@ -206,7 +236,7 @@ class PyNominalStreamOpts:
 class PyNominalDatasetStream:
     """High-throughput client for enqueueing dataset points to Nominal.
 
-    This is the Python-facing streaming client. It supports a fluent builder
+    This is the native client used by the public Python wrapper. It supports a fluent builder
     API for configuration, lifecycle controls (`open`, `close`, `cancel`), and
     multiple enqueue modes (single point, long series, and wide records).
     """
@@ -215,7 +245,7 @@ class PyNominalDatasetStream:
         """Create a new stream builder.
 
         Args:
-            opts: Optional stream options. If omitted, sensible defaults are used.
+            opts: Stream options, or None to use the Rust defaults.
 
         Example:
             >>> from nominal_streaming import PyNominalStreamOpts
@@ -229,8 +259,7 @@ class PyNominalDatasetStream:
 
         Args:
             log_directive: If provided, log directive (e.g. "trace" or "info") to configure logging with.
-                If not provided, searches for a `RUST_LOG` environment variable, or if not found,
-                defaults to debug level logging.
+                If not provided, defaults to debug level logging.
 
         Returns:
             The updated instance for fluent chaining.
@@ -257,7 +286,7 @@ class PyNominalDatasetStream:
 
         NOTE: Must be applied before calling open()
 
-        NOTE: Mutually exclusive with `to_file`.
+        Can be combined with `to_file` to write to both destinations.
 
         Args:
             dataset_rid: Resource identifier of the dataset.
@@ -267,39 +296,35 @@ class PyNominalDatasetStream:
             The updated instance for fluent chaining.
 
         Raises:
-            RuntimeError: If called after `to_file`.
+            RuntimeError: If the token is missing or the token or dataset identifier is invalid.
         """
 
     def to_file(self, path: pathlib.Path) -> Self:
-        """Write points to a local file (newline-delimited records).
+        """Write points to a local Avro file.
 
-        Mutually exclusive with `with_core_consumer`.
+        Configure before `open()`. Can be combined with `with_core_consumer`
+        to write to both destinations, but not with both a core consumer and
+        `with_file_fallback`. Invalid target combinations fail at `open()`.
 
         Args:
             path: Destination file path.
 
         Returns:
             The updated instance for fluent chaining.
-
-        Raises:
-            RuntimeError: If already configured for core consumption.
         """
 
     def with_file_fallback(self, path: pathlib.Path) -> Self:
         """If sending to core fails, fall back to writing to `path`.
 
-        NOTE: Requires that `with_core_consumer` has been configured.
-
-        NOTE: Not allowed with `to_file`.
+        Configure before `open()`, normally alongside `with_core_consumer`.
+        Failed requests are written as Avro records. Configuring all three of
+        core, file, and fallback destinations fails at `open()`.
 
         Args:
             path: Fallback file path.
 
         Returns:
             The updated instance for fluent chaining.
-
-        Raises:
-            RuntimeError: If core consumer is not configured.
         """
 
     def open(self) -> None:
@@ -307,7 +332,8 @@ class PyNominalDatasetStream:
 
         NOTE: Safe to call multiple times; subsequent calls are no-ops.
 
-        NOTE: May raise if the builder is not fully configured.
+        Raises:
+            RuntimeError: If targets or worker counts are invalid, or runtime startup fails.
         """
 
     def close(self) -> None:
@@ -317,9 +343,9 @@ class PyNominalDatasetStream:
         """
 
     def cancel(self) -> None:
-        """Fast cancellation of work without guaranteeing a full drain.
+        """Close the stream, draining buffered points.
 
-        NOTE: Intended for signal handlers or rapid shutdown paths.
+        Currently delegates to `close()` and can block; it does not abort uploads.
         """
 
     def stop_accepting_writes(self) -> None:
@@ -340,35 +366,57 @@ class PyNominalDatasetStream:
 
         Args:
             channel_name: Channel name to stream to
-            timestamp: Timestamp for the enqueued value.
-                Accepts either integral nanoseconds since unix epoch or a datetime, which is presumed to be in UTC.
+            timestamp: Integer nanoseconds since the Unix epoch, from 0 through 2**64 - 1.
             value: Data value to stream
             tags: Optional tags to attach to the data.
 
         Raises:
-            RuntimeError: If the stream is not open or has been cancelled.
+            RuntimeError: If the stream is not open or is shutting down.
+            OverflowError: If a timestamp is negative or exceeds 2**64 - 1.
             TypeError: If `value` is not an `int`, `float`, or `str`.
         """
 
     def enqueue_batch(
         self,
         channel_name: str,
-        timestamps: Sequence[int],
-        values: Sequence[DataType],
+        timestamps: Sequence[int] | NDArray[np.integer[Any]],
+        values: Sequence[DataType] | NDArray[np.integer[Any] | np.floating[Any] | np.bool_ | np.str_],
         tags: dict[str, str] | None = None,
     ) -> None:
         """Enqueue a series for a single channel.
 
+        Both inputs must be one-dimensional, nonempty, and have equal lengths.
+        Numeric values use float-first conversion: mixed integers and floats are
+        accepted, and large integers can lose precision when converted to doubles.
+        Strings must not be mixed with numeric values.
+
+        The Python 3.11+ ABI wheel copies eligible exact NumPy arrays through the
+        buffer protocol: int64/uint64 timestamps and float32/float64/int64/uint64
+        values with native byte order and aligned storage. Strided, reversed,
+        and read-only arrays are supported. Other supported dtypes, layouts,
+        and subclasses use element-by-element conversion, as does the Python
+        3.10 ABI wheel. NumPy is optional for list and tuple inputs.
+
+        Inputs are converted to owned storage before enqueueing; callers may
+        mutate or release them after this call returns. Conversion failures
+        enqueue no points. Returning means queued, not uploaded; backpressure
+        can block the call.
+
         Args:
             channel_name: Channel name.
-            timestamps: Sequence of timestamps (same accepted forms as in `enqueue`).
-            values: Sequence of values (must be homogeneous: all must be float, int, or strings).
-            tags: Optional tags to attach to the values.
+            timestamps: Integer nanoseconds since the Unix epoch, each from
+                0 through 2**64 - 1. Datetimes and strings require the public wrapper.
+            values: Numeric or string sequence, or a NumPy array of integer,
+                floating, boolean, or Unicode string values. Arrays with masked
+                elements or datetime64/timedelta64 value dtypes are rejected.
+            tags: Optional tags shared by every point in the batch.
 
         Raises:
-            RuntimeError: If the stream is not open or has been cancelled.
-            TypeError: If value types are heterogeneous or unsupported.
-            ValueError: If lengths of `timestamps` and `values` differ.
+            RuntimeError: If the stream is not open or is shutting down.
+            TypeError: If timestamps or values cannot be converted, including
+                unsupported mixtures of strings and numbers.
+            OverflowError: If a timestamp is negative or exceeds 2**64 - 1.
+            ValueError: If values are empty or the input lengths differ.
         """
 
     def enqueue_from_dict(
@@ -385,7 +433,8 @@ class PyNominalDatasetStream:
             tags: Optional tags attach to all values in the record.
 
         Raises:
-            RuntimeError: If the stream is not open or has been cancelled.
+            RuntimeError: If the stream is not open or is shutting down.
+            OverflowError: If a timestamp is negative or exceeds 2**64 - 1.
             TypeError: If any value is not an `int`, `float`, or `str`.
         """
 
@@ -409,8 +458,10 @@ class PyNominalDatasetStream:
             tags: Optional tags to attach to the data.
 
         Raises:
-            RuntimeError: If the stream is not open or has been cancelled.
+            RuntimeError: If the stream is not open or is shutting down.
+            OverflowError: If a timestamp is negative or exceeds 2**64 - 1.
             TypeError: If `value` contains a non-JSON-native element.
+            ValueError: If `value` contains NaN, infinity, or a circular reference.
         """
 
     def enqueue_float_array(
@@ -426,12 +477,14 @@ class PyNominalDatasetStream:
             channel_name: Channel name to stream to
             timestamp: Integral nanoseconds since unix epoch.
             value: Sequence of doubles forming the array value at this timestamp.
-                Integer elements are coerced to float; pass an explicit float
-                sequence if implicit int-to-float promotion is undesired.
+                Integer elements are converted to doubles, which can lose precision
+                for large integers.
             tags: Optional tags to attach to the data.
 
         Raises:
-            RuntimeError: If the stream is not open or has been cancelled.
+            RuntimeError: If the stream is not open or is shutting down.
+            TypeError: If an element cannot be converted to a double.
+            OverflowError: If a timestamp is negative or exceeds 2**64 - 1.
         """
 
     def enqueue_string_array(
@@ -450,10 +503,20 @@ class PyNominalDatasetStream:
             tags: Optional tags to attach to the data.
 
         Raises:
-            RuntimeError: If the stream is not open or has been cancelled.
+            RuntimeError: If the stream is not open or is shutting down.
+            TypeError: If an element is not a string.
+            OverflowError: If a timestamp is negative or exceeds 2**64 - 1.
         """
 
-    def __enter__(self) -> Self: ...
+    def __enter__(self) -> Self:
+        """Open the stream and return this instance; propagate errors from `open()`."""
     def __exit__(
         self, exc_type: Type[BaseException] | None, exc_value: BaseException | None, traceback: TracebackType | None
-    ) -> None: ...
+    ) -> None:
+        """Drain and close the stream without suppressing the context's exception.
+
+        Args:
+            exc_type: Exception type raised in the context, or None on normal exit.
+            exc_value: Exception raised in the context, or None on normal exit.
+            traceback: Exception traceback, or None on normal exit.
+        """

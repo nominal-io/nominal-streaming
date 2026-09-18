@@ -8,6 +8,7 @@ nominal-streaming = { workspace = true }
 members = ["py-nominal-streaming/"]
 
 [dependency-groups]
+test = ["numpy>=1.24", "fastavro", "cramjam"]
 dev = [
   "ipykernel>=7.0.1",
   "mypy>=1.18.2",
