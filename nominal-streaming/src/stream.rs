@@ -759,10 +759,8 @@ impl SeriesBufferGuard<'_> {
         let points = points.into_points();
         let new_point_count = points_len(&points);
 
-        if !self.sb.contains_key(channel_descriptor) {
-            self.sb.insert(channel_descriptor.clone(), points);
-        } else {
-            match (self.sb.get_mut(channel_descriptor).unwrap(), points) {
+        if let Some(existing) = self.sb.get_mut(channel_descriptor) {
+            match (existing, points) {
                 (PointsType::DoublePoints(existing), PointsType::DoublePoints(new)) => {
                     existing.points.extend(new.points)
                 }
@@ -879,6 +877,8 @@ impl SeriesBufferGuard<'_> {
                     panic!("mismatched types");
                 }
             }
+        } else {
+            self.sb.insert(channel_descriptor.clone(), points);
         }
 
         self.count.fetch_add(new_point_count, Ordering::Release);
