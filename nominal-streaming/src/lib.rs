@@ -364,6 +364,34 @@ mod tests {
         counts
     }
 
+    fn assert_record_limit(requests: &[WriteRequestNominal], cap: usize) -> usize {
+        requests
+            .iter()
+            .map(|request| {
+                let count: usize = point_counts_by_channel(std::slice::from_ref(request))
+                    .into_values()
+                    .map(|(_, count)| count)
+                    .sum();
+                assert!(
+                    count <= cap,
+                    "request contains {count} points, limit is {cap}"
+                );
+                count
+            })
+            .sum()
+    }
+
+    #[test]
+    #[should_panic(expected = "max_points_per_record must be greater than zero")]
+    fn zero_record_limit_is_rejected() {
+        create_stream_with_consumer(
+            Arc::new(TestDatasourceStream {
+                requests: Mutex::new(vec![]),
+            }),
+            0,
+        );
+    }
+
     #[test_log::test]
     fn test_stream() {
         let (test_consumer, stream) = create_test_stream();
@@ -450,7 +478,7 @@ mod tests {
             nanos: 0,
         };
 
-        let entries: Vec<(ChannelDescriptor, PointsType)> = (0..2500)
+        let mut entries: Vec<(ChannelDescriptor, PointsType)> = (0..2500)
             .map(|i| {
                 (
                     ChannelDescriptor::new(format!("big_{i}")),
@@ -463,26 +491,29 @@ mod tests {
             })
             .collect();
 
+        entries.push((
+            ChannelDescriptor::with_tags("oversized", [("site", "test")]),
+            (0..2501)
+                .map(|i| DoublePoint {
+                    timestamp: Some(timestamp),
+                    value: i as f64,
+                })
+                .collect::<Vec<_>>()
+                .into_points(),
+        ));
         stream.enqueue_many(entries);
         drop(stream);
 
         let requests = test_consumer.requests.lock().unwrap();
         assert!(requests.len() > 1, "an oversized batch should be split");
-        for request in requests.iter() {
-            let points: usize = request
-                .series
-                .iter()
-                .map(
-                    |series| match series.points.as_ref().unwrap().points_type.as_ref() {
-                        Some(PointsType::DoublePoints(p)) => p.points.len(),
-                        _ => 0,
-                    },
-                )
-                .sum();
-            assert!(
-                points <= 1000,
-                "no request may exceed max_points_per_record, saw {points}"
-            );
+        assert_eq!(assert_record_limit(&requests, 1000), 5001);
+        assert_eq!(total_double_points(&requests, "oversized"), 2501);
+        for series in requests
+            .iter()
+            .flat_map(|r| &r.series)
+            .filter(|s| s.channel.as_ref().unwrap().name == "oversized")
+        {
+            assert_eq!(series.tags.get("site").map(String::as_str), Some("test"));
         }
         // and nothing is lost in the splitting
         let total: usize = (0..2500)
@@ -534,7 +565,7 @@ mod tests {
             let mut uints = Vec::new();
             let mut double_arrays = Vec::new();
             let mut string_arrays = Vec::new();
-            for i in 0..1000 {
+            for i in 0..1001 {
                 let start_time = UNIX_EPOCH.elapsed().unwrap();
                 doubles.push(DoublePoint {
                     timestamp: Some(start_time.into_timestamp()),
@@ -600,62 +631,63 @@ mod tests {
 
         let requests = test_consumer.requests.lock().unwrap();
 
-        // validate that the requests were flushed based on the max_records value, not the
-        // max request delay
-        assert_eq!(requests.len(), 35);
+        assert_eq!(assert_record_limit(&requests, 1000), 7 * 5 * 1001);
+        let counts = point_counts_by_channel(&requests);
+        assert_eq!(counts.len(), 7);
+        for name in [
+            "double",
+            "string",
+            "struct",
+            "int",
+            "uint64",
+            "double_array",
+            "string_array",
+        ] {
+            assert_eq!(counts[name], (name, 5 * 1001));
+        }
+    }
 
-        let r = requests
-            .iter()
-            .flat_map(|r| r.series.clone())
-            .map(|s| {
-                (
-                    s.channel.unwrap().name,
-                    s.points.unwrap().points_type.unwrap(),
-                )
-            })
-            .collect::<HashMap<_, _>>();
-        let PointsType::DoublePoints(dp) = r.get("double").unwrap() else {
-            panic!("invalid double points type");
-        };
-
-        let PointsType::IntegerPoints(ip) = r.get("int").unwrap() else {
-            panic!("invalid int points type");
-        };
-
-        let PointsType::Uint64Points(up) = r.get("uint64").unwrap() else {
-            panic!("invalid uint64 points type");
-        };
-
-        let PointsType::StringPoints(sp) = r.get("string").unwrap() else {
-            panic!("invalid string points type");
-        };
-
-        let PointsType::StructPoints(stp) = r.get("struct").unwrap() else {
-            panic!("invalid struct points type");
-        };
-
-        let PointsType::ArrayPoints(ArrayPoints {
-            array_type: Some(ArrayType::DoubleArrayPoints(dap)),
-        }) = r.get("double_array").unwrap()
-        else {
-            panic!("invalid double array points type");
-        };
-
-        let PointsType::ArrayPoints(ArrayPoints {
-            array_type: Some(ArrayType::StringArrayPoints(sap)),
-        }) = r.get("string_array").unwrap()
-        else {
-            panic!("invalid string array points type");
-        };
-
-        // collect() overwrites into a single request per channel
-        assert_eq!(dp.points.len(), 1000);
-        assert_eq!(sp.points.len(), 1000);
-        assert_eq!(ip.points.len(), 1000);
-        assert_eq!(up.points.len(), 1000);
-        assert_eq!(stp.points.len(), 1000);
-        assert_eq!(dap.points.len(), 1000);
-        assert_eq!(sap.points.len(), 1000);
+    #[test]
+    fn concurrent_producers_respect_record_limit() {
+        let consumer = Arc::new(TestDatasourceStream {
+            requests: Mutex::new(vec![]),
+        });
+        let stream = create_stream_with_consumer(consumer.clone(), 16);
+        let start = std::sync::Barrier::new(12);
+        thread::scope(|scope| {
+            for producer in 0..12 {
+                let stream = &stream;
+                let start = &start;
+                scope.spawn(move || {
+                    let channel = ChannelDescriptor::new(format!("producer-{producer}"));
+                    start.wait();
+                    let mut writer = stream.double_writer(channel.clone());
+                    for i in 0..128 {
+                        let points = vec![
+                            DoublePoint {
+                                timestamp: None,
+                                value: i as f64
+                            };
+                            8
+                        ];
+                        match producer % 3 {
+                            0 => stream.enqueue(&channel, points),
+                            1 => stream.enqueue_many(vec![(channel.clone(), points.into_points())]),
+                            _ => {
+                                for _ in points {
+                                    writer.push(i as i64, i as f64);
+                                }
+                            }
+                        }
+                    }
+                });
+            }
+        });
+        drop(stream);
+        assert_eq!(
+            assert_record_limit(&consumer.requests.lock().unwrap(), 16),
+            12 * 128 * 8
+        );
     }
 
     #[test_log::test]

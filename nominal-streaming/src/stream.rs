@@ -503,9 +503,8 @@ impl NominalDatasetStream {
             new_points.into_points(),
             self.opts.max_points_per_record,
             |points| {
-                self.when_capacity(points_len(&points), |mut sb| {
-                    sb.extend(channel_descriptor, points)
-                });
+                self.lock_buffer(points_len(&points))
+                    .extend(channel_descriptor, points);
             },
         );
     }
@@ -556,25 +555,24 @@ impl NominalDatasetStream {
     }
 
     fn enqueue_chunk(&self, entries: Vec<(ChannelDescriptor, PointsType)>, new_count: usize) {
-        self.when_capacity(new_count, move |mut sb| {
-            for (channel_descriptor, points) in entries {
-                sb.extend(&channel_descriptor, points)
-            }
-        });
+        let mut buffer = self.lock_buffer(new_count);
+        for (channel_descriptor, points) in entries {
+            buffer.extend(&channel_descriptor, points);
+        }
     }
 
-    fn when_capacity(&self, new_count: usize, callback: impl FnOnce(SeriesBufferGuard)) {
+    fn lock_buffer(&self, new_count: usize) -> SeriesBufferGuard<'_> {
         self.unflushed_points
             .fetch_add(new_count, Ordering::Release);
 
         if let Some(guard) = self.primary_buffer.lock_if_capacity(new_count) {
             debug!("adding {} points to primary buffer", new_count);
-            callback(guard);
+            guard
         } else if let Some(guard) = self.secondary_buffer.lock_if_capacity(new_count) {
             // primary buffer is definitely full
             self.primary_handle.thread().unpark();
             debug!("adding {} points to secondary buffer", new_count);
-            callback(guard);
+            guard
         } else {
             let buf = if self.primary_buffer < self.secondary_buffer {
                 debug!("waiting for primary buffer to flush to append {new_count} points...");
@@ -586,7 +584,7 @@ impl NominalDatasetStream {
                 &self.secondary_buffer
             };
 
-            buf.wait_for_capacity(new_count, callback);
+            buf.wait_for_capacity(new_count)
         }
     }
 }
@@ -641,11 +639,10 @@ where
             self.channel,
             self.unflushed.len()
         );
-        self.stream.when_capacity(self.unflushed.len(), |mut buf| {
-            let to_flush = std::mem::take(&mut self.unflushed);
-            buf.extend(&self.channel, to_flush);
-            self.last_flushed_at = Instant::now();
-        })
+        self.stream
+            .lock_buffer(self.unflushed.len())
+            .extend(&self.channel, std::mem::take(&mut self.unflushed));
+        self.last_flushed_at = Instant::now();
     }
 }
 
@@ -990,13 +987,13 @@ impl SeriesBuffer {
         self.count.load(Ordering::Acquire)
     }
 
-    fn wait_for_capacity(&self, new_count: usize, callback: impl FnOnce(SeriesBufferGuard)) {
+    fn wait_for_capacity(&self, new_count: usize) -> SeriesBufferGuard<'_> {
         let mut guard = self.lock();
         // Another producer may use the freed capacity before this waiter acquires the lock.
         while self.count.load(Ordering::Acquire) > self.max_capacity - new_count {
             self.condvar.wait(&mut guard.sb);
         }
-        callback(guard);
+        guard
     }
 
     fn notify(&self) -> bool {
@@ -1180,219 +1177,24 @@ fn points_len(points_type: &PointsType) -> usize {
 mod tests {
     use super::*;
 
-    #[derive(Debug, Clone, Default)]
-    struct RecordingConsumer(Arc<Mutex<Vec<WriteRequestNominal>>>);
-
-    impl WriteRequestConsumer for RecordingConsumer {
-        fn consume(&self, request: &WriteRequestNominal) -> crate::consumer::ConsumerResult<()> {
-            self.0.lock().push(request.clone());
-            Ok(())
-        }
-    }
-
-    fn point_variants(count: usize) -> Vec<PointsType> {
-        let timestamp = |i| Some(crate::types::IntoTimestamp::into_timestamp(i as i64));
-        vec![
-            (0..count)
+    #[test]
+    fn point_chunks_preserve_contents_and_order() {
+        for count in [0, 1, 3, 8] {
+            let points = (0..count)
                 .map(|i| DoublePoint {
-                    timestamp: timestamp(i),
+                    timestamp: Some(i.into_timestamp()),
                     value: i as f64,
                 })
                 .collect::<Vec<_>>()
-                .into_points(),
-            (0..count)
-                .map(|i| IntegerPoint {
-                    timestamp: timestamp(i),
-                    value: i as i64,
-                })
-                .collect::<Vec<_>>()
-                .into_points(),
-            (0..count)
-                .map(|i| Uint64Point {
-                    timestamp: timestamp(i),
-                    value: i as u64,
-                })
-                .collect::<Vec<_>>()
-                .into_points(),
-            (0..count)
-                .map(|i| StringPoint {
-                    timestamp: timestamp(i),
-                    value: format!("value-{i}"),
-                })
-                .collect::<Vec<_>>()
-                .into_points(),
-            (0..count)
-                .map(|i| StructPoint {
-                    timestamp: timestamp(i),
-                    json_string: format!(r#"{{"value":{i}}}"#),
-                })
-                .collect::<Vec<_>>()
-                .into_points(),
-            (0..count)
-                .map(|i| DoubleArrayPoint {
-                    timestamp: timestamp(i),
-                    value: vec![i as f64, 2.0],
-                })
-                .collect::<Vec<_>>()
-                .into_points(),
-            (0..count)
-                .map(|i| StringArrayPoint {
-                    timestamp: timestamp(i),
-                    value: vec![format!("value-{i}"), "other".into()],
-                })
-                .collect::<Vec<_>>()
-                .into_points(),
-        ]
-    }
-
-    fn encoded_points(points: &PointsType) -> Vec<Vec<u8>> {
-        use prost::Message;
-        match points {
-            PointsType::DoublePoints(p) => p.points.iter().map(Message::encode_to_vec).collect(),
-            PointsType::IntegerPoints(p) => p.points.iter().map(Message::encode_to_vec).collect(),
-            PointsType::Uint64Points(p) => p.points.iter().map(Message::encode_to_vec).collect(),
-            PointsType::StringPoints(p) => p.points.iter().map(Message::encode_to_vec).collect(),
-            PointsType::StructPoints(p) => p.points.iter().map(Message::encode_to_vec).collect(),
-            PointsType::ArrayPoints(p) => match &p.array_type {
-                Some(ArrayType::DoubleArrayPoints(p)) => {
-                    p.points.iter().map(Message::encode_to_vec).collect()
-                }
-                Some(ArrayType::StringArrayPoints(p)) => {
-                    p.points.iter().map(Message::encode_to_vec).collect()
-                }
-                None => vec![],
-            },
+                .into_points();
+            let buffer = SeriesBuffer::new(usize::MAX);
+            let channel = ChannelDescriptor::new("value");
+            for_each_points_chunk(points.clone(), 3, |chunk| {
+                assert!(points_len(&chunk) <= 3);
+                buffer.lock().extend(&channel, chunk);
+            });
+            assert_eq!(buffer.lock().sb.get(&channel), Some(&points));
         }
-    }
-
-    fn assert_record_limit(consumer: &RecordingConsumer, cap: usize) -> usize {
-        consumer
-            .0
-            .lock()
-            .iter()
-            .map(|request| {
-                let count: usize = request
-                    .series
-                    .iter()
-                    .map(|series| {
-                        points_len(
-                            series
-                                .points
-                                .as_ref()
-                                .unwrap()
-                                .points_type
-                                .as_ref()
-                                .unwrap(),
-                        )
-                    })
-                    .sum();
-                assert!(
-                    count <= cap,
-                    "request contains {count} points, limit is {cap}"
-                );
-                count
-            })
-            .sum()
-    }
-
-    fn check_oversized_submissions(many: bool) {
-        let cap = 3;
-        let consumer = RecordingConsumer::default();
-        let stream = NominalDatasetStream::new_with_consumer(
-            consumer.clone(),
-            NominalStreamOpts {
-                max_points_per_record: cap,
-                max_request_delay: Duration::from_millis(1),
-                ..Default::default()
-            },
-        );
-        let entries: Vec<_> = [0, 1, 3, 8]
-            .into_iter()
-            .flat_map(|count| {
-                point_variants(count)
-                    .into_iter()
-                    .enumerate()
-                    .map(move |(kind, points)| {
-                        (
-                            ChannelDescriptor::with_tags(
-                                format!("channel-{count}-{kind}"),
-                                [("site", "test")],
-                            ),
-                            points,
-                        )
-                    })
-            })
-            .collect();
-        let expected = entries.clone();
-        if many {
-            stream.enqueue_many(entries);
-        } else {
-            for (channel, points) in entries {
-                stream.enqueue(&channel, points);
-            }
-        }
-        drop(stream);
-        assert_eq!(assert_record_limit(&consumer, cap), 7 * (1 + 3 + 8));
-        let requests = consumer.0.lock();
-        for (channel, expected) in expected {
-            let mut actual = Vec::new();
-            for series in requests
-                .iter()
-                .flat_map(|r| &r.series)
-                .filter(|s| s.channel.as_ref().unwrap().name == channel.name)
-            {
-                assert_eq!(series.tags.len(), 1);
-                assert_eq!(series.tags.get("site").map(String::as_str), Some("test"));
-                let points = series
-                    .points
-                    .as_ref()
-                    .unwrap()
-                    .points_type
-                    .as_ref()
-                    .unwrap();
-                assert_eq!(
-                    std::mem::discriminant(points),
-                    std::mem::discriminant(&expected)
-                );
-                let chunk = encoded_points(points);
-                if !chunk.is_empty() {
-                    assert!(
-                        encoded_points(&expected)
-                            .windows(chunk.len())
-                            .any(|window| window == chunk),
-                        "point order changed within a chunk"
-                    );
-                }
-                actual.extend(chunk);
-            }
-            // Independent dispatcher threads can deliver requests out of order.
-            let mut expected = encoded_points(&expected);
-            actual.sort();
-            expected.sort();
-            assert_eq!(actual, expected, "changed points for {}", channel.name);
-        }
-    }
-
-    #[test]
-    #[should_panic(expected = "max_points_per_record must be greater than zero")]
-    fn zero_record_limit_is_rejected() {
-        let _stream = NominalDatasetStream::new_with_consumer(
-            RecordingConsumer::default(),
-            NominalStreamOpts {
-                max_points_per_record: 0,
-                ..Default::default()
-            },
-        );
-    }
-
-    #[test]
-    fn enqueue_splits_oversized_submissions() {
-        check_oversized_submissions(false);
-    }
-
-    #[test]
-    fn enqueue_many_splits_oversized_entries() {
-        check_oversized_submissions(true);
     }
 
     #[test]
@@ -1406,9 +1208,9 @@ mod tests {
         let producer = thread::spawn({
             let buffer = buffer.clone();
             move || {
-                buffer.wait_for_capacity(2, |mut guard| {
-                    guard.extend(&channel, vec![DoublePoint::default(); 2]);
-                });
+                buffer
+                    .wait_for_capacity(2)
+                    .extend(&channel, vec![DoublePoint::default(); 2]);
                 done_tx.send(()).unwrap();
             }
         });
@@ -1444,64 +1246,6 @@ mod tests {
             "producer stayed blocked after the buffer drained"
         );
         assert_eq!(buffer.count(), 2);
-    }
-
-    #[test]
-    fn concurrent_producers_respect_record_limit() {
-        let cap = 16;
-        let consumer = RecordingConsumer::default();
-        let stream = NominalDatasetStream::new_with_consumer(
-            consumer.clone(),
-            NominalStreamOpts {
-                max_points_per_record: cap,
-                max_request_delay: Duration::from_millis(1),
-                ..Default::default()
-            },
-        );
-        let start = std::sync::Barrier::new(12);
-        thread::scope(|scope| {
-            for producer in 0..12 {
-                let stream = &stream;
-                let start = &start;
-                scope.spawn(move || {
-                    let channel = ChannelDescriptor::new(format!("producer-{producer}"));
-                    start.wait();
-                    let mut writer = stream.double_writer(channel.clone());
-                    for i in 0..128 {
-                        match producer % 3 {
-                            0 => stream.enqueue(
-                                &channel,
-                                vec![
-                                    DoublePoint {
-                                        timestamp: None,
-                                        value: i as f64
-                                    };
-                                    8
-                                ],
-                            ),
-                            1 => stream.enqueue_many(vec![(
-                                channel.clone(),
-                                vec![
-                                    DoublePoint {
-                                        timestamp: None,
-                                        value: i as f64
-                                    };
-                                    8
-                                ]
-                                .into_points(),
-                            )]),
-                            _ => {
-                                for _ in 0..8 {
-                                    writer.push(i as i64, i as f64);
-                                }
-                            }
-                        }
-                    }
-                });
-            }
-        });
-        drop(stream);
-        assert_eq!(assert_record_limit(&consumer, cap), 12 * 128 * 8);
     }
 
     #[test]

@@ -117,6 +117,24 @@ class BatchTests(unittest.TestCase):
         self.assertEqual(records["dictionary"]["timestamps"], [2])
         self.assertEqual(records["dictionary"]["values"], [42.0])
 
+    def test_oversized_numpy_batch_preserves_points(self):
+        path = pathlib.Path(self.directory.name) / "chunked.avro"
+        opts = PyNominalStreamOpts(max_points_per_batch=3, max_request_delay_secs=0.001)
+        timestamps = np.arange(8, dtype="uint64")
+        values = np.arange(8, dtype="float64") / 8
+        with NominalDatasetStream(opts=opts).to_file(path) as stream:
+            stream.enqueue_batch("value", timestamps, values, tags={"site": "test"})
+        with path.open("rb") as file:
+            records = list(reader(file))
+        self.assertTrue(records)
+        actual = []
+        for record in records:
+            self.assertLessEqual(len(record["timestamps"]), 3)
+            self.assertEqual(record["channel"], "value")
+            self.assertEqual(record["tags"], {"site": "test"})
+            actual.extend(zip(record["timestamps"], record["values"], strict=True))
+        self.assertEqual(sorted(actual), list(zip(timestamps, values, strict=True)))
+
     def test_owns_input_before_returning(self):
         ts = np.array([1, 2, 3], dtype="uint64")
         vs = np.array([4.0, 5.0, 6.0])
