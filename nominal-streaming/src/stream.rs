@@ -53,6 +53,8 @@ use crate::types::IntoTimestamp;
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct NominalStreamOpts {
+    /// Maximum submitted data points per buffered record. Must be greater than zero.
+    /// Larger submissions are split across records.
     pub max_points_per_record: usize,
     pub max_request_delay: Duration,
     pub max_buffered_requests: usize,
@@ -336,10 +338,16 @@ impl NominalDatasetStream {
         NominalDatasetStreamBuilder::new()
     }
 
+    /// # Panics
+    /// Panics if `opts.max_points_per_record` is zero.
     pub fn new_with_consumer<C: WriteRequestConsumer + 'static>(
         consumer: C,
         opts: NominalStreamOpts,
     ) -> Self {
+        assert!(
+            opts.max_points_per_record > 0,
+            "max_points_per_record must be greater than zero"
+        );
         let primary_buffer = Arc::new(SeriesBuffer::new(opts.max_points_per_record));
         let secondary_buffer = Arc::new(SeriesBuffer::new(opts.max_points_per_record));
 
@@ -488,13 +496,18 @@ impl NominalDatasetStream {
         }
     }
 
+    /// Enqueues one channel's points, blocking for buffer capacity as needed.
+    /// Submissions larger than `max_points_per_record` are split into bounded chunks.
     pub fn enqueue(&self, channel_descriptor: &ChannelDescriptor, new_points: impl IntoPoints) {
-        let new_points = new_points.into_points();
-        let new_count = points_len(&new_points);
-
-        self.when_capacity(new_count, |mut sb| {
-            sb.extend(channel_descriptor, new_points)
-        });
+        for_each_points_chunk(
+            new_points.into_points(),
+            self.opts.max_points_per_record,
+            |points| {
+                self.when_capacity(points_len(&points), |mut sb| {
+                    sb.extend(channel_descriptor, points)
+                });
+            },
+        );
     }
 
     /// Enqueues points for many channels, blocking while both buffers are full.
@@ -508,6 +521,7 @@ impl NominalDatasetStream {
     /// once, so one call can neither build a request larger than that limit nor hold the buffer lock
     /// for longer than a full record's worth of work. A batch that already fits -- the case this
     /// exists for -- is admitted whole, and its channels are guaranteed to share a request.
+    /// Individual channel entries larger than the limit are split too.
     pub fn enqueue_many(&self, entries: Vec<(ChannelDescriptor, PointsType)>) {
         let total: usize = entries.iter().map(|(_, points)| points_len(points)).sum();
 
@@ -527,8 +541,11 @@ impl NominalDatasetStream {
                 chunk_count = 0;
             }
 
-            // A single entry over the limit still goes through whole: the buffer admits an oversized
-            // batch into an empty buffer rather than splitting one channel's points across requests.
+            if count > self.opts.max_points_per_record {
+                self.enqueue(&channel_descriptor, points);
+                continue;
+            }
+
             chunk_count += count;
             chunk.push((channel_descriptor, points));
         }
@@ -550,14 +567,14 @@ impl NominalDatasetStream {
         self.unflushed_points
             .fetch_add(new_count, Ordering::Release);
 
-        if self.primary_buffer.has_capacity(new_count) {
+        if let Some(guard) = self.primary_buffer.lock_if_capacity(new_count) {
             debug!("adding {} points to primary buffer", new_count);
-            callback(self.primary_buffer.lock());
-        } else if self.secondary_buffer.has_capacity(new_count) {
+            callback(guard);
+        } else if let Some(guard) = self.secondary_buffer.lock_if_capacity(new_count) {
             // primary buffer is definitely full
             self.primary_handle.thread().unpark();
             debug!("adding {} points to secondary buffer", new_count);
-            callback(self.secondary_buffer.lock());
+            callback(guard);
         } else {
             let buf = if self.primary_buffer < self.secondary_buffer {
                 debug!("waiting for primary buffer to flush to append {new_count} points...");
@@ -569,7 +586,7 @@ impl NominalDatasetStream {
                 &self.secondary_buffer
             };
 
-            buf.on_notify(callback);
+            buf.wait_for_capacity(new_count, callback);
         }
     }
 }
@@ -910,13 +927,19 @@ impl SeriesBuffer {
         }
     }
 
-    /// Checks if the buffer has enough capacity to add new points.
-    /// Note that the buffer can be larger than MAX_POINTS_PER_RECORD if a single batch of points
-    /// larger than MAX_POINTS_PER_RECORD is inserted while the buffer is empty. This avoids needing
-    /// to handle splitting batches of points across multiple requests.
-    fn has_capacity(&self, new_points_count: usize) -> bool {
-        let count = self.count.load(Ordering::Acquire);
-        count == 0 || count + new_points_count <= self.max_capacity
+    /// Check capacity under the lock that protects the subsequent append.
+    fn lock_if_capacity(&self, new_count: usize) -> Option<SeriesBufferGuard<'_>> {
+        let remaining = self.max_capacity - new_count;
+        // Avoid taking the lock when the buffer is already full.
+        if self.count.load(Ordering::Acquire) > remaining {
+            return None;
+        }
+        let guard = self.lock();
+        if self.count.load(Ordering::Acquire) <= remaining {
+            Some(guard)
+        } else {
+            None
+        }
     }
 
     fn lock(&self) -> SeriesBufferGuard<'_> {
@@ -967,23 +990,18 @@ impl SeriesBuffer {
         self.count.load(Ordering::Acquire)
     }
 
-    fn on_notify(&self, on_notify: impl FnOnce(SeriesBufferGuard)) {
-        let mut points_lock = self.points.lock();
-        // concurrency bug without this - the buffer could have been emptied since we
-        // checked the count, so this will wait forever & block any new points from entering
-        if !points_lock.is_empty() {
-            self.condvar.wait(&mut points_lock);
-        } else {
-            debug!("buffer emptied since last check, skipping condvar wait");
+    fn wait_for_capacity(&self, new_count: usize, callback: impl FnOnce(SeriesBufferGuard)) {
+        let mut guard = self.lock();
+        // Another producer may use the freed capacity before this waiter acquires the lock.
+        while self.count.load(Ordering::Acquire) > self.max_capacity - new_count {
+            self.condvar.wait(&mut guard.sb);
         }
-        on_notify(SeriesBufferGuard {
-            sb: points_lock,
-            count: &self.count,
-        });
+        callback(guard);
     }
 
     fn notify(&self) -> bool {
-        self.condvar.notify_one()
+        // Waiters can require different amounts of space; each must recheck its own predicate.
+        self.condvar.notify_all() > 0
     }
 }
 
@@ -1014,7 +1032,7 @@ fn batch_processor(
         let (point_count, series) = points_buffer.take();
 
         if points_buffer.notify() {
-            debug!("notified one waiting thread after clearing points buffer");
+            debug!("notified waiting threads after clearing points buffer");
         }
 
         let write_request = WriteRequestNominal {
@@ -1112,6 +1130,37 @@ fn request_dispatcher<C: WriteRequestConsumer + 'static>(
     );
 }
 
+/// Move oversized inputs into one chunk at a time, leaving fitting inputs untouched.
+fn for_each_points_chunk(points: PointsType, cap: usize, mut submit: impl FnMut(PointsType)) {
+    if points_len(&points) <= cap {
+        submit(points);
+        return;
+    }
+
+    fn submit_chunks<T>(points: Vec<T>, cap: usize, mut submit: impl FnMut(PointsType))
+    where
+        Vec<T>: IntoPoints,
+    {
+        let mut points = points.into_iter();
+        while points.len() > 0 {
+            submit(points.by_ref().take(cap).collect::<Vec<_>>().into_points());
+        }
+    }
+
+    match points {
+        PointsType::DoublePoints(p) => submit_chunks(p.points, cap, submit),
+        PointsType::IntegerPoints(p) => submit_chunks(p.points, cap, submit),
+        PointsType::Uint64Points(p) => submit_chunks(p.points, cap, submit),
+        PointsType::StringPoints(p) => submit_chunks(p.points, cap, submit),
+        PointsType::StructPoints(p) => submit_chunks(p.points, cap, submit),
+        PointsType::ArrayPoints(p) => match p.array_type {
+            Some(ArrayType::DoubleArrayPoints(p)) => submit_chunks(p.points, cap, submit),
+            Some(ArrayType::StringArrayPoints(p)) => submit_chunks(p.points, cap, submit),
+            None => unreachable!("empty array points fit in one chunk"),
+        },
+    }
+}
+
 fn points_len(points_type: &PointsType) -> usize {
     match points_type {
         PointsType::DoublePoints(points) => points.points.len(),
@@ -1130,6 +1179,330 @@ fn points_len(points_type: &PointsType) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Debug, Clone, Default)]
+    struct RecordingConsumer(Arc<Mutex<Vec<WriteRequestNominal>>>);
+
+    impl WriteRequestConsumer for RecordingConsumer {
+        fn consume(&self, request: &WriteRequestNominal) -> crate::consumer::ConsumerResult<()> {
+            self.0.lock().push(request.clone());
+            Ok(())
+        }
+    }
+
+    fn point_variants(count: usize) -> Vec<PointsType> {
+        let timestamp = |i| Some(crate::types::IntoTimestamp::into_timestamp(i as i64));
+        vec![
+            (0..count)
+                .map(|i| DoublePoint {
+                    timestamp: timestamp(i),
+                    value: i as f64,
+                })
+                .collect::<Vec<_>>()
+                .into_points(),
+            (0..count)
+                .map(|i| IntegerPoint {
+                    timestamp: timestamp(i),
+                    value: i as i64,
+                })
+                .collect::<Vec<_>>()
+                .into_points(),
+            (0..count)
+                .map(|i| Uint64Point {
+                    timestamp: timestamp(i),
+                    value: i as u64,
+                })
+                .collect::<Vec<_>>()
+                .into_points(),
+            (0..count)
+                .map(|i| StringPoint {
+                    timestamp: timestamp(i),
+                    value: format!("value-{i}"),
+                })
+                .collect::<Vec<_>>()
+                .into_points(),
+            (0..count)
+                .map(|i| StructPoint {
+                    timestamp: timestamp(i),
+                    json_string: format!(r#"{{"value":{i}}}"#),
+                })
+                .collect::<Vec<_>>()
+                .into_points(),
+            (0..count)
+                .map(|i| DoubleArrayPoint {
+                    timestamp: timestamp(i),
+                    value: vec![i as f64, 2.0],
+                })
+                .collect::<Vec<_>>()
+                .into_points(),
+            (0..count)
+                .map(|i| StringArrayPoint {
+                    timestamp: timestamp(i),
+                    value: vec![format!("value-{i}"), "other".into()],
+                })
+                .collect::<Vec<_>>()
+                .into_points(),
+        ]
+    }
+
+    fn encoded_points(points: &PointsType) -> Vec<Vec<u8>> {
+        use prost::Message;
+        match points {
+            PointsType::DoublePoints(p) => p.points.iter().map(Message::encode_to_vec).collect(),
+            PointsType::IntegerPoints(p) => p.points.iter().map(Message::encode_to_vec).collect(),
+            PointsType::Uint64Points(p) => p.points.iter().map(Message::encode_to_vec).collect(),
+            PointsType::StringPoints(p) => p.points.iter().map(Message::encode_to_vec).collect(),
+            PointsType::StructPoints(p) => p.points.iter().map(Message::encode_to_vec).collect(),
+            PointsType::ArrayPoints(p) => match &p.array_type {
+                Some(ArrayType::DoubleArrayPoints(p)) => {
+                    p.points.iter().map(Message::encode_to_vec).collect()
+                }
+                Some(ArrayType::StringArrayPoints(p)) => {
+                    p.points.iter().map(Message::encode_to_vec).collect()
+                }
+                None => vec![],
+            },
+        }
+    }
+
+    fn assert_record_limit(consumer: &RecordingConsumer, cap: usize) -> usize {
+        consumer
+            .0
+            .lock()
+            .iter()
+            .map(|request| {
+                let count: usize = request
+                    .series
+                    .iter()
+                    .map(|series| {
+                        points_len(
+                            series
+                                .points
+                                .as_ref()
+                                .unwrap()
+                                .points_type
+                                .as_ref()
+                                .unwrap(),
+                        )
+                    })
+                    .sum();
+                assert!(
+                    count <= cap,
+                    "request contains {count} points, limit is {cap}"
+                );
+                count
+            })
+            .sum()
+    }
+
+    fn check_oversized_submissions(many: bool) {
+        let cap = 3;
+        let consumer = RecordingConsumer::default();
+        let stream = NominalDatasetStream::new_with_consumer(
+            consumer.clone(),
+            NominalStreamOpts {
+                max_points_per_record: cap,
+                max_request_delay: Duration::from_millis(1),
+                ..Default::default()
+            },
+        );
+        let entries: Vec<_> = [0, 1, 3, 8]
+            .into_iter()
+            .flat_map(|count| {
+                point_variants(count)
+                    .into_iter()
+                    .enumerate()
+                    .map(move |(kind, points)| {
+                        (
+                            ChannelDescriptor::with_tags(
+                                format!("channel-{count}-{kind}"),
+                                [("site", "test")],
+                            ),
+                            points,
+                        )
+                    })
+            })
+            .collect();
+        let expected = entries.clone();
+        if many {
+            stream.enqueue_many(entries);
+        } else {
+            for (channel, points) in entries {
+                stream.enqueue(&channel, points);
+            }
+        }
+        drop(stream);
+        assert_eq!(assert_record_limit(&consumer, cap), 7 * (1 + 3 + 8));
+        let requests = consumer.0.lock();
+        for (channel, expected) in expected {
+            let mut actual = Vec::new();
+            for series in requests
+                .iter()
+                .flat_map(|r| &r.series)
+                .filter(|s| s.channel.as_ref().unwrap().name == channel.name)
+            {
+                assert_eq!(series.tags.len(), 1);
+                assert_eq!(series.tags.get("site").map(String::as_str), Some("test"));
+                let points = series
+                    .points
+                    .as_ref()
+                    .unwrap()
+                    .points_type
+                    .as_ref()
+                    .unwrap();
+                assert_eq!(
+                    std::mem::discriminant(points),
+                    std::mem::discriminant(&expected)
+                );
+                let chunk = encoded_points(points);
+                if !chunk.is_empty() {
+                    assert!(
+                        encoded_points(&expected)
+                            .windows(chunk.len())
+                            .any(|window| window == chunk),
+                        "point order changed within a chunk"
+                    );
+                }
+                actual.extend(chunk);
+            }
+            // Independent dispatcher threads can deliver requests out of order.
+            let mut expected = encoded_points(&expected);
+            actual.sort();
+            expected.sort();
+            assert_eq!(actual, expected, "changed points for {}", channel.name);
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "max_points_per_record must be greater than zero")]
+    fn zero_record_limit_is_rejected() {
+        let _stream = NominalDatasetStream::new_with_consumer(
+            RecordingConsumer::default(),
+            NominalStreamOpts {
+                max_points_per_record: 0,
+                ..Default::default()
+            },
+        );
+    }
+
+    #[test]
+    fn enqueue_splits_oversized_submissions() {
+        check_oversized_submissions(false);
+    }
+
+    #[test]
+    fn enqueue_many_splits_oversized_entries() {
+        check_oversized_submissions(true);
+    }
+
+    #[test]
+    fn waiting_producer_rechecks_capacity_after_notification() {
+        let buffer = Arc::new(SeriesBuffer::new(2));
+        let channel = ChannelDescriptor::new("value");
+        buffer
+            .lock()
+            .extend(&channel, vec![DoublePoint::default(); 2]);
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let producer = thread::spawn({
+            let buffer = buffer.clone();
+            move || {
+                buffer.wait_for_capacity(2, |mut guard| {
+                    guard.extend(&channel, vec![DoublePoint::default(); 2]);
+                });
+                done_tx.send(()).unwrap();
+            }
+        });
+        let wake_waiter = || {
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while !buffer.notify() {
+                if Instant::now() >= deadline {
+                    return false;
+                }
+                thread::yield_now();
+            }
+            true
+        };
+        // Neither notification frees capacity. The producer must go back to sleep after each.
+        let first_wake = wake_waiter();
+        let waited_again = wake_waiter();
+        let premature = done_rx.try_recv().is_ok();
+        let (count, _) = buffer.take();
+        buffer.notify();
+        let completed = premature || done_rx.recv_timeout(Duration::from_secs(2)).is_ok();
+        if completed {
+            producer.join().unwrap();
+        }
+        assert!(first_wake, "producer never waited for capacity");
+        assert!(
+            waited_again,
+            "producer did not recheck capacity after waking"
+        );
+        assert!(!premature, "producer appended to a full buffer");
+        assert_eq!(count, 2);
+        assert!(
+            completed,
+            "producer stayed blocked after the buffer drained"
+        );
+        assert_eq!(buffer.count(), 2);
+    }
+
+    #[test]
+    fn concurrent_producers_respect_record_limit() {
+        let cap = 16;
+        let consumer = RecordingConsumer::default();
+        let stream = NominalDatasetStream::new_with_consumer(
+            consumer.clone(),
+            NominalStreamOpts {
+                max_points_per_record: cap,
+                max_request_delay: Duration::from_millis(1),
+                ..Default::default()
+            },
+        );
+        let start = std::sync::Barrier::new(12);
+        thread::scope(|scope| {
+            for producer in 0..12 {
+                let stream = &stream;
+                let start = &start;
+                scope.spawn(move || {
+                    let channel = ChannelDescriptor::new(format!("producer-{producer}"));
+                    start.wait();
+                    let mut writer = stream.double_writer(channel.clone());
+                    for i in 0..128 {
+                        match producer % 3 {
+                            0 => stream.enqueue(
+                                &channel,
+                                vec![
+                                    DoublePoint {
+                                        timestamp: None,
+                                        value: i as f64
+                                    };
+                                    8
+                                ],
+                            ),
+                            1 => stream.enqueue_many(vec![(
+                                channel.clone(),
+                                vec![
+                                    DoublePoint {
+                                        timestamp: None,
+                                        value: i as f64
+                                    };
+                                    8
+                                ]
+                                .into_points(),
+                            )]),
+                            _ => {
+                                for _ in 0..8 {
+                                    writer.push(i as i64, i as f64);
+                                }
+                            }
+                        }
+                    }
+                });
+            }
+        });
+        drop(stream);
+        assert_eq!(assert_record_limit(&consumer, cap), 12 * 128 * 8);
+    }
 
     #[test]
     #[should_panic(expected = "mismatched types")]
