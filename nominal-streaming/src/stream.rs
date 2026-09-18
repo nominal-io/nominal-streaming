@@ -1036,6 +1036,7 @@ fn batch_processor(
         #[cfg(feature = "instrument")]
         bp_ns.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
+        // Drain without the flush delay during shutdown.
         if running.load(Ordering::Acquire) {
             thread::park_timeout(max_request_delay);
         }
@@ -1047,6 +1048,7 @@ impl Drop for NominalDatasetStream {
     fn drop(&mut self) {
         debug!("starting drop for NominalDatasetStream");
         self.running.store(false, Ordering::Release);
+        // Wake sleeping workers to flush pending points and exit.
         self.primary_handle.thread().unpark();
         self.secondary_handle.thread().unpark();
         loop {
