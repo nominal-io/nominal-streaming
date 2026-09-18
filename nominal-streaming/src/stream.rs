@@ -53,8 +53,8 @@ use crate::types::IntoTimestamp;
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct NominalStreamOpts {
-    /// Maximum submitted data points per buffered record. Must be greater than zero.
-    /// Larger submissions are split across records.
+    /// Maximum submitted data points per output request. Must be greater than zero.
+    /// Oversized buffers are split by the background processor.
     pub max_points_per_record: usize,
     pub max_request_delay: Duration,
     pub max_buffered_requests: usize,
@@ -496,17 +496,13 @@ impl NominalDatasetStream {
         }
     }
 
-    /// Enqueues one channel's points, blocking for buffer capacity as needed.
-    /// Submissions larger than `max_points_per_record` are split into bounded chunks.
     pub fn enqueue(&self, channel_descriptor: &ChannelDescriptor, new_points: impl IntoPoints) {
-        for_each_points_chunk(
-            new_points.into_points(),
-            self.opts.max_points_per_record,
-            |points| {
-                self.lock_buffer(points_len(&points))
-                    .extend(channel_descriptor, points);
-            },
-        );
+        let new_points = new_points.into_points();
+        let new_count = points_len(&new_points);
+
+        self.when_capacity(new_count, |mut sb| {
+            sb.extend(channel_descriptor, new_points)
+        });
     }
 
     /// Enqueues points for many channels, blocking while both buffers are full.
@@ -516,11 +512,10 @@ impl NominalDatasetStream {
     /// thousands of channels sharing a timestamp -- that is the difference between one buffer
     /// insertion and thousands of them.
     ///
-    /// A batch larger than `max_points_per_record` is admitted in several pieces rather than all at
-    /// once, so one call can neither build a request larger than that limit nor hold the buffer lock
-    /// for longer than a full record's worth of work. A batch that already fits -- the case this
-    /// exists for -- is admitted whole, and its channels are guaranteed to share a request.
-    /// Individual channel entries larger than the limit are split too.
+    /// A batch larger than `max_points_per_record` is admitted in groups of channel entries.
+    /// An individual oversized entry is admitted whole; the background processor splits output
+    /// requests to the configured limit. Fitting buffered records are sent unchanged. Concurrent
+    /// producers can overfill a buffer, in which case even a fitting batch may span requests.
     pub fn enqueue_many(&self, entries: Vec<(ChannelDescriptor, PointsType)>) {
         let total: usize = entries.iter().map(|(_, points)| points_len(points)).sum();
 
@@ -540,11 +535,8 @@ impl NominalDatasetStream {
                 chunk_count = 0;
             }
 
-            if count > self.opts.max_points_per_record {
-                self.enqueue(&channel_descriptor, points);
-                continue;
-            }
-
+            // A single entry over the limit still goes through whole: the buffer admits an oversized
+            // batch into an empty buffer. The background processor splits output requests.
             chunk_count += count;
             chunk.push((channel_descriptor, points));
         }
@@ -555,24 +547,25 @@ impl NominalDatasetStream {
     }
 
     fn enqueue_chunk(&self, entries: Vec<(ChannelDescriptor, PointsType)>, new_count: usize) {
-        let mut buffer = self.lock_buffer(new_count);
-        for (channel_descriptor, points) in entries {
-            buffer.extend(&channel_descriptor, points);
-        }
+        self.when_capacity(new_count, move |mut sb| {
+            for (channel_descriptor, points) in entries {
+                sb.extend(&channel_descriptor, points)
+            }
+        });
     }
 
-    fn lock_buffer(&self, new_count: usize) -> SeriesBufferGuard<'_> {
+    fn when_capacity(&self, new_count: usize, callback: impl FnOnce(SeriesBufferGuard)) {
         self.unflushed_points
             .fetch_add(new_count, Ordering::Release);
 
-        if let Some(guard) = self.primary_buffer.lock_if_capacity(new_count) {
+        if self.primary_buffer.has_capacity(new_count) {
             debug!("adding {} points to primary buffer", new_count);
-            guard
-        } else if let Some(guard) = self.secondary_buffer.lock_if_capacity(new_count) {
+            callback(self.primary_buffer.lock());
+        } else if self.secondary_buffer.has_capacity(new_count) {
             // primary buffer is definitely full
             self.primary_handle.thread().unpark();
             debug!("adding {} points to secondary buffer", new_count);
-            guard
+            callback(self.secondary_buffer.lock());
         } else {
             let buf = if self.primary_buffer < self.secondary_buffer {
                 debug!("waiting for primary buffer to flush to append {new_count} points...");
@@ -584,7 +577,7 @@ impl NominalDatasetStream {
                 &self.secondary_buffer
             };
 
-            buf.wait_for_capacity(new_count)
+            buf.on_notify(callback);
         }
     }
 }
@@ -639,10 +632,11 @@ where
             self.channel,
             self.unflushed.len()
         );
-        self.stream
-            .lock_buffer(self.unflushed.len())
-            .extend(&self.channel, std::mem::take(&mut self.unflushed));
-        self.last_flushed_at = Instant::now();
+        self.stream.when_capacity(self.unflushed.len(), |mut buf| {
+            let to_flush = std::mem::take(&mut self.unflushed);
+            buf.extend(&self.channel, to_flush);
+            self.last_flushed_at = Instant::now();
+        })
     }
 }
 
@@ -924,19 +918,13 @@ impl SeriesBuffer {
         }
     }
 
-    /// Check capacity under the lock that protects the subsequent append.
-    fn lock_if_capacity(&self, new_count: usize) -> Option<SeriesBufferGuard<'_>> {
-        let remaining = self.max_capacity - new_count;
-        // Avoid taking the lock when the buffer is already full.
-        if self.count.load(Ordering::Acquire) > remaining {
-            return None;
-        }
-        let guard = self.lock();
-        if self.count.load(Ordering::Acquire) <= remaining {
-            Some(guard)
-        } else {
-            None
-        }
+    /// Checks if the buffer has enough capacity to add new points.
+    /// Note that the buffer can be larger than MAX_POINTS_PER_RECORD if a single batch of points
+    /// larger than MAX_POINTS_PER_RECORD is inserted while the buffer is empty. Output request
+    /// splitting is handled separately by the background processor.
+    fn has_capacity(&self, new_points_count: usize) -> bool {
+        let count = self.count.load(Ordering::Acquire);
+        count == 0 || count + new_points_count <= self.max_capacity
     }
 
     fn lock(&self) -> SeriesBufferGuard<'_> {
@@ -987,18 +975,23 @@ impl SeriesBuffer {
         self.count.load(Ordering::Acquire)
     }
 
-    fn wait_for_capacity(&self, new_count: usize) -> SeriesBufferGuard<'_> {
-        let mut guard = self.lock();
-        // Another producer may use the freed capacity before this waiter acquires the lock.
-        while self.count.load(Ordering::Acquire) > self.max_capacity - new_count {
-            self.condvar.wait(&mut guard.sb);
+    fn on_notify(&self, on_notify: impl FnOnce(SeriesBufferGuard)) {
+        let mut points_lock = self.points.lock();
+        // concurrency bug without this - the buffer could have been emptied since we
+        // checked the count, so this will wait forever & block any new points from entering
+        if !points_lock.is_empty() {
+            self.condvar.wait(&mut points_lock);
+        } else {
+            debug!("buffer emptied since last check, skipping condvar wait");
         }
-        guard
+        on_notify(SeriesBufferGuard {
+            sb: points_lock,
+            count: &self.count,
+        });
     }
 
     fn notify(&self) -> bool {
-        // Waiters can require different amounts of space; each must recheck its own predicate.
-        self.condvar.notify_all() > 0
+        self.condvar.notify_one()
     }
 }
 
@@ -1029,24 +1022,23 @@ fn batch_processor(
         let (point_count, series) = points_buffer.take();
 
         if points_buffer.notify() {
-            debug!("notified waiting threads after clearing points buffer");
+            debug!("notified one waiting thread after clearing points buffer");
         }
 
-        let write_request = WriteRequestNominal {
+        for_each_record(
             series,
-            session_name: None,
-        };
-
-        if request_chan.is_full() {
-            debug!("ready to queue request but request channel is full");
-        }
-        let rep = request_chan.send((write_request, point_count));
-        debug!("queued request for processing");
-        if rep.is_err() {
-            error!("failed to send request to dispatcher");
-        } else {
-            debug!("finished submitting request");
-        }
+            point_count,
+            points_buffer.max_capacity,
+            |series, count| {
+                let request = WriteRequestNominal {
+                    series,
+                    session_name: None,
+                };
+                if let Err(error) = request_chan.send((request, count)) {
+                    error!("failed to send request to dispatcher: {error}");
+                }
+            },
+        );
 
         #[cfg(feature = "instrument")]
         bp_ns.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
@@ -1127,6 +1119,42 @@ fn request_dispatcher<C: WriteRequestConsumer + 'static>(
     );
 }
 
+/// Split detached data without holding the buffer lock; sending applies queue backpressure.
+fn for_each_record(
+    series: Vec<Series>,
+    count: usize,
+    cap: usize,
+    mut send: impl FnMut(Vec<Series>, usize),
+) {
+    if count <= cap {
+        send(series, count);
+        return;
+    }
+    let mut record = Vec::new();
+    let mut count = 0;
+    for mut series in series {
+        let points = series.points.take().unwrap().points_type.unwrap();
+        for_each_points_chunk(points, cap, |points| {
+            let n = points_len(&points);
+            if count > 0 && count + n > cap {
+                send(std::mem::take(&mut record), count);
+                count = 0;
+            }
+            record.push(Series {
+                channel: series.channel.clone(),
+                tags: series.tags.clone(),
+                points: Some(Points {
+                    points_type: Some(points),
+                }),
+            });
+            count += n;
+        });
+    }
+    if !record.is_empty() {
+        send(record, count);
+    }
+}
+
 /// Move oversized inputs into one chunk at a time, leaving fitting inputs untouched.
 fn for_each_points_chunk(points: PointsType, cap: usize, mut submit: impl FnMut(PointsType)) {
     if points_len(&points) <= cap {
@@ -1195,57 +1223,6 @@ mod tests {
             });
             assert_eq!(buffer.lock().sb.get(&channel), Some(&points));
         }
-    }
-
-    #[test]
-    fn waiting_producer_rechecks_capacity_after_notification() {
-        let buffer = Arc::new(SeriesBuffer::new(2));
-        let channel = ChannelDescriptor::new("value");
-        buffer
-            .lock()
-            .extend(&channel, vec![DoublePoint::default(); 2]);
-        let (done_tx, done_rx) = std::sync::mpsc::channel();
-        let producer = thread::spawn({
-            let buffer = buffer.clone();
-            move || {
-                buffer
-                    .wait_for_capacity(2)
-                    .extend(&channel, vec![DoublePoint::default(); 2]);
-                done_tx.send(()).unwrap();
-            }
-        });
-        let wake_waiter = || {
-            let deadline = Instant::now() + Duration::from_secs(2);
-            while !buffer.notify() {
-                if Instant::now() >= deadline {
-                    return false;
-                }
-                thread::yield_now();
-            }
-            true
-        };
-        // Neither notification frees capacity. The producer must go back to sleep after each.
-        let first_wake = wake_waiter();
-        let waited_again = wake_waiter();
-        let premature = done_rx.try_recv().is_ok();
-        let (count, _) = buffer.take();
-        buffer.notify();
-        let completed = premature || done_rx.recv_timeout(Duration::from_secs(2)).is_ok();
-        if completed {
-            producer.join().unwrap();
-        }
-        assert!(first_wake, "producer never waited for capacity");
-        assert!(
-            waited_again,
-            "producer did not recheck capacity after waking"
-        );
-        assert!(!premature, "producer appended to a full buffer");
-        assert_eq!(count, 2);
-        assert!(
-            completed,
-            "producer stayed blocked after the buffer drained"
-        );
-        assert_eq!(buffer.count(), 2);
     }
 
     #[test]

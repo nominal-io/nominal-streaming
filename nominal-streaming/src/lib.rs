@@ -382,6 +382,44 @@ mod tests {
     }
 
     #[test]
+    fn oversized_enqueue_does_not_wait_for_consumer() {
+        #[derive(Debug)]
+        struct GatedConsumer(Mutex<Option<std::sync::mpsc::Receiver<()>>>);
+        impl WriteRequestConsumer for GatedConsumer {
+            fn consume(&self, _: &WriteRequestNominal) -> ConsumerResult<()> {
+                if let Some(release) = self.0.lock().unwrap().take() {
+                    release.recv().unwrap();
+                }
+                Ok(())
+            }
+        }
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let producer = std::thread::spawn(move || {
+            let stream = NominalDatasetStream::new_with_consumer(
+                GatedConsumer(Mutex::new(Some(release_rx))),
+                NominalStreamOpts::default()
+                    .with_max_points_per_record(2)
+                    .with_max_buffered_requests(1)
+                    .with_request_dispatcher_tasks(1),
+            );
+            stream.enqueue(
+                &ChannelDescriptor::new("large"),
+                vec![DoublePoint::default(); 100],
+            );
+            done_tx.send(()).unwrap();
+            drop(stream);
+        });
+        let admitted = done_rx.recv_timeout(Duration::from_secs(2)).is_ok();
+        release_tx.send(()).unwrap();
+        producer.join().unwrap();
+        assert!(
+            admitted,
+            "oversized input waited for downstream consumption"
+        );
+    }
+
+    #[test]
     #[should_panic(expected = "max_points_per_record must be greater than zero")]
     fn zero_record_limit_is_rejected() {
         create_stream_with_consumer(
