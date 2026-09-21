@@ -1260,6 +1260,43 @@ mod tests {
 mod shutdown_tests {
     use super::*;
 
+    #[derive(Debug, Default)]
+    struct StepGate {
+        permits: Mutex<usize>,
+        ready: Condvar,
+    }
+
+    impl StepGate {
+        fn release(&self, count: usize) {
+            *self.permits.lock() += count;
+            self.ready.notify_all();
+        }
+
+        fn wait(&self) {
+            let mut permits = self.permits.lock();
+            while *permits == 0 {
+                self.ready.wait(&mut permits);
+            }
+            *permits -= 1;
+        }
+    }
+
+    #[derive(Debug)]
+    struct StepConsumer {
+        entered: std::sync::mpsc::Sender<()>,
+        gate: Arc<StepGate>,
+        requests: Mutex<Vec<WriteRequestNominal>>,
+    }
+
+    impl WriteRequestConsumer for Arc<StepConsumer> {
+        fn consume(&self, request: &WriteRequestNominal) -> crate::consumer::ConsumerResult<()> {
+            self.requests.lock().push(request.clone());
+            self.entered.send(()).unwrap();
+            self.gate.wait();
+            Ok(())
+        }
+    }
+
     #[derive(Debug)]
     struct ReleaseControlledRecordingConsumer {
         entered: std::sync::mpsc::SyncSender<()>,
@@ -1423,5 +1460,110 @@ mod shutdown_tests {
             .collect::<Vec<_>>();
         values.sort_unstable();
         assert_eq!(values, (0..POINTS_PER_BATCH * BATCHES).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn saturated_dispatchers_apply_backpressure_and_resume_incrementally() {
+        const POINTS_PER_BATCH: usize = 8;
+        const BATCHES: usize = 12;
+
+        for (queue_capacity, dispatcher_tasks) in [(0, 1), (1, 1), (3, 2)] {
+            let gate = Arc::new(StepGate::default());
+            let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+            let consumer = Arc::new(StepConsumer {
+                entered: entered_tx,
+                gate: gate.clone(),
+                requests: Mutex::new(Vec::new()),
+            });
+            let stream = Arc::new(NominalDatasetStream::new_with_consumer(
+                consumer.clone(),
+                NominalStreamOpts::default()
+                    .with_max_points_per_record(1)
+                    .with_max_buffered_requests(queue_capacity)
+                    .with_request_dispatcher_tasks(dispatcher_tasks)
+                    .with_max_request_delay(Duration::from_millis(1)),
+            ));
+            let (admitted_tx, admitted_rx) = std::sync::mpsc::channel();
+            let producer_stream = stream.clone();
+            let producer = thread::spawn(move || {
+                for batch in 0..BATCHES {
+                    producer_stream.enqueue(
+                        &ChannelDescriptor::new(format!("batch-{batch}")),
+                        (0..POINTS_PER_BATCH)
+                            .map(|point| DoublePoint {
+                                timestamp: None,
+                                value: (batch * POINTS_PER_BATCH + point) as f64,
+                            })
+                            .collect::<Vec<_>>(),
+                    );
+                    admitted_tx.send(()).unwrap();
+                }
+            });
+
+            entered_rx
+                .recv_timeout(Duration::from_secs(2))
+                .expect("no request reached the gated consumer");
+            thread::sleep(Duration::from_millis(50));
+            let initially_admitted = admitted_rx.try_iter().count();
+            assert!(initially_admitted > 0);
+            assert!(
+                initially_admitted < BATCHES,
+                "all producers bypassed backpressure with queue={queue_capacity}, dispatchers={dispatcher_tasks}"
+            );
+
+            gate.release(1);
+            entered_rx
+                .recv_timeout(Duration::from_secs(2))
+                .expect("releasing one request did not resume dispatch");
+            thread::sleep(Duration::from_millis(50));
+            let admitted_after_release = initially_admitted + admitted_rx.try_iter().count();
+            assert!(
+                admitted_after_release < BATCHES,
+                "one release drained an unbounded amount of producer work"
+            );
+
+            gate.release(POINTS_PER_BATCH * BATCHES - 1);
+            producer.join().unwrap();
+            drop(stream);
+
+            let requests = consumer.requests.lock();
+            assert_eq!(requests.len(), POINTS_PER_BATCH * BATCHES);
+            let mut values = requests
+                .iter()
+                .flat_map(|request| {
+                    let count: usize = request
+                        .series
+                        .iter()
+                        .map(|series| {
+                            points_len(
+                                series
+                                    .points
+                                    .as_ref()
+                                    .unwrap()
+                                    .points_type
+                                    .as_ref()
+                                    .unwrap(),
+                            )
+                        })
+                        .sum();
+                    assert_eq!(count, 1);
+                    request.series.iter().flat_map(|series| {
+                        let PointsType::DoublePoints(points) = series
+                            .points
+                            .as_ref()
+                            .unwrap()
+                            .points_type
+                            .as_ref()
+                            .unwrap()
+                        else {
+                            panic!("expected double points");
+                        };
+                        points.points.iter().map(|point| point.value as usize)
+                    })
+                })
+                .collect::<Vec<_>>();
+            values.sort_unstable();
+            assert_eq!(values, (0..POINTS_PER_BATCH * BATCHES).collect::<Vec<_>>());
+        }
     }
 }
