@@ -1260,6 +1260,22 @@ mod tests {
 mod shutdown_tests {
     use super::*;
 
+    #[derive(Debug)]
+    struct GatedConsumer {
+        entered: std::sync::mpsc::SyncSender<()>,
+        release: Mutex<std::sync::mpsc::Receiver<()>>,
+        requests: Mutex<Vec<WriteRequestNominal>>,
+    }
+
+    impl WriteRequestConsumer for Arc<GatedConsumer> {
+        fn consume(&self, request: &WriteRequestNominal) -> crate::consumer::ConsumerResult<()> {
+            self.requests.lock().push(request.clone());
+            let _ = self.entered.try_send(());
+            self.release.lock().recv().unwrap();
+            Ok(())
+        }
+    }
+
     #[test]
     fn drop_wakes_partial_batches_before_flush_deadline() {
         #[derive(Debug)]
@@ -1313,5 +1329,99 @@ mod shutdown_tests {
             1,
             "idle workers retained the consumer"
         );
+    }
+
+    #[test]
+    fn drop_drains_oversized_detached_and_buffered_batches() {
+        const POINTS_PER_BATCH: usize = 4;
+        const BATCHES: usize = 3;
+        let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel(1);
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let consumer = Arc::new(GatedConsumer {
+            entered: entered_tx,
+            release: Mutex::new(release_rx),
+            requests: Mutex::new(Vec::new()),
+        });
+        let stream = NominalDatasetStream::new_with_consumer(
+            consumer.clone(),
+            NominalStreamOpts::default()
+                .with_max_points_per_record(1)
+                .with_max_buffered_requests(0)
+                .with_request_dispatcher_tasks(1)
+                .with_max_request_delay(Duration::from_millis(1)),
+        );
+
+        for batch in 0..BATCHES {
+            stream.enqueue(
+                &ChannelDescriptor::new(format!("batch-{batch}")),
+                (0..POINTS_PER_BATCH)
+                    .map(|point| DoublePoint {
+                        timestamp: None,
+                        value: (batch * POINTS_PER_BATCH + point) as f64,
+                    })
+                    .collect::<Vec<_>>(),
+            );
+            if batch == 0 {
+                entered_rx
+                    .recv_timeout(Duration::from_secs(2))
+                    .expect("oversized batch did not reach the consumer");
+            }
+        }
+
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        thread::spawn(move || {
+            drop(stream);
+            done_tx.send(()).unwrap();
+        });
+        assert!(
+            done_rx.recv_timeout(Duration::from_millis(50)).is_err(),
+            "drop completed while the consumer was blocked"
+        );
+
+        for _ in 0..POINTS_PER_BATCH * BATCHES {
+            release_tx.send(()).unwrap();
+        }
+        done_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("drop did not drain every split request");
+
+        let requests = consumer.requests.lock();
+        assert_eq!(requests.len(), POINTS_PER_BATCH * BATCHES);
+        let mut values = requests
+            .iter()
+            .flat_map(|request| {
+                let count: usize = request
+                    .series
+                    .iter()
+                    .map(|series| {
+                        points_len(
+                            series
+                                .points
+                                .as_ref()
+                                .unwrap()
+                                .points_type
+                                .as_ref()
+                                .unwrap(),
+                        )
+                    })
+                    .sum();
+                assert_eq!(count, 1);
+                request.series.iter().flat_map(|series| {
+                    let PointsType::DoublePoints(points) = series
+                        .points
+                        .as_ref()
+                        .unwrap()
+                        .points_type
+                        .as_ref()
+                        .unwrap()
+                    else {
+                        panic!("expected double points");
+                    };
+                    points.points.iter().map(|point| point.value as usize)
+                })
+            })
+            .collect::<Vec<_>>();
+        values.sort_unstable();
+        assert_eq!(values, (0..POINTS_PER_BATCH * BATCHES).collect::<Vec<_>>());
     }
 }
