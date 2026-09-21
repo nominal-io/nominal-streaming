@@ -37,5 +37,6 @@ url = { workspace = true }
 zstd = { workspace = true }
 
 [dev-dependencies]
+rstest = { workspace = true }
 test-log = { workspace = true }
 tempfile = { workspace = true }
