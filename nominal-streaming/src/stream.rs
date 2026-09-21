@@ -1297,6 +1297,55 @@ mod shutdown_tests {
         }
     }
 
+    #[derive(Clone, Copy, Debug)]
+    enum BatchShape {
+        SingleChannel,
+        ManyChannels,
+        MixedChannels,
+    }
+
+    fn enqueue_batch(
+        stream: &NominalDatasetStream,
+        shape: BatchShape,
+        batch: usize,
+        points_per_batch: usize,
+    ) {
+        let point = |index| DoublePoint {
+            timestamp: None,
+            value: (batch * points_per_batch + index) as f64,
+        };
+        match shape {
+            BatchShape::SingleChannel => stream.enqueue(
+                &ChannelDescriptor::new(format!("batch-{batch}")),
+                (0..points_per_batch).map(point).collect::<Vec<_>>(),
+            ),
+            BatchShape::ManyChannels => stream.enqueue_many(
+                (0..points_per_batch)
+                    .map(|index| {
+                        (
+                            ChannelDescriptor::new(format!("batch-{batch}-point-{index}")),
+                            vec![point(index)].into_points(),
+                        )
+                    })
+                    .collect(),
+            ),
+            BatchShape::MixedChannels => {
+                let split = points_per_batch / 2;
+                let mut entries = vec![(
+                    ChannelDescriptor::new(format!("batch-{batch}-grouped")),
+                    (0..split).map(point).collect::<Vec<_>>().into_points(),
+                )];
+                entries.extend((split..points_per_batch).map(|index| {
+                    (
+                        ChannelDescriptor::new(format!("batch-{batch}-point-{index}")),
+                        vec![point(index)].into_points(),
+                    )
+                }));
+                stream.enqueue_many(entries);
+            }
+        }
+    }
+
     #[derive(Debug)]
     struct ReleaseControlledRecordingConsumer {
         entered: std::sync::mpsc::SyncSender<()>,
@@ -1462,108 +1511,109 @@ mod shutdown_tests {
         assert_eq!(values, (0..POINTS_PER_BATCH * BATCHES).collect::<Vec<_>>());
     }
 
-    #[test]
-    fn saturated_dispatchers_apply_backpressure_and_resume_incrementally() {
-        const POINTS_PER_BATCH: usize = 8;
-        const BATCHES: usize = 12;
+    #[rstest::rstest]
+    #[case::rendezvous_oversized_narrow(0, 1, 1, 8, 12, BatchShape::SingleChannel)]
+    #[case::single_slot_exact_capacity(1, 1, 2, 2, 24, BatchShape::SingleChannel)]
+    #[case::multi_dispatcher_remainder(3, 2, 3, 8, 24, BatchShape::SingleChannel)]
+    #[case::wide_fitting(1, 2, 4, 4, 24, BatchShape::ManyChannels)]
+    #[case::wide_underfilled(0, 1, 4, 1, 32, BatchShape::ManyChannels)]
+    #[case::mixed_oversized(2, 3, 5, 12, 24, BatchShape::MixedChannels)]
+    fn saturated_dispatchers_apply_backpressure_and_resume_incrementally(
+        #[case] queue_capacity: usize,
+        #[case] dispatcher_tasks: usize,
+        #[case] record_capacity: usize,
+        #[case] points_per_batch: usize,
+        #[case] batches: usize,
+        #[case] shape: BatchShape,
+    ) {
+        let gate = Arc::new(StepGate::default());
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let consumer = Arc::new(StepConsumer {
+            entered: entered_tx,
+            gate: gate.clone(),
+            requests: Mutex::new(Vec::new()),
+        });
+        let stream = Arc::new(NominalDatasetStream::new_with_consumer(
+            consumer.clone(),
+            NominalStreamOpts::default()
+                .with_max_points_per_record(record_capacity)
+                .with_max_buffered_requests(queue_capacity)
+                .with_request_dispatcher_tasks(dispatcher_tasks)
+                .with_max_request_delay(Duration::from_millis(1)),
+        ));
+        let (admitted_tx, admitted_rx) = std::sync::mpsc::channel();
+        let producer_stream = stream.clone();
+        let producer = thread::spawn(move || {
+            for batch in 0..batches {
+                enqueue_batch(&producer_stream, shape, batch, points_per_batch);
+                admitted_tx.send(()).unwrap();
+            }
+        });
 
-        for (queue_capacity, dispatcher_tasks) in [(0, 1), (1, 1), (3, 2)] {
-            let gate = Arc::new(StepGate::default());
-            let (entered_tx, entered_rx) = std::sync::mpsc::channel();
-            let consumer = Arc::new(StepConsumer {
-                entered: entered_tx,
-                gate: gate.clone(),
-                requests: Mutex::new(Vec::new()),
-            });
-            let stream = Arc::new(NominalDatasetStream::new_with_consumer(
-                consumer.clone(),
-                NominalStreamOpts::default()
-                    .with_max_points_per_record(1)
-                    .with_max_buffered_requests(queue_capacity)
-                    .with_request_dispatcher_tasks(dispatcher_tasks)
-                    .with_max_request_delay(Duration::from_millis(1)),
-            ));
-            let (admitted_tx, admitted_rx) = std::sync::mpsc::channel();
-            let producer_stream = stream.clone();
-            let producer = thread::spawn(move || {
-                for batch in 0..BATCHES {
-                    producer_stream.enqueue(
-                        &ChannelDescriptor::new(format!("batch-{batch}")),
-                        (0..POINTS_PER_BATCH)
-                            .map(|point| DoublePoint {
-                                timestamp: None,
-                                value: (batch * POINTS_PER_BATCH + point) as f64,
-                            })
-                            .collect::<Vec<_>>(),
-                    );
-                    admitted_tx.send(()).unwrap();
-                }
-            });
+        entered_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("no request reached the controlled consumer");
+        thread::sleep(Duration::from_millis(50));
+        let initially_admitted = admitted_rx.try_iter().count();
+        assert!(initially_admitted > 0);
+        assert!(
+            initially_admitted < batches,
+            "all batches bypassed backpressure with queue={queue_capacity}, dispatchers={dispatcher_tasks}, cap={record_capacity}, shape={shape:?}"
+        );
 
-            entered_rx
-                .recv_timeout(Duration::from_secs(2))
-                .expect("no request reached the gated consumer");
-            thread::sleep(Duration::from_millis(50));
-            let initially_admitted = admitted_rx.try_iter().count();
-            assert!(initially_admitted > 0);
-            assert!(
-                initially_admitted < BATCHES,
-                "all producers bypassed backpressure with queue={queue_capacity}, dispatchers={dispatcher_tasks}"
-            );
+        gate.release(1);
+        entered_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("releasing one request did not resume dispatch");
+        thread::sleep(Duration::from_millis(50));
+        let admitted_after_release = initially_admitted + admitted_rx.try_iter().count();
+        assert!(
+            admitted_after_release < batches,
+            "one release drained an unbounded amount of producer work"
+        );
 
-            gate.release(1);
-            entered_rx
-                .recv_timeout(Duration::from_secs(2))
-                .expect("releasing one request did not resume dispatch");
-            thread::sleep(Duration::from_millis(50));
-            let admitted_after_release = initially_admitted + admitted_rx.try_iter().count();
-            assert!(
-                admitted_after_release < BATCHES,
-                "one release drained an unbounded amount of producer work"
-            );
+        let total_points = points_per_batch * batches;
+        gate.release(total_points);
+        producer.join().unwrap();
+        drop(stream);
 
-            gate.release(POINTS_PER_BATCH * BATCHES - 1);
-            producer.join().unwrap();
-            drop(stream);
-
-            let requests = consumer.requests.lock();
-            assert_eq!(requests.len(), POINTS_PER_BATCH * BATCHES);
-            let mut values = requests
-                .iter()
-                .flat_map(|request| {
-                    let count: usize = request
-                        .series
-                        .iter()
-                        .map(|series| {
-                            points_len(
-                                series
-                                    .points
-                                    .as_ref()
-                                    .unwrap()
-                                    .points_type
-                                    .as_ref()
-                                    .unwrap(),
-                            )
-                        })
-                        .sum();
-                    assert_eq!(count, 1);
-                    request.series.iter().flat_map(|series| {
-                        let PointsType::DoublePoints(points) = series
-                            .points
-                            .as_ref()
-                            .unwrap()
-                            .points_type
-                            .as_ref()
-                            .unwrap()
-                        else {
-                            panic!("expected double points");
-                        };
-                        points.points.iter().map(|point| point.value as usize)
+        let requests = consumer.requests.lock();
+        let mut values = requests
+            .iter()
+            .flat_map(|request| {
+                let count: usize = request
+                    .series
+                    .iter()
+                    .map(|series| {
+                        points_len(
+                            series
+                                .points
+                                .as_ref()
+                                .unwrap()
+                                .points_type
+                                .as_ref()
+                                .unwrap(),
+                        )
                     })
+                    .sum();
+                assert!(count > 0);
+                assert!(count <= record_capacity);
+                request.series.iter().flat_map(|series| {
+                    let PointsType::DoublePoints(points) = series
+                        .points
+                        .as_ref()
+                        .unwrap()
+                        .points_type
+                        .as_ref()
+                        .unwrap()
+                    else {
+                        panic!("expected double points");
+                    };
+                    points.points.iter().map(|point| point.value as usize)
                 })
-                .collect::<Vec<_>>();
-            values.sort_unstable();
-            assert_eq!(values, (0..POINTS_PER_BATCH * BATCHES).collect::<Vec<_>>());
-        }
+            })
+            .collect::<Vec<_>>();
+        values.sort_unstable();
+        assert_eq!(values, (0..total_points).collect::<Vec<_>>());
     }
 }

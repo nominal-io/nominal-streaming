@@ -30,6 +30,7 @@ url = "2.5.8"
 zstd = { version = "0.14", default-features = false }
 
 # Test dependencies
+rstest = { version = "0.27.0", default-features = false }
 test-log = { version = "0.2.20", features = ["trace"] }
 tempfile = "3"
 
