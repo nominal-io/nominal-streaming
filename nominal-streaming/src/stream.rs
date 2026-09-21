@@ -1261,13 +1261,13 @@ mod shutdown_tests {
     use super::*;
 
     #[derive(Debug)]
-    struct GatedConsumer {
+    struct ReleaseControlledRecordingConsumer {
         entered: std::sync::mpsc::SyncSender<()>,
         release: Mutex<std::sync::mpsc::Receiver<()>>,
         requests: Mutex<Vec<WriteRequestNominal>>,
     }
 
-    impl WriteRequestConsumer for Arc<GatedConsumer> {
+    impl WriteRequestConsumer for Arc<ReleaseControlledRecordingConsumer> {
         fn consume(&self, request: &WriteRequestNominal) -> crate::consumer::ConsumerResult<()> {
             self.requests.lock().push(request.clone());
             let _ = self.entered.try_send(());
@@ -1337,7 +1337,7 @@ mod shutdown_tests {
         const BATCHES: usize = 3;
         let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel(1);
         let (release_tx, release_rx) = std::sync::mpsc::channel();
-        let consumer = Arc::new(GatedConsumer {
+        let consumer = Arc::new(ReleaseControlledRecordingConsumer {
             entered: entered_tx,
             release: Mutex::new(release_rx),
             requests: Mutex::new(Vec::new()),
