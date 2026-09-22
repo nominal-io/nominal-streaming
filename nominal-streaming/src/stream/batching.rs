@@ -107,8 +107,12 @@ mod tests {
     use super::super::StringPoint;
     use super::*;
 
-    #[test]
-    fn split_records_preserve_tagged_series_contents_and_order() {
+    #[rstest::rstest]
+    #[case::single_point(1)]
+    #[case::remainder(3)]
+    #[case::exact_series(8)]
+    #[case::whole_record(24)]
+    fn split_records_preserve_tagged_series_contents_and_order(#[case] cap: usize) {
         let input = SeriesBuffer::new(usize::MAX);
         for (tag, offset) in [("left", 0), ("right", 100)] {
             input.lock().extend(
@@ -132,48 +136,48 @@ mod tests {
         );
         let expected = input.lock().sb.clone();
         let (total, series) = input.take();
-        for cap in [1, 3, 8, 24] {
-            let output = SeriesBuffer::new(usize::MAX);
-            let mut emitted = 0;
-            for_each_record(series.clone(), total, cap, |record, count| {
-                let actual: usize = record
-                    .iter()
-                    .map(|s| points_len(s.points.as_ref().unwrap().points_type.as_ref().unwrap()))
-                    .sum();
-                assert_eq!(count, actual);
-                assert!(count > 0 && count <= cap);
-                emitted += count;
-                for series in record {
-                    let channel =
-                        ChannelDescriptor::with_tags(series.channel.unwrap().name, series.tags);
-                    output
-                        .lock()
-                        .extend(&channel, series.points.unwrap().points_type.unwrap());
-                }
-            });
-            assert_eq!(emitted, total);
-            assert_eq!(*output.lock().sb, expected, "record cap {cap}");
-        }
+        let output = SeriesBuffer::new(usize::MAX);
+        let mut emitted = 0;
+        for_each_record(series, total, cap, |record, count| {
+            let actual: usize = record
+                .iter()
+                .map(|s| points_len(s.points.as_ref().unwrap().points_type.as_ref().unwrap()))
+                .sum();
+            assert_eq!(count, actual);
+            assert!(count > 0 && count <= cap);
+            emitted += count;
+            for series in record {
+                let channel =
+                    ChannelDescriptor::with_tags(series.channel.unwrap().name, series.tags);
+                output
+                    .lock()
+                    .extend(&channel, series.points.unwrap().points_type.unwrap());
+            }
+        });
+        assert_eq!(emitted, total);
+        assert_eq!(*output.lock().sb, expected, "record cap {cap}");
     }
 
-    #[test]
-    fn point_chunks_preserve_contents_and_order() {
-        for count in [0, 1, 3, 8] {
-            let points = (0..count)
-                .map(|i| DoublePoint {
-                    timestamp: Some(i.into_timestamp()),
-                    value: i as f64,
-                })
-                .collect::<Vec<_>>()
-                .into_points();
-            let buffer = SeriesBuffer::new(usize::MAX);
-            let channel = ChannelDescriptor::new("value");
-            for_each_points_chunk(points.clone(), 3, |chunk, count| {
-                assert_eq!(points_len(&chunk), count);
-                assert!(count <= 3);
-                buffer.lock().extend(&channel, chunk);
-            });
-            assert_eq!(buffer.lock().sb.get(&channel), Some(&points));
-        }
+    #[rstest::rstest]
+    #[case::empty(0)]
+    #[case::below_limit(1)]
+    #[case::exact_limit(3)]
+    #[case::remainder(8)]
+    fn point_chunks_preserve_contents_and_order(#[case] count: i64) {
+        let points = (0..count)
+            .map(|i| DoublePoint {
+                timestamp: Some(i.into_timestamp()),
+                value: i as f64,
+            })
+            .collect::<Vec<_>>()
+            .into_points();
+        let buffer = SeriesBuffer::new(usize::MAX);
+        let channel = ChannelDescriptor::new("value");
+        for_each_points_chunk(points.clone(), 3, |chunk, count| {
+            assert_eq!(points_len(&chunk), count);
+            assert!(count <= 3);
+            buffer.lock().extend(&channel, chunk);
+        });
+        assert_eq!(buffer.lock().sb.get(&channel), Some(&points));
     }
 }
