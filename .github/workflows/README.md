@@ -3,7 +3,7 @@
 | File | Responsibility | Triggers |
 | --- | --- | --- |
 | [pr.yml](pr.yml) | PR structure: validate the PR title | PR opened, reopened, synchronized, or edited |
-| [validate.yml](validate.yml) | Code validation: Rust dependency usage, Rust and Python formatting, linting, builds, and tests | PR opened, reopened, or synchronized; pushes to main |
+| [validate.yml](validate.yml) | Code validation: Rust dependency usage, Rust, Python, and TOML formatting, linting, builds, and tests | PR opened, reopened, or synchronized; pushes to main |
 | [deps.yml](deps.yml) | Approve Dependabot PRs | PR events, filtered to Dependabot in this repository |
 | [crates.yml](crates.yml) | Publish Rust crates and maintain release PRs | Pushes to main |
 | [wheels.yml](wheels.yml) | Build and publish Python wheels | Version tags; manual dispatch builds without publishing |
@@ -40,6 +40,7 @@ Use these exact GitHub Actions contexts for PR validation:
 - `rust-unused-deps`
 - `rust-lint`
 - `rust-build-test`
+- `toml-format`
 - `python-format`
 - `python-lint`
 - `python-wheel-test (abi3 3.10)`
@@ -51,3 +52,15 @@ Publishing and Dependabot approval are not general PR validation checks.
 
 Update required-check contexts when renaming jobs, and external links or dispatch
 callers when renaming workflow files.
+
+## TOML formatting
+
+The `toml-format` job uses Taplo, pinned in `just install-toml`. Run that command
+once before `just check-toml` or `just fix-toml`. These are also included in
+`just install`, `just check`, and `just fix` respectively.
+
+The root `taplo.toml` selects TOML files in the repository root and both crate
+roots, including new files before they are staged. Build output and virtual
+environments are outside that scope. Extend its include patterns if repository
+configuration moves into another directory. Taplo preserves key and array order
+by default.

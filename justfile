@@ -16,7 +16,7 @@ default:
     @just --list
 
 # Install all necessary dependencies for building and running code
-install: rust::install python::install
+install: rust::install python::install install-toml
 
 # Build all crates / packages
 build: rust::build python::build
@@ -25,10 +25,22 @@ build: rust::build python::build
 dev: rust::build python::dev
 
 # Check formatting / codestyle and run linting
-check: rust::check python::check
+check: rust::check python::check check-toml
 
 # Fix formatting / codestyle
-fix: rust::fix python::fix
+fix: rust::fix python::fix fix-toml
 
 # Clean cached artifacts
 clean: rust::clean python::clean
+
+# Install the pinned TOML formatter
+install-toml:
+    cargo install taplo-cli --version 0.10.0 --locked
+
+# Check repository TOML formatting
+check-toml:
+    taplo format --check
+
+# Apply repository TOML formatting
+fix-toml:
+    taplo format
