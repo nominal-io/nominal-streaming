@@ -26,21 +26,21 @@ jobs:
           # --- manylinux (auto) ---
           - label: linux-x86_64
             os: linux
-            runner: depot-ubuntu-22.04-4
+            runner: depot-ubuntu-24.04-4
             target: x86_64
             manylinux: auto
             env: {}
 
           - label: linux-aarch64
             os: linux
-            runner: depot-ubuntu-22.04-arm-4
+            runner: depot-ubuntu-24.04-arm-4
             target: aarch64
             manylinux: auto
             env: {}
 
           - label: linux-armv7
             os: linux
-            runner: depot-ubuntu-22.04-4
+            runner: depot-ubuntu-24.04-4
             target: armv7
             manylinux: auto
             env: {}
@@ -48,21 +48,21 @@ jobs:
           # --- musllinux ---
           - label: musllinux-x86_64
             os: musllinux
-            runner: depot-ubuntu-22.04-4
+            runner: depot-ubuntu-24.04-4
             target: x86_64
             manylinux: musllinux_1_2
             env:
               OPENSSL_DIR: /usr
           - label: musllinux-aarch64
             os: musllinux
-            runner: depot-ubuntu-22.04-4
+            runner: depot-ubuntu-24.04-4
             target: aarch64
             manylinux: musllinux_1_2
             env:
               OPENSSL_DIR: /usr
           - label: musllinux-armv7
             os: musllinux
-            runner: depot-ubuntu-22.04-4
+            runner: depot-ubuntu-24.04-4
             target: armv7
             manylinux: musllinux_1_2
             env:
@@ -152,6 +152,10 @@ jobs:
           version: "0.8.x"
           enable-cache: false
 
+      # Only publish for release tags. This keeps workflow_dispatch usable as a
+      # build-only dry run, which is the only way to exercise the wheel matrix
+      # without pushing to PyPI.
       - name: Publish wheel
+        if: ${{ startsWith(github.ref, 'refs/tags/') }}
         run: |
           uv publish --token ${{ secrets.PYPI_TOKEN }}
