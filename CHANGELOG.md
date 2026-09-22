@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.1](https://github.com/nominal-io/nominal-streaming/compare/v0.10.0...v0.10.1) - 2026-09-22
+
+### Fixed
+
+- include the request error in the primary-consumer fallback warning ([#362](https://github.com/nominal-io/nominal-streaming/pull/362))
+- wake batch workers on stream shutdown ([#352](https://github.com/nominal-io/nominal-streaming/pull/352))
+
+### Other
+
+- speed up enqueue by removing duplicate series lookups ([#351](https://github.com/nominal-io/nominal-streaming/pull/351))
+- refine stream mismatch and timed flush check tests ([#353](https://github.com/nominal-io/nominal-streaming/pull/353))
+
 ## [0.10.0](https://github.com/nominal-io/nominal-streaming/compare/v0.9.10...v0.10.0) - 2026-09-17
 
 ### Added
