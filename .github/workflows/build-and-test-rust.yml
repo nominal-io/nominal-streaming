@@ -25,41 +25,16 @@ jobs:
       - uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b # v3.1.0
       - run: just rust::check
 
-  compile:
-    runs-on: depot-ubuntu-24.04-4
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
-        with:
-          toolchain: stable
-          rustflags: ""
-      - uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b # v3.1.0
-      - run: just rust::build
-
-  test:
-    runs-on: depot-ubuntu-24.04-4
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
-        with:
-          toolchain: stable
-          rustflags: ""
-      - uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b # v3.1.0
-      - run: just rust::test
-
-  # Keep the status name required by the main branch ruleset.
   build:
-    needs: [format, compile, test]
-    if: ${{ always() }}
-    runs-on: depot-ubuntu-24.04
+    runs-on: depot-ubuntu-24.04-4
     steps:
-      - name: Require every Rust check to pass
-        env:
-          RESULTS: ${{ join(needs.*.result, ',') }}
-        run: |
-          for result in ${RESULTS//,/ }; do
-            if [[ "$result" != success ]]; then
-              echo "Rust checks did not all pass: $RESULTS"
-              exit 1
-            fi
-          done
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
+        with:
+          toolchain: stable
+          rustflags: ""
+      - uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b # v3.1.0
+      - name: Build Rust crates
+        run: just rust::build
+      - name: Run workspace tests
+        run: just rust::test
