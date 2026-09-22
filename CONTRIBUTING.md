@@ -19,6 +19,14 @@ Some common commands are as follows:
 - `just fix`: Automatically format across rust and python bindings.
   - `just rust::fix` or `just python::fix` for language specific versions.
 
+## Rust formatting
+
+Rust formatting uses the nightly version pinned by `fmt-toolchain` in `rust.just`.
+`just install` installs it automatically; use `just rust::install` for Rust-only setup.
+Then run `just rust::check` or `just rust::fix`.
+
+CI reads the same pin. Rust CI builds and tests continue to use stable.
+
 ## Nix Setup
 
 A dev shell for the Rust crate is also available via nix. 
