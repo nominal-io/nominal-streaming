@@ -6,31 +6,61 @@ on:
   pull_request:
     branches: ["main"]
 
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build:
-    runs-on: depot-ubuntu-24.04-4
+  format:
+    runs-on: ubuntu-latest
     steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
-      - name: Setup Rust Toolchain
-        uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          # stable is the default; nightly is only used by `cargo +nightly fmt`
-          toolchain: nightly, stable
+          toolchain: nightly
           components: rustfmt
+          cache: false
           rustflags: ""
-      - name: Install Rust Problem Matcher
-        run: echo "::add-matcher::.github/rust.json"
-      - name: Install just
-        uses: extractions/setup-just@v3
-      - name: Install rust dependencies
-        run: just rust::install
-      - name: Build rust crates
-        run: just rust::build
-      - name: Check rust format
-        run: just rust::check
-      - name: Run rust Tests
-        run: just rust::test
+      - uses: extractions/setup-just@v3
+      - run: just rust::check
+
+  compile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          rustflags: ""
+      - uses: extractions/setup-just@v3
+      - run: just rust::build
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          rustflags: ""
+      - uses: extractions/setup-just@v3
+      - run: just rust::test
+
+  # Keep the status name required by the main branch ruleset.
+  build:
+    needs: [format, compile, test]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every Rust check to pass
+        env:
+          RESULTS: ${{ join(needs.*.result, ',') }}
+        run: |
+          for result in ${RESULTS//,/ }; do
+            if [[ "$result" != success ]]; then
+              echo "Rust checks did not all pass: $RESULTS"
+              exit 1
+            fi
+          done
