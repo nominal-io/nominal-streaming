@@ -1134,8 +1134,7 @@ fn for_each_record(
     let mut count = 0;
     for mut series in series {
         let points = series.points.take().unwrap().points_type.unwrap();
-        for_each_points_chunk(points, cap, |points| {
-            let n = points_len(&points);
+        for_each_points_chunk(points, cap, |points, n| {
             if count > 0 && count + n > cap {
                 send(std::mem::take(&mut record), count);
                 count = 0;
@@ -1156,19 +1155,32 @@ fn for_each_record(
 }
 
 /// Move oversized inputs into one chunk at a time, leaving fitting inputs untouched.
-fn for_each_points_chunk(points: PointsType, cap: usize, mut submit: impl FnMut(PointsType)) {
-    if points_len(&points) <= cap {
-        submit(points);
+fn for_each_points_chunk(
+    points: PointsType,
+    cap: usize,
+    mut submit: impl FnMut(PointsType, usize),
+) {
+    let count = points_len(&points);
+    if count <= cap {
+        submit(points, count);
         return;
     }
 
-    fn submit_chunks<T>(points: Vec<T>, cap: usize, mut submit: impl FnMut(PointsType))
+    fn submit_chunks<T>(points: Vec<T>, cap: usize, mut submit: impl FnMut(PointsType, usize))
     where
         Vec<T>: IntoPoints,
     {
         let mut points = points.into_iter();
         while points.len() > 0 {
-            submit(points.by_ref().take(cap).collect::<Vec<_>>().into_points());
+            let count = points.len().min(cap);
+            submit(
+                points
+                    .by_ref()
+                    .take(count)
+                    .collect::<Vec<_>>()
+                    .into_points(),
+                count,
+            );
         }
     }
 
@@ -1217,8 +1229,9 @@ mod tests {
                 .into_points();
             let buffer = SeriesBuffer::new(usize::MAX);
             let channel = ChannelDescriptor::new("value");
-            for_each_points_chunk(points.clone(), 3, |chunk| {
-                assert!(points_len(&chunk) <= 3);
+            for_each_points_chunk(points.clone(), 3, |chunk, count| {
+                assert_eq!(points_len(&chunk), count);
+                assert!(count <= 3);
                 buffer.lock().extend(&channel, chunk);
             });
             assert_eq!(buffer.lock().sb.get(&channel), Some(&points));
@@ -1526,33 +1539,46 @@ mod shutdown_tests {
         #[case] batches: usize,
         #[case] shape: BatchShape,
     ) {
+        struct ReleaseOnDrop(Arc<StepGate>, usize);
+        impl Drop for ReleaseOnDrop {
+            fn drop(&mut self) {
+                self.0.release(self.1);
+            }
+        }
+        let total_points = points_per_batch * batches;
         let gate = Arc::new(StepGate::default());
+        let _release_on_failure = ReleaseOnDrop(gate.clone(), total_points);
         let (entered_tx, entered_rx) = std::sync::mpsc::channel();
         let consumer = Arc::new(StepConsumer {
             entered: entered_tx,
             gate: gate.clone(),
             requests: Mutex::new(Vec::new()),
         });
-        let stream = Arc::new(NominalDatasetStream::new_with_consumer(
+        let stream = NominalDatasetStream::new_with_consumer(
             consumer.clone(),
             NominalStreamOpts::default()
                 .with_max_points_per_record(record_capacity)
                 .with_max_buffered_requests(queue_capacity)
                 .with_request_dispatcher_tasks(dispatcher_tasks)
                 .with_max_request_delay(Duration::from_millis(1)),
-        ));
+        );
         let (admitted_tx, admitted_rx) = std::sync::mpsc::channel();
-        let producer_stream = stream.clone();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
         let producer = thread::spawn(move || {
             for batch in 0..batches {
-                enqueue_batch(&producer_stream, shape, batch, points_per_batch);
+                enqueue_batch(&stream, shape, batch, points_per_batch);
                 admitted_tx.send(()).unwrap();
             }
+            drop(stream);
+            done_tx.send(()).unwrap();
         });
 
-        entered_rx
-            .recv_timeout(Duration::from_secs(2))
-            .expect("no request reached the controlled consumer");
+        // Consume every initial notification so the next one must follow a gate release.
+        for _ in 0..dispatcher_tasks {
+            entered_rx
+                .recv_timeout(Duration::from_secs(2))
+                .expect("dispatcher did not reach the controlled consumer");
+        }
         thread::sleep(Duration::from_millis(50));
         let initially_admitted = admitted_rx.try_iter().count();
         assert!(initially_admitted > 0);
@@ -1572,10 +1598,11 @@ mod shutdown_tests {
             "one release drained an unbounded amount of producer work"
         );
 
-        let total_points = points_per_batch * batches;
         gate.release(total_points);
+        done_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("producer and stream did not finish draining");
         producer.join().unwrap();
-        drop(stream);
 
         let requests = consumer.requests.lock();
         let mut values = requests
