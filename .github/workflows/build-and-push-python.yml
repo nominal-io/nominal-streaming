@@ -82,10 +82,13 @@ jobs:
           # --- macOS ---
           - label: macos-aarch64
             os: macos
-            runner: depot-macos-14
+            runner: depot-macos-15
             target: aarch64
             manylinux: "" # ignored
-            env: {}
+            env:
+              # Pin the wheel's minimum macOS explicitly so the tag does not
+              # follow the runner image. Matches the published macosx_11_0 wheels.
+              MACOSX_DEPLOYMENT_TARGET: "11.0"
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
