@@ -17,6 +17,11 @@ install:
 lint:
     cargo clippy --workspace --all-targets --no-default-features --features nominal-streaming/logging,nominal-streaming/instrument,py-nominal-streaming/python311 --locked -- -D warnings
 
+# Reject unused Rust dependencies using the same checker locally and in CI.
+check-dependencies:
+    cargo install cargo-machete --version 0.9.2 --locked
+    cargo machete
+
 # Build all rust code
 build:
     @echo "Running 'build' for Rust code"

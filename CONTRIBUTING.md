@@ -15,6 +15,7 @@ Some common commands are as follows:
   - `just dev`: Builds rust crate and builds / installs python bindings in developer mode instead.
 - `just check`: Check Rust formatting and Python linting and formatting.
   - `just rust::check` or `just python::check` for language specific versions.
+- `just rust::check-dependencies`: Install the pinned cargo-machete release and check the workspace for unused Rust dependencies. CI runs this in the Rust lint job.
 - `just rust::lint`: Run Clippy on the workspace with core features and the Python 3.11 ABI enabled; warnings fail the check.
 - `just fix`: Automatically format across rust and python bindings.
   - `just rust::fix` or `just python::fix` for language specific versions.
