@@ -11,7 +11,7 @@
 
 - `cargo build` compiles the library and ensures new APIs integrate cleanly.
 - `cargo test` runs unit tests (with `test-log` enabled) and should pass before every push.
-- `cargo +nightly fmt --all` applies the repository rustfmt settings; run before committing.
+- `just rust::fix` applies the repository rustfmt settings with the pinned formatter; run before committing.
 - `cargo clippy --all-targets --all-features` catches common mistakes; address warnings or justify them.
 - `cargo doc --open` renders API docs; check public items for clarity when adding features.
 
