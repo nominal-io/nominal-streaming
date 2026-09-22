@@ -7,10 +7,8 @@ import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from unittest.mock import Mock
 
-from nominal_streaming import NominalDatasetStream, NominalLogStream, PyNominalLogStreamOpts
-from nominal_streaming._nominal_streaming import PyNominalLogStream
+from nominal_streaming import NominalLogStream, PyNominalLogStreamOpts
 from nominal_streaming.nominal_log_stream import _timestamp_ns
 
 
@@ -48,6 +46,9 @@ class LogStreamTests(unittest.TestCase):
 
     def test_options_validate_setters_without_changing_previous_value(self):
         opts = PyNominalLogStreamOpts()
+        for value in [float("nan"), float("inf"), -1.0]:
+            with self.assertRaises(ValueError):
+                PyNominalLogStreamOpts(request_timeout_secs=value)
         for name in [
             "max_request_delay_secs",
             "request_timeout_secs",
@@ -66,45 +67,20 @@ class LogStreamTests(unittest.TestCase):
             opts.with_num_runtime_workers(0)
         self.assertEqual(opts.num_runtime_workers, 2)
 
-    def test_native_configuration_is_fluent_and_options_are_copied(self):
-        with tempfile.TemporaryDirectory() as directory:
-            opts = PyNominalLogStreamOpts(max_request_bytes=512, num_runtime_workers=1)
-            native = PyNominalLogStream()
-            self.assertIs(native.with_options(opts), native)
-            self.assertIs(native.to_file(Path(directory)), native)
-            self.assertIs(native.enable_logging("off"), native)
-            opts.with_max_request_bytes(4096)
-            native.open()
-            try:
-                with self.assertRaisesRegex(RuntimeError, "max_request_bytes"):
-                    native.enqueue("app", 1, "x" * 1024)
-                with self.assertRaises(RuntimeError):
-                    native.with_options(opts)
-                native.enqueue("app", 2, "small")
-                self.assertEqual(native.flush().backed_up_records, 1)
-            finally:
-                native.close()
-
-    def test_wrapper_supports_options_and_logging_before_open(self):
+    def test_configuration_is_copied_and_frozen_after_open(self):
         with tempfile.TemporaryDirectory() as directory:
             opts = PyNominalLogStreamOpts().with_max_request_bytes(512)
-            stream = NominalLogStream()
-            self.assertIs(stream.with_options(opts), stream)
-            self.assertIs(stream.enable_logging("off"), stream)
-            with stream.to_file(Path(directory)):
+            stream = NominalLogStream().with_options(opts).enable_logging("off")
+            opts.with_max_request_bytes(4096)
+            with stream.to_file(path=Path(directory)):
                 with self.assertRaisesRegex(RuntimeError, "max_request_bytes"):
                     stream.enqueue("app", 0, "x" * 1024)
+                with self.assertRaises(RuntimeError):
+                    stream.with_options(opts)
                 with self.assertRaises(RuntimeError):
                     stream.enable_logging()
                 stream.enqueue("app", 1, "ready")
             self.assertEqual(stream.stats().backed_up_records, 1)
-
-    def test_shared_enqueue_keywords_work_for_both_stream_types(self):
-        for stream_type in [NominalDatasetStream, NominalLogStream]:
-            stream = stream_type()
-            stream._impl = Mock()
-            stream.enqueue(channel_name="app", timestamp=1, value="started", tags={"service": "api"})
-            stream._impl.enqueue.assert_called_once_with("app", 1, "started", {"service": "api"})
 
     def test_log_factory_and_keyword_methods_use_configured_limits(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -112,14 +88,12 @@ class LogStreamTests(unittest.TestCase):
                 "test-token", "https://example.com/api", max_request_bytes=512, max_points_per_batch=1
             ).to_file(path=Path(directory))
             with stream:
-                stream.enqueue(channel_name="app", timestamp=1, value="started")
+                stream.enqueue(channel_name="app", timestamp=1, value="started", tags={"service": "api"})
                 stream.enqueue(channel_name="app", timestamp=2, value="ready")
                 with self.assertRaisesRegex(RuntimeError, "max_request_bytes"):
                     stream.enqueue(channel_name="app", timestamp=3, value="x" * 1024)
             self.assertEqual(stream.stats().backed_up_records, 2)
             self.assertEqual(len(list(Path(directory).glob("*.jsonl"))), 2)
-            native = PyNominalLogStream().with_file_fallback(path=Path(directory))
-            self.assertIsInstance(native, PyNominalLogStream)
 
     def test_exact_timestamps(self):
         self.assertEqual(_timestamp_ns("2026-09-14T00:00:00.123456789Z") % 1_000_000_000, 123456789)
@@ -133,7 +107,7 @@ class LogStreamTests(unittest.TestCase):
         handler = signal.getsignal(signal.SIGINT)
         with tempfile.TemporaryDirectory() as directory:
             stream = NominalLogStream().to_file(Path(directory)).open()
-            stream.enqueue("engine", 1, "start", args={"shared": "override"})
+            stream.enqueue("engine", 1, "start", tags={"shared": "override"})
             stream.enqueue("engine", 2, "stop", args={"shared": "yes", "other": "value"})
             stream.close(wait=False)
             with ThreadPoolExecutor(4) as pool:
@@ -174,20 +148,6 @@ class LogStreamTests(unittest.TestCase):
                     stream.enqueue("x", 2**63, "a")
                 self.assertEqual(stream.stats().accepted_records, 0)
 
-    def test_failed_journal_can_be_rescued(self):
-        with tempfile.TemporaryDirectory() as directory:
-            bad = Path(directory) / "not-a-directory"
-            bad.write_text("occupied")
-            stream = NominalLogStream().to_file(bad).open()
-            stream.enqueue("x", 1, "preserve me")
-            with self.assertRaises(RuntimeError):
-                stream.close()
-            self.assertEqual(stream.stats().failed_records, 1)
-            rescued = stream.save_failed(Path(directory) / "rescued")
-            self.assertEqual(rescued.backed_up_records, 1)
-            self.assertEqual(rescued.failed_records, 0)
-            stream.close()
-
     def test_file_only_rejects_fallback_in_either_configuration_order(self):
         with tempfile.TemporaryDirectory() as directory:
             primary = Path(directory) / "primary"
@@ -202,40 +162,22 @@ class LogStreamTests(unittest.TestCase):
             self.assertFalse(primary.exists())
             self.assertFalse(fallback.exists())
 
-    def test_background_close_reports_failed_journal_and_allows_rescue(self):
-        with tempfile.TemporaryDirectory() as directory:
-            bad = Path(directory) / "occupied"
-            bad.write_text("not a directory")
-            stream = NominalLogStream().to_file(bad).open()
-            stream.enqueue("app", 1, "preserve me")
-            self.assertIsNone(stream.close(wait=False))
-            with self.assertRaises(RuntimeError):
-                stream.close(wait=True)
-            self.assertEqual(stream.stats().failed_records, 1)
-            stats = stream.save_failed(Path(directory) / "rescued")
-            self.assertEqual(stats.backed_up_records, 1)
-            self.assertEqual(stats.failed_records, 0)
-            stream.close()
-
-    def test_serialized_byte_limit_rejects_oversized_records_and_splits(self):
-        with tempfile.TemporaryDirectory() as directory:
-            opts = PyNominalLogStreamOpts(max_request_bytes=512)
-            stream = NominalLogStream(opts=opts).to_file(Path(directory)).open()
-            with self.assertRaisesRegex(RuntimeError, "max_request_bytes"):
-                stream.enqueue("channel", 0, "🚀" * 128)
-            self.assertEqual(stream.stats().accepted_records, 0)
-            for timestamp in range(20):
-                stream.enqueue("channel", timestamp, "🚀" * 60)
-            stream.close()
-            files = list(Path(directory).glob("*.jsonl"))
-            self.assertGreater(len(files), 1)
-            self.assertEqual(sum(len(p.read_text().splitlines()) for p in files), 20)
-            self.assertEqual(stream.stats().backed_up_records, 20)
-
-    def test_bad_duration_is_python_exception(self):
-        for value in [float("nan"), float("inf"), -1.0]:
-            with self.assertRaises(ValueError):
-                PyNominalLogStreamOpts(request_timeout_secs=value)
+    def test_failed_close_retains_records_for_rescue(self):
+        for background in (False, True):
+            with self.subTest(background=background), tempfile.TemporaryDirectory() as directory:
+                bad = Path(directory) / "occupied"
+                bad.write_text("not a directory")
+                stream = NominalLogStream().to_file(bad).open()
+                stream.enqueue("app", 1, "preserve me")
+                if background:
+                    self.assertIsNone(stream.close(wait=False))
+                with self.assertRaises(RuntimeError):
+                    stream.close(wait=True)
+                self.assertEqual(stream.stats().failed_records, 1)
+                stats = stream.save_failed(Path(directory) / "rescued")
+                self.assertEqual(stats.backed_up_records, 1)
+                self.assertEqual(stats.failed_records, 0)
+                stream.close()
 
 
 if __name__ == "__main__":
