@@ -1,3 +1,5 @@
+mod avro_io;
+
 use std::error::Error;
 use std::fmt::Debug;
 use std::fmt::Formatter;
@@ -36,6 +38,15 @@ use crate::types::AuthProvider;
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum ConsumerError {
+    #[error("invalid stream configuration: {0}")]
+    Configuration(String),
+    #[error("Avro {operation} failed at {path}: {source}")]
+    FileError {
+        path: PathBuf,
+        operation: &'static str,
+        #[source]
+        source: Box<dyn Error + Send + Sync>,
+    },
     #[error("io error: {0}")]
     IoError(#[from] std::io::Error),
     #[error("avro error: {0}")]
@@ -78,6 +89,11 @@ fn describe_request_error(e: &conjure_error::Error) -> String {
 
 pub trait WriteRequestConsumer: Send + Sync + Debug {
     fn consume(&self, request: &WriteRequestNominal) -> ConsumerResult<()>;
+
+    /// Finalizes a destination after all requests have completed.
+    fn finish(&self) -> ConsumerResult<()> {
+        Ok(())
+    }
 }
 
 #[derive(Clone)]
@@ -219,7 +235,9 @@ pub static CORE_AVRO_SCHEMA: LazyLock<apache_avro::Schema> = LazyLock::new(|| {
 
 #[derive(Clone)]
 pub struct AvroFileConsumer {
-    writer: Arc<Mutex<apache_avro::Writer<'static, std::fs::File>>>,
+    writer: Arc<Mutex<apache_avro::Writer<'static, avro_io::CompleteWriter<std::fs::File>>>>,
+    sync_file: Arc<std::fs::File>,
+    failure: Arc<Mutex<Option<String>>>,
     path: PathBuf,
 }
 
@@ -269,7 +287,12 @@ impl AvroFileConsumer {
         dataset_rid: Option<ResourceIdentifier>,
     ) -> std::io::Result<Self> {
         let path = file_path.into();
-        std::fs::create_dir_all(path.parent().unwrap_or(&path))?;
+        if let Some(parent) = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+        {
+            std::fs::create_dir_all(parent)?;
+        }
         let mut options = std::fs::OpenOptions::new();
         options.write(true);
         if overwrite {
@@ -278,10 +301,11 @@ impl AvroFileConsumer {
             options.create_new(true);
         }
         let file = options.open(&path)?;
+        let sync_file = Arc::new(file.try_clone()?);
 
         let mut writer = apache_avro::Writer::builder()
             .schema(&CORE_AVRO_SCHEMA)
-            .writer(file)
+            .writer(avro_io::CompleteWriter::new(file))
             .codec(apache_avro::Codec::Snappy)
             .build();
 
@@ -295,13 +319,50 @@ impl AvroFileConsumer {
 
         Ok(Self {
             writer: Arc::new(Mutex::new(writer)),
+            sync_file,
+            failure: Arc::new(Mutex::new(None)),
             path,
         })
+    }
+
+    fn file_error(
+        &self,
+        operation: &'static str,
+        source: impl Error + Send + Sync + 'static,
+    ) -> ConsumerError {
+        ConsumerError::FileError {
+            path: self.path.clone(),
+            operation,
+            source: Box::new(source),
+        }
+    }
+
+    /// The destination used by this consumer.
+    pub fn path(&self) -> &std::path::Path {
+        &self.path
+    }
+
+    fn check_failure(&self) -> ConsumerResult<()> {
+        match self.failure.lock().as_ref() {
+            Some(message) => {
+                Err(self.file_error("previous operation", std::io::Error::other(message.clone())))
+            }
+            None => Ok(()),
+        }
+    }
+
+    fn remember_failure(&self, result: ConsumerResult<()>) -> ConsumerResult<()> {
+        if let Err(error) = &result {
+            *self.failure.lock() = Some(error.to_string());
+        }
+        result
     }
 
     fn append_series(&self, series: &[Series]) -> ConsumerResult<()> {
         let mut records: Vec<Record> = Vec::new();
         for series in series {
+            validate_avro_timestamps(series.points.as_ref())
+                .map_err(|e| self.file_error("encode", e))?;
             let (timestamps, values) = points_to_avro(series.points.as_ref());
 
             let mut record = Record::new(&CORE_AVRO_SCHEMA).expect("Failed to create Avro record");
@@ -321,12 +382,54 @@ impl AvroFileConsumer {
             records.push(record);
         }
 
-        self.writer
-            .lock()
-            .extend(records)
-            .map_err(|e| ConsumerError::AvroError(Box::new(e)))?;
+        let mut writer = self.writer.lock();
+        self.check_failure()?;
+        self.remember_failure(
+            writer
+                .extend(records)
+                .map(|_| ())
+                .map_err(|source| self.file_error("write", source)),
+        )
+    }
+}
 
+fn validate_avro_timestamps(points: Option<&Points>) -> std::io::Result<()> {
+    fn validate<'a>(
+        timestamps: impl Iterator<Item = &'a Option<Timestamp>>,
+    ) -> std::io::Result<()> {
+        for timestamp in timestamps {
+            let valid = timestamp.as_ref().is_some_and(|t| {
+                (0..1_000_000_000).contains(&t.nanos)
+                    && i64::try_from(i128::from(t.seconds) * 1_000_000_000 + i128::from(t.nanos))
+                        .is_ok()
+            });
+            if !valid {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "timestamp is absent, invalid, or outside Avro signed nanosecond range",
+                ));
+            }
+        }
         Ok(())
+    }
+    let Some(points) = points.and_then(|p| p.points_type.as_ref()) else {
+        return Ok(());
+    };
+    match points {
+        PointsType::DoublePoints(p) => validate(p.points.iter().map(|p| &p.timestamp)),
+        PointsType::StringPoints(p) => validate(p.points.iter().map(|p| &p.timestamp)),
+        PointsType::IntegerPoints(p) => validate(p.points.iter().map(|p| &p.timestamp)),
+        PointsType::Uint64Points(p) => validate(p.points.iter().map(|p| &p.timestamp)),
+        PointsType::StructPoints(p) => validate(p.points.iter().map(|p| &p.timestamp)),
+        PointsType::ArrayPoints(p) => match p.array_type.as_ref() {
+            Some(ArrayType::DoubleArrayPoints(p)) => {
+                validate(p.points.iter().map(|p| &p.timestamp))
+            }
+            Some(ArrayType::StringArrayPoints(p)) => {
+                validate(p.points.iter().map(|p| &p.timestamp))
+            }
+            None => Ok(()),
+        },
     }
 }
 
@@ -426,7 +529,9 @@ fn points_to_avro(points: Option<&Points>) -> (Vec<Value>, Vec<Value>) {
 }
 
 fn convert_timestamp_to_nanoseconds(timestamp: Timestamp) -> Value {
-    Value::Long(timestamp.seconds * 1_000_000_000 + timestamp.nanos as i64)
+    Value::Long(
+        (i128::from(timestamp.seconds) * 1_000_000_000 + i128::from(timestamp.nanos)) as i64,
+    )
 }
 
 impl WriteRequestConsumer for AvroFileConsumer {
@@ -434,19 +539,28 @@ impl WriteRequestConsumer for AvroFileConsumer {
         self.append_series(&request.series)?;
         Ok(())
     }
+
+    fn finish(&self) -> ConsumerResult<()> {
+        let mut writer = self.writer.lock();
+        self.check_failure()?;
+        self.remember_failure(
+            writer
+                .flush()
+                .map(|_| ())
+                .map_err(|e| self.file_error("flush", e)),
+        )?;
+        self.remember_failure(
+            self.sync_file
+                .sync_all()
+                .map_err(|e| self.file_error("sync", e)),
+        )
+    }
 }
 
 impl Drop for AvroFileConsumer {
-    /// Defensive flush-on-drop. In normal operation, records reach disk via
-    /// `append_series` → `apache_avro::Writer::extend`, which flushes at the
-    /// end of every call. But `apache_avro::Writer` itself does not flush on
-    /// drop, so any code path that bypasses `extend` (e.g. a direct
-    /// `Writer::append`, or a future writer call that forgets to flush) would
-    /// silently lose buffered records when the consumer goes out of scope.
-    /// This impl makes that failure mode impossible regardless of how the
-    /// inner writer is driven.
+    /// Best-effort cleanup. Call `finish` explicitly to observe flush/sync errors.
     fn drop(&mut self) {
-        if let Err(e) = self.writer.lock().flush() {
+        if let Err(e) = self.finish() {
             warn!(
                 "failed to flush avro writer for {:?} on drop: {e:?}",
                 self.path
@@ -513,6 +627,12 @@ where
     P: WriteRequestConsumer + Send + Sync,
     S: WriteRequestConsumer + Send + Sync,
 {
+    fn finish(&self) -> ConsumerResult<()> {
+        let primary = self.primary.finish();
+        let secondary = self.secondary.finish();
+        primary.and(secondary)
+    }
+
     fn consume(&self, request: &WriteRequestNominal) -> ConsumerResult<()> {
         let primary_result = self.primary.consume(request);
         let secondary_result = self.secondary.consume(request);
@@ -533,6 +653,12 @@ where
     P: WriteRequestConsumer + Send + Sync,
     F: WriteRequestConsumer + Send + Sync,
 {
+    fn finish(&self) -> ConsumerResult<()> {
+        let primary = self.primary.finish();
+        let fallback = self.fallback.finish();
+        primary.and(fallback)
+    }
+
     fn consume(&self, request: &WriteRequestNominal) -> ConsumerResult<()> {
         if let Err(e) = self.primary.consume(request) {
             warn!("Sending request to primary consumer failed: {e}. Attempting fallback.");
@@ -573,6 +699,10 @@ impl<C> WriteRequestConsumer for ListeningWriteRequestConsumer<C>
 where
     C: WriteRequestConsumer + Send + Sync,
 {
+    fn finish(&self) -> ConsumerResult<()> {
+        self.consumer.finish()
+    }
+
     fn consume(&self, request: &WriteRequestNominal) -> ConsumerResult<()> {
         match self.consumer.consume(request) {
             Ok(_) => {
@@ -600,6 +730,106 @@ mod tests {
     use tempfile::NamedTempFile;
 
     use super::*;
+
+    #[test]
+    fn file_write_failure_has_path_and_remains_failed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("failed.avro");
+        let consumer = AvroFileConsumer::new_with_full_path(&path, false, None).unwrap();
+        // A read-only descriptor deterministically rejects writes on every platform.
+        *consumer.writer.lock() = apache_avro::Writer::new(
+            &CORE_AVRO_SCHEMA,
+            avro_io::CompleteWriter::new(std::fs::File::open(&path).unwrap()),
+        );
+        let error = consumer
+            .append_series(&[make_series(
+                "ch",
+                Points {
+                    points_type: Some(PointsType::IntegerPoints(IntegerPoints {
+                        points: vec![
+                            nominal_api::tonic::io::nominal::scout::api::proto::IntegerPoint {
+                                timestamp: make_timestamp(1, 0),
+                                value: 7,
+                            },
+                        ],
+                    })),
+                },
+            )])
+            .unwrap_err();
+        assert!(error.to_string().contains(&path.display().to_string()));
+        assert!(consumer.finish().is_err());
+        assert!(consumer.append_series(&[]).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn synchronization_failure_is_reported_and_sticky() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sync.avro");
+        let mut consumer = AvroFileConsumer::new_with_full_path(&path, false, None).unwrap();
+        consumer.sync_file = Arc::new(std::fs::File::open("/dev/null").unwrap());
+        let error = consumer.finish().unwrap_err();
+        assert!(error.to_string().contains("sync failed"));
+        assert!(error.to_string().contains(&path.display().to_string()));
+        assert!(consumer.finish().is_err());
+    }
+
+    #[test]
+    fn timestamp_outside_avro_range_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let consumer =
+            AvroFileConsumer::new_with_full_path(dir.path().join("range.avro"), false, None)
+                .unwrap();
+        let result = consumer.append_series(&[make_series(
+            "ch",
+            Points {
+                points_type: Some(PointsType::IntegerPoints(IntegerPoints {
+                    points: vec![
+                        nominal_api::tonic::io::nominal::scout::api::proto::IntegerPoint {
+                            timestamp: make_timestamp(i64::MAX, 0),
+                            value: 7,
+                        },
+                    ],
+                })),
+            },
+        )]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn checked_file_finalization_is_readable_and_idempotent() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("checked.avro");
+        write_integer_points_with(&path, 3, false, None);
+        assert_eq!(read_integer_point_count(&path), 3);
+        let records = Reader::new(std::fs::File::open(&path).unwrap())
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        let Value::Record(fields) = &records[0] else {
+            panic!("expected record")
+        };
+        assert_eq!(
+            fields
+                .iter()
+                .find(|(name, _)| name == "timestamps")
+                .unwrap()
+                .1,
+            Value::Array(vec![
+                Value::Long(0),
+                Value::Long(1_000_000_000),
+                Value::Long(2_000_000_000)
+            ])
+        );
+        assert_eq!(
+            fields.iter().find(|(name, _)| name == "values").unwrap().1,
+            Value::Array(
+                (0..3)
+                    .map(|i| Value::Union(2, Box::new(Value::Long(i))))
+                    .collect()
+            )
+        );
+    }
 
     #[test]
     fn describe_request_error_is_compact_and_names_the_cause() {
@@ -1118,7 +1348,8 @@ mod tests {
                 },
             )])
             .unwrap();
-        // Consumer drops at end of scope, flushing the avro writer to disk.
+        consumer.finish().unwrap();
+        consumer.finish().unwrap();
     }
 
     fn read_integer_point_count(path: &PathBuf) -> usize {
