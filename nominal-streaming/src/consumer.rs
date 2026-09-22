@@ -1,6 +1,7 @@
 use std::error::Error;
 use std::fmt::Debug;
 use std::fmt::Formatter;
+use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::LazyLock;
@@ -48,6 +49,32 @@ pub enum ConsumerError {
 }
 
 pub type ConsumerResult<T> = Result<T, ConsumerError>;
+
+/// Compact, single-line summary of a failed request: the conjure error kind, the
+/// HTTP status when the failure came from a response, and the cause chain's
+/// Display output.
+///
+/// Deliberately NOT the conjure `Error`'s Debug form, which embeds captured
+/// backtraces and parameter maps — several KB per line in the per-request warn
+/// logs that high-volume callers (e.g. Lambda ingest) run with.
+fn describe_request_error(e: &conjure_error::Error) -> String {
+    let mut out = match e.kind() {
+        conjure_error::ErrorKind::Service(s) => format!("service error {}", s.error_code()),
+        conjure_error::ErrorKind::Throttle(_) => "throttled (429)".to_owned(),
+        conjure_error::ErrorKind::Unavailable(_) => "unavailable (503)".to_owned(),
+        _ => "unknown error kind".to_owned(),
+    };
+    let mut cause: Option<&(dyn Error + 'static)> = Some(e.cause());
+    while let Some(c) = cause {
+        if let Some(remote) = c.downcast_ref::<client::conjure::runtime::errors::RemoteError>() {
+            let _ = write!(out, ": {c} (http {})", remote.status());
+        } else {
+            let _ = write!(out, ": {c}");
+        }
+        cause = c.source();
+    }
+    out
+}
 
 pub trait WriteRequestConsumer: Send + Sync + Debug {
     fn consume(&self, request: &WriteRequestNominal) -> ConsumerResult<()>;
@@ -114,7 +141,7 @@ impl<A: AuthProvider> NominalCoreConsumer<A> {
             self.client
                 .send(request)
                 .await
-                .map_err(|e| ConsumerError::RequestError(format!("{e:?}")))
+                .map_err(|e| ConsumerError::RequestError(describe_request_error(&e)))
         })?;
         Ok(())
     }
@@ -508,7 +535,7 @@ where
 {
     fn consume(&self, request: &WriteRequestNominal) -> ConsumerResult<()> {
         if let Err(e) = self.primary.consume(request) {
-            warn!("Sending request to primary consumer failed. Attempting fallback.");
+            warn!("Sending request to primary consumer failed: {e}. Attempting fallback.");
             let fallback_result = self.fallback.consume(request);
             // we want to notify the caller about the missing token error as it is a user error
             // todo: get rid of this once we figure out why the auth handle blocks in connect
@@ -573,6 +600,23 @@ mod tests {
     use tempfile::NamedTempFile;
 
     use super::*;
+
+    #[test]
+    fn describe_request_error_is_compact_and_names_the_cause() {
+        let io = std::io::Error::new(std::io::ErrorKind::ConnectionRefused, "connection refused");
+        let described = describe_request_error(&conjure_error::Error::internal_safe(io));
+        assert!(described.contains("connection refused"), "{described}");
+        assert!(!described.contains("Backtrace"), "{described}");
+        assert!(described.len() < 200, "{described}");
+
+        let throttled =
+            describe_request_error(&conjure_error::Error::throttle_safe("too many requests"));
+        assert!(throttled.contains("429"), "{throttled}");
+
+        let unavailable =
+            describe_request_error(&conjure_error::Error::unavailable_safe("service rolling"));
+        assert!(unavailable.contains("503"), "{unavailable}");
+    }
 
     fn make_timestamp(secs: i64, nanos: i32) -> Option<Timestamp> {
         Some(Timestamp {
