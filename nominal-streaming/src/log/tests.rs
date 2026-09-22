@@ -179,25 +179,26 @@ fn confirmed_delivery_retries_then_never_creates_backup() {
 }
 
 #[test]
-fn exhausted_retries_preserve_records_and_surface_delivery_status() {
-    let dir = tempfile::tempdir().unwrap();
-    let transport = target(usize::MAX, true);
-    let stream = NominalLogStream::start(
-        fast_options(),
-        Some(transport),
-        "dataset".into(),
-        Some(dir.path().into()),
-    )
-    .unwrap();
-    stream.enqueue("a", record("backup")).unwrap();
-    let stats = stream.close().unwrap();
-    assert_eq!(stats.requests, 4);
-    assert_eq!(stats.retries, 3);
-    assert_eq!(stats.backed_up_records, 1);
-    assert_eq!(stats.acknowledged_records, 0);
-    assert_eq!(stats.failed_records, 0);
-    assert_eq!(stats.buffered_bytes, 0);
-    assert!(stats.last_error.is_some());
+fn failed_delivery_preserves_records_and_reports_retry_status() {
+    for (retryable, requests, retries) in [(true, 4, 3), (false, 1, 0)] {
+        let dir = tempfile::tempdir().unwrap();
+        let stream = NominalLogStream::start(
+            fast_options(),
+            Some(target(usize::MAX, retryable)),
+            "dataset".into(),
+            Some(dir.path().into()),
+        )
+        .unwrap();
+        stream.enqueue("a", record("backup")).unwrap();
+        let stats = stream.close().unwrap();
+        assert_eq!(stats.requests, requests);
+        assert_eq!(stats.retries, retries);
+        assert_eq!(stats.backed_up_records, 1);
+        assert_eq!(stats.acknowledged_records, 0);
+        assert_eq!(stats.failed_records, 0);
+        assert_eq!(stats.buffered_bytes, 0);
+        assert!(stats.last_error.is_some());
+    }
 }
 
 #[test]
@@ -286,22 +287,6 @@ fn mixed_delivery_backs_up_only_the_unconfirmed_batch() {
         .collect();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["MESSAGE"], "unconfirmed");
-}
-
-#[test]
-fn permanent_errors_skip_retries_and_save_backup() {
-    let dir = tempfile::tempdir().unwrap();
-    let stream = NominalLogStream::start(
-        fast_options(),
-        Some(target(usize::MAX, false)),
-        "dataset".into(),
-        Some(dir.path().into()),
-    )
-    .unwrap();
-    stream.enqueue("a", record("permanent")).unwrap();
-    let stats = stream.close().unwrap();
-    assert_eq!(stats.requests, 1);
-    assert_eq!(stats.backed_up_records, 1);
 }
 
 #[test]
@@ -395,26 +380,6 @@ fn backpressure_counts_inflight_bytes_and_close_wakes_blocked_producer() {
         finish_tx.send(()).unwrap();
     });
     assert_eq!(stream.close().unwrap().acknowledged_records, 1);
-}
-
-#[test]
-fn negative_nanoseconds_encode_with_normalized_seconds() {
-    let transport = target(0, false);
-    let stream = NominalLogStream::start(
-        fast_options(),
-        Some(transport.clone()),
-        "dataset".into(),
-        None,
-    )
-    .unwrap();
-    stream
-        .enqueue("a", LogRecord::new(-1, "before epoch", HashMap::new()))
-        .unwrap();
-    stream.close().unwrap();
-    let requests = transport.requests.lock().unwrap();
-    let ts = &requests[0].batches[0].points.as_ref().unwrap().timestamps[0];
-    assert_eq!(ts.seconds, Some(-1));
-    assert_eq!(ts.nanos, Some(999_999_999));
 }
 
 #[test]
@@ -517,6 +482,17 @@ fn serialized_limit_splits_unicode_and_arguments_independently_of_memory_budget(
     let requests = transport.requests.lock().unwrap();
     assert!(requests.len() > 1);
     assert!(requests.iter().all(|r| r.encoded_len() <= 512));
+    let mut nanos: Vec<_> = requests
+        .iter()
+        .flat_map(|r| &r.batches)
+        .flat_map(|b| &b.points.as_ref().unwrap().timestamps)
+        .map(|ts| {
+            assert_eq!(ts.seconds, Some(-1));
+            ts.nanos.unwrap()
+        })
+        .collect();
+    nanos.sort();
+    assert_eq!(nanos, (999_999_960..1_000_000_000).collect::<Vec<_>>());
 }
 
 #[test]
