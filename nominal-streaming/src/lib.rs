@@ -126,6 +126,46 @@ async fn async_main() {
 }
 ```
 
+## Checked shutdown
+
+Use fallible admission methods and explicitly close the stream to observe delivery
+and file-finalization failures. Writers must be dropped before `close(&mut self)`;
+their accepted points are flushed even if later pushes are rejected.
+
+```rust,no_run
+use nominal_streaming::prelude::*;
+use nominal_streaming::stream::NominalDatasetStreamBuilder;
+
+fn write_file() -> Result<(), Box<dyn std::error::Error>> {
+    let mut stream = NominalDatasetStreamBuilder::new()
+        .stream_to_file("new-data.avro")
+        .try_build()?;
+    {
+        let mut writer = stream.double_writer(ChannelDescriptor::new("temperature"));
+        writer.try_push(0, 21.5)?;
+        writer.try_flush()?;
+    }
+    let summary = stream.close()?;
+    assert_eq!(summary.file_points, 1);
+    Ok(())
+}
+```
+
+`close` drains accepted points, joins workers and finalizes destinations. Repeated
+calls return the same result. A failed close carries its delivery summary in
+`StreamError::summary`. Backend acknowledgements and file writes may overlap for
+dual writes. Opaque custom-consumer completion is counted separately and does not
+establish backend or disk preservation. File counts in a live `delivery_summary`
+are provisional, and live unpreserved counts include pending work. A finalization
+error conservatively invalidates all non-backend evidence.
+
+`try_enqueue` and `try_enqueue_many` reject new admissions after a delivery failure.
+An admitted batch is reserved in full and its remaining chunks continue draining.
+Worker failure while draining can return an error after acceptance; inspect the
+error summary before retrying. Legacy `enqueue` and writer `push` methods panic on
+rejection. `Drop` performs the same cleanup and logs errors; use `close` to handle
+them explicitly. A custom consumer that never returns can still block shutdown.
+
 ## Additional configuration
 
 ### Stream options
@@ -215,10 +255,12 @@ pub mod prelude {
     pub use nominal_api::tonic::io::nominal::scout::api::proto::WriteRequestNominal;
 
     pub use crate::consumer::NominalCoreConsumer;
+    pub use crate::stream::DeliverySummary;
     pub use crate::stream::NominalDatasetStream;
     #[expect(deprecated)]
     pub use crate::stream::NominalDatasourceStream;
     pub use crate::stream::NominalStreamOpts;
+    pub use crate::stream::StreamError;
     pub use crate::types::AuthProvider;
     pub use crate::types::ChannelDescriptor;
     pub use crate::types::IntoTimestamp;

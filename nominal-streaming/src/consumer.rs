@@ -87,8 +87,80 @@ fn describe_request_error(e: &conjure_error::Error) -> String {
     out
 }
 
+/// Evidence returned by one consumer invocation. Destination flags may overlap.
+/// File evidence is provisional until finalization succeeds. Custom consumers
+/// default to opaque completion and must explicitly opt into destination claims.
+#[derive(Debug, Default)]
+pub struct ConsumerDelivery {
+    pub acknowledged: bool,
+    pub file_paths: Vec<PathBuf>,
+    pub custom: bool,
+    pub failed: bool,
+    pub failures: Vec<String>,
+}
+
+impl ConsumerDelivery {
+    fn from_result(result: ConsumerResult<()>) -> Self {
+        match result {
+            Ok(()) => Self {
+                custom: true,
+                ..Self::default()
+            },
+            Err(error) => Self::failure(error.to_string()),
+        }
+    }
+
+    pub(crate) fn failure(message: String) -> Self {
+        Self {
+            failed: true,
+            failures: vec![message],
+            ..Self::default()
+        }
+    }
+
+    fn merge(mut self, other: Self) -> Self {
+        self.acknowledged |= other.acknowledged;
+        self.custom |= other.custom;
+        self.failed |= other.failed;
+        self.file_paths.extend(other.file_paths);
+        self.failures.extend(other.failures);
+        self
+    }
+}
+
+/// Turn third-party panics into observable errors without abandoning queued data.
+pub(crate) fn checked_call<T>(call: impl FnOnce() -> T) -> Result<T, String> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(call)).map_err(|payload| {
+        let message = payload
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| payload.downcast_ref::<&str>().copied())
+            .unwrap_or("unknown panic");
+        format!("operation panicked: {message}")
+    })
+}
+
 pub trait WriteRequestConsumer: Send + Sync + Debug {
     fn consume(&self, request: &WriteRequestNominal) -> ConsumerResult<()>;
+
+    /// Consume with explicit destination evidence. Existing custom implementations
+    /// remain supported and report opaque completion rather than backend delivery.
+    fn consume_delivery(&self, request: &WriteRequestNominal) -> ConsumerDelivery {
+        match checked_call(|| self.consume(request)) {
+            Ok(result) => ConsumerDelivery::from_result(result),
+            Err(message) => ConsumerDelivery::failure(message),
+        }
+    }
+
+    /// Finalize every destination, retaining all errors. Composite consumers
+    /// override this so one failing destination does not skip another.
+    fn finish_delivery(&self) -> Vec<String> {
+        match checked_call(|| self.finish()) {
+            Ok(Ok(())) => Vec::new(),
+            Ok(Err(error)) => vec![error.to_string()],
+            Err(message) => vec![message],
+        }
+    }
 
     /// Finalizes a destination after all requests have completed.
     fn finish(&self) -> ConsumerResult<()> {
@@ -173,6 +245,17 @@ impl<T: AuthProvider> Debug for NominalCoreConsumer<T> {
 }
 
 impl<T: AuthProvider + 'static> WriteRequestConsumer for NominalCoreConsumer<T> {
+    fn consume_delivery(&self, request: &WriteRequestNominal) -> ConsumerDelivery {
+        match checked_call(|| self.consume(request)) {
+            Ok(Ok(())) => ConsumerDelivery {
+                acknowledged: true,
+                ..Default::default()
+            },
+            Ok(Err(error)) => ConsumerDelivery::failure(error.to_string()),
+            Err(message) => ConsumerDelivery::failure(message),
+        }
+    }
+
     fn consume(&self, request: &WriteRequestNominal) -> ConsumerResult<()> {
         let token = self
             .auth_provider
@@ -535,6 +618,17 @@ fn convert_timestamp_to_nanoseconds(timestamp: Timestamp) -> Value {
 }
 
 impl WriteRequestConsumer for AvroFileConsumer {
+    fn consume_delivery(&self, request: &WriteRequestNominal) -> ConsumerDelivery {
+        match checked_call(|| self.consume(request)) {
+            Ok(Ok(())) => ConsumerDelivery {
+                file_paths: vec![self.path().to_path_buf()],
+                ..Default::default()
+            },
+            Ok(Err(error)) => ConsumerDelivery::failure(error.to_string()),
+            Err(message) => ConsumerDelivery::failure(message),
+        }
+    }
+
     fn consume(&self, request: &WriteRequestNominal) -> ConsumerResult<()> {
         self.append_series(&request.series)?;
         Ok(())
@@ -627,6 +721,22 @@ where
     P: WriteRequestConsumer + Send + Sync,
     S: WriteRequestConsumer + Send + Sync,
 {
+    fn consume_delivery(&self, request: &WriteRequestNominal) -> ConsumerDelivery {
+        let primary = checked_call(|| self.primary.consume_delivery(request))
+            .unwrap_or_else(ConsumerDelivery::failure);
+        let secondary = checked_call(|| self.secondary.consume_delivery(request))
+            .unwrap_or_else(ConsumerDelivery::failure);
+        primary.merge(secondary)
+    }
+
+    fn finish_delivery(&self) -> Vec<String> {
+        let mut failures =
+            checked_call(|| self.primary.finish_delivery()).unwrap_or_else(|e| vec![e]);
+        failures
+            .extend(checked_call(|| self.secondary.finish_delivery()).unwrap_or_else(|e| vec![e]));
+        failures
+    }
+
     fn finish(&self) -> ConsumerResult<()> {
         let primary = self.primary.finish();
         let secondary = self.secondary.finish();
@@ -653,6 +763,28 @@ where
     P: WriteRequestConsumer + Send + Sync,
     F: WriteRequestConsumer + Send + Sync,
 {
+    fn consume_delivery(&self, request: &WriteRequestNominal) -> ConsumerDelivery {
+        let primary = checked_call(|| self.primary.consume_delivery(request))
+            .unwrap_or_else(ConsumerDelivery::failure);
+        if !primary.failed {
+            return primary;
+        }
+        let fallback = checked_call(|| self.fallback.consume_delivery(request))
+            .unwrap_or_else(ConsumerDelivery::failure);
+        let failed = fallback.failed;
+        let mut delivery = primary.merge(fallback);
+        delivery.failed = failed;
+        delivery
+    }
+
+    fn finish_delivery(&self) -> Vec<String> {
+        let mut failures =
+            checked_call(|| self.primary.finish_delivery()).unwrap_or_else(|e| vec![e]);
+        failures
+            .extend(checked_call(|| self.fallback.finish_delivery()).unwrap_or_else(|e| vec![e]));
+        failures
+    }
+
     fn finish(&self) -> ConsumerResult<()> {
         let primary = self.primary.finish();
         let fallback = self.fallback.finish();
@@ -699,6 +831,28 @@ impl<C> WriteRequestConsumer for ListeningWriteRequestConsumer<C>
 where
     C: WriteRequestConsumer + Send + Sync,
 {
+    fn consume_delivery(&self, request: &WriteRequestNominal) -> ConsumerDelivery {
+        let mut delivery = checked_call(|| self.consumer.consume_delivery(request))
+            .unwrap_or_else(ConsumerDelivery::failure);
+        let notification = checked_call(|| {
+            if delivery.failed {
+                let error = ConsumerError::RequestError(delivery.failures.join("; "));
+                self.listeners.on_error(&error, request);
+            } else {
+                self.listeners.on_success(request);
+            }
+        });
+        if let Err(message) = notification {
+            delivery.failed = true;
+            delivery.failures.push(message);
+        }
+        delivery
+    }
+
+    fn finish_delivery(&self) -> Vec<String> {
+        self.consumer.finish_delivery()
+    }
+
     fn finish(&self) -> ConsumerResult<()> {
         self.consumer.finish()
     }

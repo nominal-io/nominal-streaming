@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::fmt::Debug;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
+#[cfg(feature = "instrument")]
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
@@ -11,7 +12,6 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 use std::time::Instant;
-use std::time::UNIX_EPOCH;
 
 use batching::for_each_record;
 use batching::points_len;
@@ -39,7 +39,9 @@ use tracing::error;
 
 use crate::client::NominalApiClients;
 use crate::client::PRODUCTION_API_URL;
+use crate::consumer::checked_call;
 use crate::consumer::AvroFileConsumer;
+use crate::consumer::ConsumerDelivery;
 use crate::consumer::DualWriteRequestConsumer;
 use crate::consumer::ListeningWriteRequestConsumer;
 use crate::consumer::NominalCoreConsumer;
@@ -362,14 +364,144 @@ impl NominalDatasetStreamBuilder {
 #[deprecated]
 pub type NominalDatasourceStream = NominalDatasetStream;
 
+/// Delivery evidence for accepted user points. Backend and file counts can
+/// overlap for dual writes. Custom completion makes no backend/disk guarantee.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DeliverySummary {
+    pub accepted_points: usize,
+    pub acknowledged_points: usize,
+    /// File appends; provisional until close successfully finalizes the files.
+    pub file_points: usize,
+    pub custom_consumer_points: usize,
+    /// Points without a completed destination, including pending points in a live snapshot.
+    pub unpreserved_points: usize,
+    pub file_paths: Vec<PathBuf>,
+    /// At most sixteen diagnostics, each limited to 2048 characters.
+    pub failures: Vec<String>,
+}
+
+/// A sticky stream failure, including the available delivery evidence.
+#[derive(Debug, Clone, thiserror::Error)]
+#[error("{message}")]
+pub struct StreamError {
+    pub summary: DeliverySummary,
+    pub message: String,
+}
+
+struct DeliveryState {
+    open: bool,
+    failed: bool,
+    worker_failed: bool,
+    summary: DeliverySummary,
+    // Counts by destination bitset: backend=1, file=2, custom=4.
+    // Fixed-size accounting preserves unions without retaining requests.
+    delivered: [usize; 8],
+}
+
+impl DeliveryState {
+    fn record_failure(&mut self, message: &str) {
+        self.failed = true;
+        if self.summary.failures.len() == 16 {
+            self.summary.failures.pop();
+        }
+        self.diagnostic(message);
+    }
+
+    fn diagnostic(&mut self, message: &str) {
+        if self.summary.failures.len() < 16 {
+            self.summary
+                .failures
+                .push(message.chars().take(2048).collect());
+        }
+    }
+
+    fn snapshot(&self) -> DeliverySummary {
+        let mut summary = self.summary.clone();
+        let mut completed = 0;
+        for (destinations, count) in self.delivered.iter().enumerate().skip(1) {
+            completed += count;
+            if destinations & 1 != 0 {
+                summary.acknowledged_points += count;
+            }
+            if destinations & 2 != 0 {
+                summary.file_points += count;
+            }
+            if destinations & 4 != 0 {
+                summary.custom_consumer_points += count;
+            }
+        }
+        summary.unpreserved_points = summary.accepted_points.saturating_sub(completed);
+        summary
+    }
+
+    fn error(&self, message: &str) -> StreamError {
+        StreamError {
+            summary: self.snapshot(),
+            message: message.to_owned(),
+        }
+    }
+}
+
+struct Progress {
+    state: Mutex<DeliveryState>,
+    capacity: Condvar,
+}
+
+impl Progress {
+    fn new() -> Self {
+        Self {
+            state: Mutex::new(DeliveryState {
+                open: true,
+                failed: false,
+                worker_failed: false,
+                summary: DeliverySummary::default(),
+                delivered: [0; 8],
+            }),
+            capacity: Condvar::new(),
+        }
+    }
+
+    fn worker_failure(&self, message: &str) {
+        let mut state = self.state.lock();
+        state.worker_failed = true;
+        state.record_failure(message);
+        self.capacity.notify_all();
+    }
+
+    fn completed(&self, count: usize, delivery: ConsumerDelivery) {
+        let mut state = self.state.lock();
+        let destinations = usize::from(delivery.acknowledged)
+            | (usize::from(!delivery.file_paths.is_empty()) << 1)
+            | (usize::from(delivery.custom) << 2);
+        state.delivered[destinations] += count;
+        for path in delivery.file_paths {
+            if !state.summary.file_paths.contains(&path) {
+                state.summary.file_paths.push(path);
+            }
+        }
+        for failure in delivery.failures {
+            if delivery.failed {
+                state.record_failure(&failure);
+            } else {
+                state.diagnostic(&failure);
+            }
+        }
+        state.failed |= delivery.failed;
+        self.capacity.notify_all();
+    }
+}
+
 pub struct NominalDatasetStream {
     opts: NominalStreamOpts,
     running: Arc<AtomicBool>,
-    unflushed_points: Arc<AtomicUsize>,
+    progress: Arc<Progress>,
+    consumer: Option<Arc<dyn WriteRequestConsumer>>,
+    workers: Vec<thread::JoinHandle<()>>,
+    close_result: Option<Result<DeliverySummary, StreamError>>,
     primary_buffer: Arc<SeriesBuffer>,
     secondary_buffer: Arc<SeriesBuffer>,
-    primary_handle: thread::JoinHandle<()>,
-    secondary_handle: thread::JoinHandle<()>,
+    primary_handle: thread::Thread,
+    secondary_handle: thread::Thread,
     /// Records the total time spent processing batches on background threads.
     ///
     /// This field is only available when the `instrument` feature is enabled.
@@ -392,7 +524,7 @@ impl NominalDatasetStream {
     }
 
     /// # Panics
-    /// Panics if `opts.max_points_per_record` is zero.
+    /// Panics if `opts.max_points_per_record` or `opts.request_dispatcher_tasks` is zero.
     pub fn new_with_consumer<C: WriteRequestConsumer + 'static>(
         consumer: C,
         opts: NominalStreamOpts,
@@ -401,92 +533,91 @@ impl NominalDatasetStream {
             opts.max_points_per_record > 0,
             "max_points_per_record must be greater than zero"
         );
+        assert!(
+            opts.request_dispatcher_tasks > 0,
+            "request_dispatcher_tasks must be greater than zero"
+        );
         let primary_buffer = Arc::new(SeriesBuffer::new(opts.max_points_per_record));
         let secondary_buffer = Arc::new(SeriesBuffer::new(opts.max_points_per_record));
-
-        let (request_tx, request_rx) =
-            crossbeam_channel::bounded::<(WriteRequestNominal, usize)>(opts.max_buffered_requests);
-
+        let (request_tx, request_rx) = crossbeam_channel::bounded(opts.max_buffered_requests);
         let running = Arc::new(AtomicBool::new(true));
-        let unflushed_points = Arc::new(AtomicUsize::new(0));
-
+        let progress = Arc::new(Progress::new());
+        let consumer: Arc<dyn WriteRequestConsumer> = Arc::new(consumer);
         #[cfg(feature = "instrument")]
         let batch_processor_ns = Arc::new(AtomicU64::new(0));
         #[cfg(feature = "instrument")]
         let dispatcher_ns = Arc::new(AtomicU64::new(0));
-
-        let primary_handle = thread::Builder::new()
-            .name("nmstream_primary".to_string())
-            .spawn({
-                let points_buffer = Arc::clone(&primary_buffer);
-                let running = running.clone();
-                let tx = request_tx.clone();
-                #[cfg(feature = "instrument")]
-                let bp_ns = Arc::clone(&batch_processor_ns);
-                move || {
-                    batch_processor(
-                        running,
-                        points_buffer,
-                        tx,
-                        opts.max_request_delay,
-                        #[cfg(feature = "instrument")]
-                        bp_ns,
-                    );
-                }
-            })
-            .unwrap();
-
-        let secondary_handle = thread::Builder::new()
-            .name("nmstream_secondary".to_string())
-            .spawn({
-                let secondary_buffer = Arc::clone(&secondary_buffer);
-                let running = running.clone();
-                #[cfg(feature = "instrument")]
-                let bp_ns = Arc::clone(&batch_processor_ns);
-                move || {
-                    batch_processor(
-                        running,
-                        secondary_buffer,
-                        request_tx,
-                        opts.max_request_delay,
-                        #[cfg(feature = "instrument")]
-                        bp_ns,
-                    );
-                }
-            })
-            .unwrap();
-
-        let consumer = Arc::new(consumer);
-
-        for i in 0..opts.request_dispatcher_tasks {
-            thread::Builder::new()
-                .name(format!("nmstream_dispatch_{i}"))
-                .spawn({
-                    let running = Arc::clone(&running);
-                    let unflushed_points = Arc::clone(&unflushed_points);
-                    let rx = request_rx.clone();
-                    let consumer = consumer.clone();
-                    #[cfg(feature = "instrument")]
-                    let disp_ns = Arc::clone(&dispatcher_ns);
-                    move || {
-                        debug!("starting request dispatcher #{}", i);
-                        request_dispatcher(
-                            running,
-                            unflushed_points,
-                            rx,
-                            consumer,
-                            #[cfg(feature = "instrument")]
-                            disp_ns,
-                        );
-                    }
-                })
-                .unwrap();
+        let mut workers = Vec::new();
+        for (name, buffer) in [
+            ("primary", &primary_buffer),
+            ("secondary", &secondary_buffer),
+        ] {
+            let buffer = buffer.clone();
+            let running = running.clone();
+            let progress = progress.clone();
+            let tx = request_tx.clone();
+            let delay = opts.max_request_delay;
+            #[cfg(feature = "instrument")]
+            let bp_ns = batch_processor_ns.clone();
+            workers.push(
+                thread::Builder::new()
+                    .name(format!("nmstream_{name}"))
+                    .spawn(move || {
+                        let result = checked_call(|| {
+                            batch_processor(
+                                running,
+                                buffer,
+                                tx,
+                                delay,
+                                &progress,
+                                #[cfg(feature = "instrument")]
+                                bp_ns,
+                            )
+                        });
+                        if let Err(message) = result {
+                            progress.worker_failure(&format!("batch worker: {message}"));
+                        }
+                    })
+                    .expect("failed to spawn batch worker"),
+            );
         }
-
-        NominalDatasetStream {
+        drop(request_tx);
+        let primary_handle = workers[0].thread().clone();
+        let secondary_handle = workers[1].thread().clone();
+        for i in 0..opts.request_dispatcher_tasks {
+            let rx = request_rx.clone();
+            let consumer = consumer.clone();
+            let progress = progress.clone();
+            #[cfg(feature = "instrument")]
+            let disp_ns = dispatcher_ns.clone();
+            workers.push(
+                thread::Builder::new()
+                    .name(format!("nmstream_dispatch_{i}"))
+                    .spawn(move || {
+                        let result = checked_call(|| {
+                            request_dispatcher(
+                                rx,
+                                consumer,
+                                &progress,
+                                #[cfg(feature = "instrument")]
+                                disp_ns,
+                            )
+                        });
+                        if let Err(message) = result {
+                            progress.worker_failure(&format!("dispatch worker: {message}"));
+                        }
+                    })
+                    .expect("failed to spawn dispatch worker"),
+            );
+        }
+        drop(request_rx);
+        Self {
             opts,
             running,
-            unflushed_points,
+            progress,
+            consumer: Some(consumer),
+            workers,
+            close_result: None,
             primary_buffer,
             secondary_buffer,
             primary_handle,
@@ -496,6 +627,70 @@ impl NominalDatasetStream {
             #[cfg(feature = "instrument")]
             dispatcher_ns,
         }
+    }
+
+    /// Snapshot delivery evidence. While open, unpreserved points include pending
+    /// work and file evidence remains provisional until checked finalization.
+    pub fn delivery_summary(&self) -> DeliverySummary {
+        match &self.close_result {
+            Some(Ok(summary)) => summary.clone(),
+            Some(Err(error)) => error.summary.clone(),
+            None => self.progress.state.lock().snapshot(),
+        }
+    }
+
+    /// Stop admission, drain accepted points, join workers and finalize destinations.
+    /// Repeated calls return the same result. A successful custom consumer is opaque:
+    /// only built-in destination evidence establishes backend or Avro preservation.
+    pub fn close(&mut self) -> Result<DeliverySummary, StreamError> {
+        if let Some(result) = &self.close_result {
+            return result.clone();
+        }
+        self.progress.state.lock().open = false;
+        self.running.store(false, Ordering::Release);
+        self.primary_handle.unpark();
+        self.secondary_handle.unpark();
+        for worker in self.workers.drain(..) {
+            if worker.join().is_err() {
+                self.progress
+                    .worker_failure("worker panicked outside its recovery boundary");
+            }
+        }
+        let consumer = self.consumer.take().expect("open stream owns its consumer");
+        let mut failures =
+            checked_call(|| consumer.finish_delivery()).unwrap_or_else(|message| vec![message]);
+        if let Err(message) = checked_call(|| drop(consumer)) {
+            failures.push(message);
+        }
+        let mut state = self.progress.state.lock();
+        if !failures.is_empty() {
+            // Finalization errors make non-backend evidence uncertain. Conservatively
+            // retain only backend acknowledgements; do not claim unflushed files safe.
+            let mut acknowledged = 0;
+            for (destinations, count) in state.delivered.iter().enumerate() {
+                if destinations & 1 != 0 {
+                    acknowledged += count;
+                }
+            }
+            state.delivered = [0; 8];
+            state.delivered[1] = acknowledged;
+            for failure in failures {
+                state.record_failure(&format!("finish: {failure}"));
+            }
+        }
+        let summary = state.snapshot();
+        let result = if state.failed || summary.unpreserved_points != 0 {
+            let message = format!(
+                "stream close failed: {} unpreserved points; {}",
+                summary.unpreserved_points,
+                summary.failures.join("; ")
+            );
+            Err(StreamError { summary, message })
+        } else {
+            Ok(summary)
+        };
+        self.close_result = Some(result.clone());
+        result
     }
 
     pub fn double_writer(&self, channel_descriptor: ChannelDescriptor) -> NominalDoubleWriter<'_> {
@@ -550,87 +745,108 @@ impl NominalDatasetStream {
     }
 
     pub fn enqueue(&self, channel_descriptor: &ChannelDescriptor, new_points: impl IntoPoints) {
+        self.try_enqueue(channel_descriptor, new_points)
+            .expect("stream rejected points");
+    }
+
+    /// Accept the entire submission or reject it before admission. Accepted points
+    /// continue draining if a destination subsequently fails.
+    pub fn try_enqueue(
+        &self,
+        channel_descriptor: &ChannelDescriptor,
+        new_points: impl IntoPoints,
+    ) -> Result<(), StreamError> {
         let new_points = new_points.into_points();
-        let new_count = points_len(&new_points);
-
-        self.when_capacity(new_count, |mut sb| {
-            sb.extend(channel_descriptor, new_points)
-        });
+        let count = points_len(&new_points);
+        self.reserve(count)?;
+        self.when_capacity(count, |mut buffer| {
+            buffer.extend(channel_descriptor, new_points)
+        })
     }
 
-    /// Enqueues points for many channels, blocking while both buffers are full.
-    ///
-    /// This reserves capacity and takes the buffer lock once per batch, where the equivalent run of
-    /// [`enqueue`](Self::enqueue) calls would do both once per channel. For a wide record --
-    /// thousands of channels sharing a timestamp -- that is the difference between one buffer
-    /// insertion and thousands of them.
-    ///
-    /// A batch larger than `max_points_per_record` is admitted in groups of channel entries.
-    /// An individual oversized entry is admitted whole; the background processor splits output
-    /// requests to the configured limit. Fitting buffered records are sent unchanged. Concurrent
-    /// producers can overfill a buffer, in which case even a fitting batch may span requests.
     pub fn enqueue_many(&self, entries: Vec<(ChannelDescriptor, PointsType)>) {
-        let total: usize = entries.iter().map(|(_, points)| points_len(points)).sum();
+        self.try_enqueue_many(entries)
+            .expect("stream rejected batch");
+    }
 
-        if total <= self.opts.max_points_per_record {
-            self.enqueue_chunk(entries, total);
-            return;
-        }
-
-        let mut chunk: Vec<(ChannelDescriptor, PointsType)> = Vec::new();
-        let mut chunk_count = 0;
-
-        for (channel_descriptor, points) in entries {
-            let count = points_len(&points);
-
-            if chunk_count > 0 && chunk_count + count > self.opts.max_points_per_record {
-                self.enqueue_chunk(std::mem::take(&mut chunk), chunk_count);
-                chunk_count = 0;
+    /// Reserve the whole batch once, then submit bounded chunks. Destination
+    /// failures do not reject a suffix of an already accepted batch.
+    pub fn try_enqueue_many(
+        &self,
+        entries: Vec<(ChannelDescriptor, PointsType)>,
+    ) -> Result<(), StreamError> {
+        let total = entries.iter().map(|(_, points)| points_len(points)).sum();
+        self.reserve(total)?;
+        let mut chunk = Vec::new();
+        let mut count = 0;
+        for (channel, points) in entries {
+            let n = points_len(&points);
+            if count > 0 && count + n > self.opts.max_points_per_record {
+                self.enqueue_chunk(std::mem::take(&mut chunk), count)?;
+                count = 0;
             }
-
-            // A single entry over the limit still goes through whole: the buffer admits an oversized
-            // batch into an empty buffer. The background processor splits output requests.
-            chunk_count += count;
-            chunk.push((channel_descriptor, points));
+            count += n;
+            chunk.push((channel, points));
         }
-
         if !chunk.is_empty() {
-            self.enqueue_chunk(chunk, chunk_count);
+            self.enqueue_chunk(chunk, count)?;
         }
+        Ok(())
     }
 
-    fn enqueue_chunk(&self, entries: Vec<(ChannelDescriptor, PointsType)>, new_count: usize) {
-        self.when_capacity(new_count, move |mut sb| {
-            for (channel_descriptor, points) in entries {
-                sb.extend(&channel_descriptor, points)
-            }
-        });
-    }
-
-    fn when_capacity(&self, new_count: usize, callback: impl FnOnce(SeriesBufferGuard)) {
-        self.unflushed_points
-            .fetch_add(new_count, Ordering::Release);
-
-        if self.primary_buffer.has_capacity(new_count) {
-            debug!("adding {} points to primary buffer", new_count);
-            callback(self.primary_buffer.lock());
-        } else if self.secondary_buffer.has_capacity(new_count) {
-            // primary buffer is definitely full
-            self.primary_handle.thread().unpark();
-            debug!("adding {} points to secondary buffer", new_count);
-            callback(self.secondary_buffer.lock());
-        } else {
-            let buf = if self.primary_buffer < self.secondary_buffer {
-                debug!("waiting for primary buffer to flush to append {new_count} points...");
-                self.primary_handle.thread().unpark();
-                &self.primary_buffer
+    fn reserve(&self, count: usize) -> Result<(), StreamError> {
+        let mut state = self.progress.state.lock();
+        if !state.open || state.failed {
+            return Err(state.error(if state.open {
+                "stream rejected points after a delivery failure"
             } else {
-                debug!("waiting for secondary buffer to flush to append {new_count} points...");
-                self.secondary_handle.thread().unpark();
-                &self.secondary_buffer
-            };
+                "stream is closed"
+            }));
+        }
+        state.summary.accepted_points += count;
+        Ok(())
+    }
 
-            buf.on_notify(callback);
+    fn enqueue_chunk(
+        &self,
+        entries: Vec<(ChannelDescriptor, PointsType)>,
+        count: usize,
+    ) -> Result<(), StreamError> {
+        self.when_capacity(count, |mut buffer| {
+            for (channel, points) in entries {
+                buffer.extend(&channel, points);
+            }
+        })
+    }
+
+    // This path submits already accepted points, including writer-local buffers.
+    fn when_capacity(
+        &self,
+        count: usize,
+        callback: impl FnOnce(SeriesBufferGuard),
+    ) -> Result<(), StreamError> {
+        let mut state = self.progress.state.lock();
+        loop {
+            if state.worker_failed {
+                return Err(state.error("stream worker failed while draining accepted points"));
+            }
+            if self.primary_buffer.has_capacity(count) {
+                let result = checked_call(|| callback(self.primary_buffer.lock()));
+                return result.map_err(|message| {
+                    state.record_failure(&message);
+                    state.error(&message)
+                });
+            }
+            self.primary_handle.unpark();
+            if self.secondary_buffer.has_capacity(count) {
+                let result = checked_call(|| callback(self.secondary_buffer.lock()));
+                return result.map_err(|message| {
+                    state.record_failure(&message);
+                    state.error(&message)
+                });
+            }
+            self.secondary_handle.unpark();
+            self.progress.capacity.wait(&mut state);
         }
     }
 }
@@ -661,7 +877,8 @@ where
         }
     }
 
-    fn push_point(&mut self, point: T) {
+    fn push_point(&mut self, point: T) -> Result<(), StreamError> {
+        self.stream.reserve(1)?;
         self.unflushed.push(point);
         if self.unflushed.len() >= self.stream.opts.max_points_per_record
             || self.last_flushed_at.elapsed() > self.stream.opts.max_request_delay
@@ -672,13 +889,14 @@ where
                 self.unflushed.len(),
                 self.last_flushed_at.elapsed()
             );
-            self.flush();
+            self.flush()?;
         }
+        Ok(())
     }
 
-    fn flush(&mut self) {
+    fn flush(&mut self) -> Result<(), StreamError> {
         if self.unflushed.is_empty() {
-            return;
+            return Ok(());
         }
         debug!(
             "flushing writer for {:?} with {} points",
@@ -699,7 +917,9 @@ where
 {
     fn drop(&mut self) {
         debug!("flushing then dropping writer for: {:?}", self.channel);
-        self.flush();
+        if let Err(error) = self.flush() {
+            error!("writer drop failed: {error}");
+        }
     }
 }
 
@@ -709,10 +929,23 @@ pub struct NominalDoubleWriter<'ds> {
 
 impl NominalDoubleWriter<'_> {
     pub fn push(&mut self, timestamp: impl IntoTimestamp, value: f64) {
+        self.try_push(timestamp, value)
+            .expect("stream rejected writer point");
+    }
+
+    pub fn try_push(
+        &mut self,
+        timestamp: impl IntoTimestamp,
+        value: f64,
+    ) -> Result<(), StreamError> {
         self.writer.push_point(DoublePoint {
             timestamp: Some(timestamp.into_timestamp()),
             value,
-        });
+        })
+    }
+
+    pub fn try_flush(&mut self) -> Result<(), StreamError> {
+        self.writer.flush()
     }
 }
 
@@ -722,10 +955,23 @@ pub struct NominalIntegerWriter<'ds> {
 
 impl NominalIntegerWriter<'_> {
     pub fn push(&mut self, timestamp: impl IntoTimestamp, value: i64) {
+        self.try_push(timestamp, value)
+            .expect("stream rejected writer point");
+    }
+
+    pub fn try_push(
+        &mut self,
+        timestamp: impl IntoTimestamp,
+        value: i64,
+    ) -> Result<(), StreamError> {
         self.writer.push_point(IntegerPoint {
             timestamp: Some(timestamp.into_timestamp()),
             value,
-        });
+        })
+    }
+
+    pub fn try_flush(&mut self) -> Result<(), StreamError> {
+        self.writer.flush()
     }
 }
 
@@ -735,10 +981,23 @@ pub struct NominalUint64Writer<'ds> {
 
 impl NominalUint64Writer<'_> {
     pub fn push(&mut self, timestamp: impl IntoTimestamp, value: u64) {
+        self.try_push(timestamp, value)
+            .expect("stream rejected writer point");
+    }
+
+    pub fn try_push(
+        &mut self,
+        timestamp: impl IntoTimestamp,
+        value: u64,
+    ) -> Result<(), StreamError> {
         self.writer.push_point(Uint64Point {
             timestamp: Some(timestamp.into_timestamp()),
             value,
-        });
+        })
+    }
+
+    pub fn try_flush(&mut self) -> Result<(), StreamError> {
+        self.writer.flush()
     }
 }
 
@@ -748,10 +1007,23 @@ pub struct NominalStringWriter<'ds> {
 
 impl NominalStringWriter<'_> {
     pub fn push(&mut self, timestamp: impl IntoTimestamp, value: impl Into<String>) {
+        self.try_push(timestamp, value)
+            .expect("stream rejected writer point");
+    }
+
+    pub fn try_push(
+        &mut self,
+        timestamp: impl IntoTimestamp,
+        value: impl Into<String>,
+    ) -> Result<(), StreamError> {
         self.writer.push_point(StringPoint {
             timestamp: Some(timestamp.into_timestamp()),
             value: value.into(),
-        });
+        })
+    }
+
+    pub fn try_flush(&mut self) -> Result<(), StreamError> {
+        self.writer.flush()
     }
 }
 
@@ -761,10 +1033,23 @@ pub struct NominalStructWriter<'ds> {
 
 impl NominalStructWriter<'_> {
     pub fn push(&mut self, timestamp: impl IntoTimestamp, value: impl Into<String>) {
+        self.try_push(timestamp, value)
+            .expect("stream rejected writer point");
+    }
+
+    pub fn try_push(
+        &mut self,
+        timestamp: impl IntoTimestamp,
+        value: impl Into<String>,
+    ) -> Result<(), StreamError> {
         self.writer.push_point(StructPoint {
             timestamp: Some(timestamp.into_timestamp()),
             json_string: value.into(),
-        });
+        })
+    }
+
+    pub fn try_flush(&mut self) -> Result<(), StreamError> {
+        self.writer.flush()
     }
 }
 
@@ -774,10 +1059,23 @@ pub struct NominalDoubleArrayWriter<'ds> {
 
 impl NominalDoubleArrayWriter<'_> {
     pub fn push(&mut self, timestamp: impl IntoTimestamp, value: Vec<f64>) {
+        self.try_push(timestamp, value)
+            .expect("stream rejected writer point");
+    }
+
+    pub fn try_push(
+        &mut self,
+        timestamp: impl IntoTimestamp,
+        value: Vec<f64>,
+    ) -> Result<(), StreamError> {
         self.writer.push_point(DoubleArrayPoint {
             timestamp: Some(timestamp.into_timestamp()),
             value,
-        });
+        })
+    }
+
+    pub fn try_flush(&mut self) -> Result<(), StreamError> {
+        self.writer.flush()
     }
 }
 
@@ -791,10 +1089,23 @@ impl NominalStringArrayWriter<'_> {
         timestamp: impl IntoTimestamp,
         value: impl IntoIterator<Item = impl Into<String>>,
     ) {
+        self.try_push(timestamp, value)
+            .expect("stream rejected writer point");
+    }
+
+    pub fn try_push(
+        &mut self,
+        timestamp: impl IntoTimestamp,
+        value: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Result<(), StreamError> {
         self.writer.push_point(StringArrayPoint {
             timestamp: Some(timestamp.into_timestamp()),
             value: value.into_iter().map(Into::into).collect(),
-        });
+        })
+    }
+
+    pub fn try_flush(&mut self) -> Result<(), StreamError> {
+        self.writer.flush()
     }
 }
 
@@ -805,8 +1116,6 @@ struct SeriesBuffer {
     /// To ensure that `count` stays in sync with the contents of the `HashMap`,
     /// only update `count` through the `SeriesBufferGuard`.
     count: AtomicUsize,
-    flush_time: AtomicU64,
-    condvar: Condvar,
     max_capacity: usize,
 }
 
@@ -946,27 +1255,11 @@ impl SeriesBufferGuard<'_> {
     }
 }
 
-impl PartialEq for SeriesBuffer {
-    fn eq(&self, other: &Self) -> bool {
-        self.flush_time.load(Ordering::Acquire) == other.flush_time.load(Ordering::Acquire)
-    }
-}
-
-impl PartialOrd for SeriesBuffer {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        let flush_time = self.flush_time.load(Ordering::Acquire);
-        let other_flush_time = other.flush_time.load(Ordering::Acquire);
-        flush_time.partial_cmp(&other_flush_time)
-    }
-}
-
 impl SeriesBuffer {
     fn new(capacity: usize) -> Self {
         Self {
             points: Mutex::new(HashMap::new()),
             count: AtomicUsize::new(0),
-            flush_time: AtomicU64::new(0),
-            condvar: Condvar::new(),
             max_capacity: capacity,
         }
     }
@@ -989,10 +1282,6 @@ impl SeriesBuffer {
 
     fn take(&self) -> (usize, Vec<Series>) {
         let mut points = self.lock();
-        self.flush_time.store(
-            UNIX_EPOCH.elapsed().unwrap().as_nanos() as u64,
-            Ordering::Release,
-        );
         let result = points
             .sb
             .drain()
@@ -1027,25 +1316,6 @@ impl SeriesBuffer {
     fn count(&self) -> usize {
         self.count.load(Ordering::Acquire)
     }
-
-    fn on_notify(&self, on_notify: impl FnOnce(SeriesBufferGuard)) {
-        let mut points_lock = self.points.lock();
-        // concurrency bug without this - the buffer could have been emptied since we
-        // checked the count, so this will wait forever & block any new points from entering
-        if !points_lock.is_empty() {
-            self.condvar.wait(&mut points_lock);
-        } else {
-            debug!("buffer emptied since last check, skipping condvar wait");
-        }
-        on_notify(SeriesBufferGuard {
-            sb: points_lock,
-            count: &self.count,
-        });
-    }
-
-    fn notify(&self) -> bool {
-        self.condvar.notify_one()
-    }
 }
 
 fn batch_processor(
@@ -1053,6 +1323,7 @@ fn batch_processor(
     points_buffer: Arc<SeriesBuffer>,
     request_chan: crossbeam_channel::Sender<(WriteRequestNominal, usize)>,
     max_request_delay: Duration,
+    progress: &Progress,
     #[cfg(feature = "instrument")] bp_ns: Arc<AtomicU64>,
 ) {
     loop {
@@ -1074,8 +1345,9 @@ fn batch_processor(
 
         let (point_count, series) = points_buffer.take();
 
-        if points_buffer.notify() {
-            debug!("notified one waiting thread after clearing points buffer");
+        {
+            let _state = progress.state.lock();
+            progress.capacity.notify_all();
         }
 
         for_each_record(
@@ -1088,7 +1360,9 @@ fn batch_processor(
                     session_name: None,
                 };
                 if let Err(error) = request_chan.send((request, count)) {
-                    error!("failed to send request to dispatcher: {error}");
+                    progress.worker_failure(&format!(
+                        "failed to send {count} points to dispatcher: {error}"
+                    ));
                 }
             },
         );
@@ -1106,70 +1380,27 @@ fn batch_processor(
 
 impl Drop for NominalDatasetStream {
     fn drop(&mut self) {
-        debug!("starting drop for NominalDatasetStream");
-        self.running.store(false, Ordering::Release);
-        // Wake sleeping workers to flush pending points and exit.
-        self.primary_handle.thread().unpark();
-        self.secondary_handle.thread().unpark();
-        loop {
-            let count = self.unflushed_points.load(Ordering::Acquire);
-            if count == 0 {
-                break;
-            }
-            debug!(
-                "waiting for all points to be flushed before dropping stream, {count} points remaining",
-            );
-            // todo: reduce this + give up after some maximum timeout is reached
-            thread::sleep(Duration::from_millis(50));
+        if let Err(error) = self.close() {
+            error!("stream drop failed: {error}");
         }
     }
 }
 
-fn request_dispatcher<C: WriteRequestConsumer + 'static>(
-    running: Arc<AtomicBool>,
-    unflushed_points: Arc<AtomicUsize>,
+fn request_dispatcher(
     request_rx: crossbeam_channel::Receiver<(WriteRequestNominal, usize)>,
-    consumer: Arc<C>,
+    consumer: Arc<dyn WriteRequestConsumer>,
+    progress: &Progress,
     #[cfg(feature = "instrument")] disp_ns: Arc<AtomicU64>,
 ) {
-    let mut total_request_time = 0;
-    loop {
-        match request_rx.recv() {
-            Ok((request, point_count)) => {
-                debug!("received writerequest from channel");
-                let req_start = Instant::now();
-                match consumer.consume(&request) {
-                    Ok(_) => {
-                        let time = req_start.elapsed().as_millis();
-                        debug!("request of {} points sent in {} ms", point_count, time);
-                        total_request_time += time as u64;
-                    }
-                    Err(e) => {
-                        error!("Failed to send request: {e:?}");
-                    }
-                }
-                #[cfg(feature = "instrument")]
-                disp_ns.fetch_add(req_start.elapsed().as_nanos() as u64, Ordering::Relaxed);
-                unflushed_points.fetch_sub(point_count, Ordering::Release);
-
-                if unflushed_points.load(Ordering::Acquire) == 0 && !running.load(Ordering::Acquire)
-                {
-                    debug!("all points flushed, closing dispatcher thread");
-                    // notify the processor thread that all points have been flushed
-                    drop(request_rx);
-                    break;
-                }
-            }
-            Err(e) => {
-                debug!("request channel closed, exiting dispatcher thread. info: '{e}'");
-                break;
-            }
-        }
+    for (request, count) in request_rx {
+        #[cfg(feature = "instrument")]
+        let start = Instant::now();
+        let delivery = checked_call(|| consumer.consume_delivery(&request))
+            .unwrap_or_else(ConsumerDelivery::failure);
+        progress.completed(count, delivery);
+        #[cfg(feature = "instrument")]
+        disp_ns.fetch_add(start.elapsed().as_nanos() as u64, Ordering::Relaxed);
     }
-    debug!(
-        "request dispatcher thread exiting. total request time: {}",
-        total_request_time
-    );
 }
 
 #[cfg(test)]
@@ -1177,3 +1408,6 @@ mod tests;
 
 #[cfg(test)]
 mod flow_control_tests;
+
+#[cfg(test)]
+mod close_tests;
