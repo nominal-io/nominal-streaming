@@ -145,11 +145,10 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
         with:
           toolchain: stable
-          # Match the sccache line below: cache ordinary builds, but build
-          # release artifacts from a clean state. Both ABI legs share a job
-          # name, so key the cache per leg to stop them clobbering each other.
-          cache: ${{ !startsWith(github.ref, 'refs/tags/') }}
-          cache-key: ${{ matrix.platform.label }}-${{ matrix.abi.feature }}
+          # Installing the toolchain takes ~10s, while the cache save step
+          # costs 19s on Windows and 36s on macOS and captured nothing across
+          # a full dry run. Caching here is net slower, so leave it off.
+          cache: false
           rustflags: ""
 
       # Build wheels (Windows/macOS)
