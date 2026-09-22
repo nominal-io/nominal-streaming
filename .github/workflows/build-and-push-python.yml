@@ -135,6 +135,22 @@ jobs:
             fi
         env: ${{ matrix.platform.env }}
 
+      # The Linux legs build inside manylinux/musllinux containers that carry
+      # their own Rust. Windows and macOS build natively against whatever the
+      # runner image provides, and Depot's Windows image ships rustup with no
+      # default toolchain, so maturin cannot pick a rustc. Select one
+      # explicitly rather than depending on the image's preinstalls.
+      - name: Install Rust toolchain (Windows/macOS)
+        if: ${{ matrix.platform.os == 'windows' || matrix.platform.os == 'macos' }}
+        uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+        with:
+          toolchain: stable
+          # Installing the toolchain takes ~10s, while the cache save step
+          # costs 19s on Windows and 36s on macOS and captured nothing across
+          # a full dry run. Caching here is net slower, so leave it off.
+          cache: false
+          rustflags: ""
+
       # Build wheels (Windows/macOS)
       - name: Build wheels (Windows/macOS)
         if: ${{ matrix.platform.os == 'windows' || matrix.platform.os == 'macos' }}
