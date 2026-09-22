@@ -1,3 +1,5 @@
+mod batching;
+
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::path::PathBuf;
@@ -11,6 +13,8 @@ use std::time::Duration;
 use std::time::Instant;
 use std::time::UNIX_EPOCH;
 
+use batching::for_each_record;
+use batching::points_len;
 use conjure_object::BearerToken;
 use conjure_object::ResourceIdentifier;
 use nominal_api::tonic::io::nominal::scout::api::proto::array_points::ArrayType;
@@ -53,6 +57,8 @@ use crate::types::IntoTimestamp;
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct NominalStreamOpts {
+    /// Maximum submitted data points per output request. Must be greater than zero.
+    /// Oversized buffers are split by the background processor.
     pub max_points_per_record: usize,
     pub max_request_delay: Duration,
     pub max_buffered_requests: usize,
@@ -336,10 +342,16 @@ impl NominalDatasetStream {
         NominalDatasetStreamBuilder::new()
     }
 
+    /// # Panics
+    /// Panics if `opts.max_points_per_record` is zero.
     pub fn new_with_consumer<C: WriteRequestConsumer + 'static>(
         consumer: C,
         opts: NominalStreamOpts,
     ) -> Self {
+        assert!(
+            opts.max_points_per_record > 0,
+            "max_points_per_record must be greater than zero"
+        );
         let primary_buffer = Arc::new(SeriesBuffer::new(opts.max_points_per_record));
         let secondary_buffer = Arc::new(SeriesBuffer::new(opts.max_points_per_record));
 
@@ -504,10 +516,10 @@ impl NominalDatasetStream {
     /// thousands of channels sharing a timestamp -- that is the difference between one buffer
     /// insertion and thousands of them.
     ///
-    /// A batch larger than `max_points_per_record` is admitted in several pieces rather than all at
-    /// once, so one call can neither build a request larger than that limit nor hold the buffer lock
-    /// for longer than a full record's worth of work. A batch that already fits -- the case this
-    /// exists for -- is admitted whole, and its channels are guaranteed to share a request.
+    /// A batch larger than `max_points_per_record` is admitted in groups of channel entries.
+    /// An individual oversized entry is admitted whole; the background processor splits output
+    /// requests to the configured limit. Fitting buffered records are sent unchanged. Concurrent
+    /// producers can overfill a buffer, in which case even a fitting batch may span requests.
     pub fn enqueue_many(&self, entries: Vec<(ChannelDescriptor, PointsType)>) {
         let total: usize = entries.iter().map(|(_, points)| points_len(points)).sum();
 
@@ -528,7 +540,7 @@ impl NominalDatasetStream {
             }
 
             // A single entry over the limit still goes through whole: the buffer admits an oversized
-            // batch into an empty buffer rather than splitting one channel's points across requests.
+            // batch into an empty buffer. The background processor splits output requests.
             chunk_count += count;
             chunk.push((channel_descriptor, points));
         }
@@ -912,8 +924,8 @@ impl SeriesBuffer {
 
     /// Checks if the buffer has enough capacity to add new points.
     /// Note that the buffer can be larger than MAX_POINTS_PER_RECORD if a single batch of points
-    /// larger than MAX_POINTS_PER_RECORD is inserted while the buffer is empty. This avoids needing
-    /// to handle splitting batches of points across multiple requests.
+    /// larger than MAX_POINTS_PER_RECORD is inserted while the buffer is empty. Output request
+    /// splitting is handled separately by the background processor.
     fn has_capacity(&self, new_points_count: usize) -> bool {
         let count = self.count.load(Ordering::Acquire);
         count == 0 || count + new_points_count <= self.max_capacity
@@ -1017,21 +1029,20 @@ fn batch_processor(
             debug!("notified one waiting thread after clearing points buffer");
         }
 
-        let write_request = WriteRequestNominal {
+        for_each_record(
             series,
-            session_name: None,
-        };
-
-        if request_chan.is_full() {
-            debug!("ready to queue request but request channel is full");
-        }
-        let rep = request_chan.send((write_request, point_count));
-        debug!("queued request for processing");
-        if rep.is_err() {
-            error!("failed to send request to dispatcher");
-        } else {
-            debug!("finished submitting request");
-        }
+            point_count,
+            points_buffer.max_capacity,
+            |series, count| {
+                let request = WriteRequestNominal {
+                    series,
+                    session_name: None,
+                };
+                if let Err(error) = request_chan.send((request, count)) {
+                    error!("failed to send request to dispatcher: {error}");
+                }
+            },
+        );
 
         #[cfg(feature = "instrument")]
         bp_ns.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
@@ -1112,112 +1123,8 @@ fn request_dispatcher<C: WriteRequestConsumer + 'static>(
     );
 }
 
-fn points_len(points_type: &PointsType) -> usize {
-    match points_type {
-        PointsType::DoublePoints(points) => points.points.len(),
-        PointsType::StringPoints(points) => points.points.len(),
-        PointsType::IntegerPoints(points) => points.points.len(),
-        PointsType::Uint64Points(points) => points.points.len(),
-        PointsType::ArrayPoints(points) => match &points.array_type {
-            Some(ArrayType::DoubleArrayPoints(points)) => points.points.len(),
-            Some(ArrayType::StringArrayPoints(points)) => points.points.len(),
-            None => 0,
-        },
-        PointsType::StructPoints(points) => points.points.len(),
-    }
-}
+#[cfg(test)]
+mod tests;
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    #[should_panic(expected = "mismatched types")]
-    fn test_mismatched_array_types_panics() {
-        // Protects the exhaustive match in SeriesBufferGuard::extend from being
-        // silently simplified to a catch-all: pushing a DoubleArray and then a
-        // StringArray to the same channel must panic at buffer merge time.
-        //
-        // Exercise the buffer directly under one lock. Between public enqueue
-        // calls, a worker could flush the first array and prevent the mismatch.
-        // This also avoids the stream's shutdown hang during panic without using
-        // ManuallyDrop, which would leave its workers running.
-        let buffer = SeriesBuffer::new(100);
-        let mut guard = buffer.lock();
-        let descriptor = ChannelDescriptor::new("mixed_array");
-        guard.extend(
-            &descriptor,
-            vec![DoubleArrayPoint {
-                timestamp: None,
-                value: vec![1.0, 2.0],
-            }],
-        );
-        guard.extend(
-            &descriptor,
-            vec![StringArrayPoint {
-                timestamp: None,
-                value: vec!["a".into()],
-            }],
-        );
-    }
-}
-
-#[cfg(test)]
-mod shutdown_tests {
-    use super::*;
-
-    #[test]
-    fn drop_wakes_partial_batches_before_flush_deadline() {
-        #[derive(Debug)]
-        struct CountingConsumer(Arc<AtomicUsize>);
-        impl WriteRequestConsumer for CountingConsumer {
-            fn consume(
-                &self,
-                request: &WriteRequestNominal,
-            ) -> crate::consumer::ConsumerResult<()> {
-                let count: usize = request
-                    .series
-                    .iter()
-                    .map(|s| points_len(s.points.as_ref().unwrap().points_type.as_ref().unwrap()))
-                    .sum();
-                self.0.fetch_add(count, Ordering::Relaxed);
-                Ok(())
-            }
-        }
-        let accepted = Arc::new(AtomicUsize::new(0));
-        let stream = NominalDatasetStream::new_with_consumer(
-            CountingConsumer(accepted.clone()),
-            NominalStreamOpts {
-                max_request_delay: Duration::from_secs(60),
-                ..Default::default()
-            },
-        );
-        // Let empty processors enter their long idle wait.
-        thread::sleep(Duration::from_millis(100));
-        stream.enqueue(
-            &ChannelDescriptor::new("value"),
-            vec![DoublePoint {
-                timestamp: None,
-                value: 1.0,
-            }],
-        );
-        let (done_tx, done_rx) = std::sync::mpsc::channel();
-        thread::spawn(move || {
-            drop(stream);
-            let _ = done_tx.send(());
-        });
-        done_rx
-            .recv_timeout(Duration::from_secs(2))
-            .expect("drop waited for the flush deadline");
-        assert_eq!(accepted.load(Ordering::Relaxed), 1);
-        let deadline = Instant::now() + Duration::from_secs(2);
-        while Arc::strong_count(&accepted) != 1 && Instant::now() < deadline {
-            thread::sleep(Duration::from_millis(1));
-        }
-        assert_eq!(
-            Arc::strong_count(&accepted),
-            1,
-            "idle workers retained the consumer"
-        );
-    }
-}
+mod flow_control_tests;
