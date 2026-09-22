@@ -9,6 +9,10 @@ install:
     @echo "Running 'install' for Rust code"
     cargo fetch
 
+# Lint all targets with core features and the Python 3.11 buffer path enabled.
+lint:
+    cargo clippy --workspace --all-targets --no-default-features --features nominal-streaming/logging,nominal-streaming/instrument,py-nominal-streaming/python311 --locked -- -D warnings
+
 # Build all rust code
 build:
     @echo "Running 'build' for Rust code"
