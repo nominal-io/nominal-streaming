@@ -1218,6 +1218,55 @@ mod tests {
     use super::*;
 
     #[test]
+    fn split_records_preserve_tagged_series_contents_and_order() {
+        let input = SeriesBuffer::new(usize::MAX);
+        for (tag, offset) in [("left", 0), ("right", 100)] {
+            input.lock().extend(
+                &ChannelDescriptor::with_tags("shared", [("sensor", tag)]),
+                (0..8)
+                    .map(|i| DoublePoint {
+                        timestamp: Some((offset + i).into_timestamp()),
+                        value: (offset + i) as f64,
+                    })
+                    .collect::<Vec<_>>(),
+            );
+        }
+        input.lock().extend(
+            &ChannelDescriptor::with_tags("shared", [("sensor", "text")]),
+            (0..8)
+                .map(|i| StringPoint {
+                    timestamp: Some(i.into_timestamp()),
+                    value: format!("sample-{i}"),
+                })
+                .collect::<Vec<_>>(),
+        );
+        let expected = input.lock().sb.clone();
+        let (total, series) = input.take();
+        for cap in [1, 3, 8, 24] {
+            let output = SeriesBuffer::new(usize::MAX);
+            let mut emitted = 0;
+            for_each_record(series.clone(), total, cap, |record, count| {
+                let actual: usize = record
+                    .iter()
+                    .map(|s| points_len(s.points.as_ref().unwrap().points_type.as_ref().unwrap()))
+                    .sum();
+                assert_eq!(count, actual);
+                assert!(count > 0 && count <= cap);
+                emitted += count;
+                for series in record {
+                    let channel =
+                        ChannelDescriptor::with_tags(series.channel.unwrap().name, series.tags);
+                    output
+                        .lock()
+                        .extend(&channel, series.points.unwrap().points_type.unwrap());
+                }
+            });
+            assert_eq!(emitted, total);
+            assert_eq!(*output.lock().sb, expected, "record cap {cap}");
+        }
+    }
+
+    #[test]
     fn point_chunks_preserve_contents_and_order() {
         for count in [0, 1, 3, 8] {
             let points = (0..count)

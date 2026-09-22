@@ -836,6 +836,77 @@ mod tests {
         assert!(stats.simulated_sleep >= Duration::from_micros(stats.attempts * 10));
     }
 
+    #[test]
+    fn oversized_batch_delivers_failed_chunks_to_fallback_exactly_once() {
+        let primary = Arc::new(TestDatasourceStream {
+            requests: Mutex::new(vec![]),
+        });
+        let fallback = Arc::new(TestDatasourceStream {
+            requests: Mutex::new(vec![]),
+        });
+        let network = SimulatedNetworkConsumer::new(
+            primary.clone(),
+            SimulatedNetworkConfig::default().with_failure_pattern(
+                SimulatedNetworkFailure::FailEveryNthRequest {
+                    every: 2,
+                    attempts_per_request: 1,
+                },
+            ),
+        );
+        let stats = network.stats();
+        let stream = create_stream_with_consumer_and_options(
+            RequestConsumerWithFallback::new(network, fallback.clone()),
+            NominalStreamOpts::default()
+                .with_max_points_per_record(3)
+                .with_max_buffered_requests(1)
+                .with_request_dispatcher_tasks(1),
+        );
+        let channel = ChannelDescriptor::with_tags("oversized", [("sensor", "left")]);
+        let expected = (0..11)
+            .map(|i| DoublePoint {
+                timestamp: Some(i.into_timestamp()),
+                value: i as f64,
+            })
+            .collect::<Vec<_>>();
+        stream.enqueue(&channel, expected.clone());
+        drop(stream);
+
+        let primary = primary.requests.lock().unwrap();
+        let fallback = fallback.requests.lock().unwrap();
+        assert_eq!(primary.len(), 2);
+        assert_eq!(fallback.len(), 2);
+        assert_eq!(
+            assert_record_limit(&primary, 3) + assert_record_limit(&fallback, 3),
+            11
+        );
+        let mut actual = Vec::new();
+        for request in primary.iter().chain(fallback.iter()) {
+            for series in &request.series {
+                assert_eq!(series.channel.as_ref().unwrap().name, "oversized");
+                assert_eq!(
+                    series.tags,
+                    [("sensor".to_owned(), "left".to_owned())].into()
+                );
+                let Some(Points {
+                    points_type: Some(PointsType::DoublePoints(points)),
+                }) = &series.points
+                else {
+                    panic!("expected double points");
+                };
+                actual.extend(points.points.iter().cloned());
+            }
+        }
+        actual.sort_by_key(|point| {
+            let timestamp = point.timestamp.as_ref().unwrap();
+            (timestamp.seconds, timestamp.nanos)
+        });
+        assert_eq!(actual, expected);
+        let stats = stats.snapshot();
+        assert_eq!(stats.attempts, 4);
+        assert_eq!(stats.successful_requests, 2);
+        assert_eq!(stats.simulated_failures, 2);
+    }
+
     #[test_log::test]
     fn simulated_network_all_requests_timeout_falls_back_under_backpressure() {
         let primary_destination = Arc::new(TestDatasourceStream {
