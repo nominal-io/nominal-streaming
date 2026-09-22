@@ -41,7 +41,7 @@ check-types-all:
 # Validate formatting of all python code
 check-format:
     @echo "Running 'check-format' for Python code"
-    uv run ruff format --check
+    uv run --only-group dev --locked ruff format --check
 
 # Validate formatting of all python imports
 check-imports:
@@ -60,7 +60,7 @@ fix-imports:
 # Automatically fix formatting of all python code
 fix-format:
     @echo "Running 'fix-format' for Python code"
-    uv run ruff format
+    uv run --only-group dev --locked ruff format
 
 # Automatically apply all python codestyle fixes
 fix: fix-format fix-imports
