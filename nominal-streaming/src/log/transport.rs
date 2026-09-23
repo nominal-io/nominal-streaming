@@ -1,34 +1,27 @@
 use std::sync::Arc;
-use std::time::Duration;
 
 use bytes::Bytes;
+use conjure_http::client::ConjureRuntime;
 use conjure_object::BearerToken;
 use conjure_object::ResourceIdentifier;
 use nominal_api::tonic::nominal::direct_channel_writer::v2 as wire;
 use prost::Message;
-use reqwest::header::CONTENT_ENCODING;
-use reqwest::header::CONTENT_TYPE;
-use reqwest::header::RETRY_AFTER;
 
 use super::LogStreamError;
 use super::NominalLogStreamOpts;
+use crate::client::NominalApiClients;
+use crate::client::WriteRequest;
+use crate::client::{self};
 
 type TokenProvider = Arc<dyn Fn() -> Option<BearerToken> + Send + Sync>;
 
-pub(super) struct AttemptError {
-    pub message: String,
-    pub retryable: bool,
-    pub retry_after: Option<Duration>,
-}
-
-// This narrow boundary lets lifecycle/retry tests exercise real batching without network I/O.
+// A complete delivery, including retries owned by the shared HTTP client.
 pub(super) trait LogTransport: Send + Sync {
-    fn send(&self, body: &Bytes) -> Result<(), AttemptError>;
+    fn send(&self, body: &Bytes) -> Result<(), String>;
 }
 
 pub(super) struct HttpTransport {
-    client: reqwest::Client,
-    endpoint: url::Url,
+    client: NominalApiClients,
     auth: TokenProvider,
     handle: tokio::runtime::Handle,
 }
@@ -45,7 +38,7 @@ impl HttpTransport {
                     .into(),
             ));
         }
-        let mut endpoint = url::Url::parse(&opts.base_api_url)
+        let endpoint = url::Url::parse(&opts.base_api_url)
             .map_err(|_| LogStreamError::Invalid("invalid base_api_url".into()))?;
         let local = endpoint
             .host_str()
@@ -58,108 +51,55 @@ impl HttpTransport {
         {
             return Err(LogStreamError::Invalid("base_api_url must use HTTPS (HTTP permitted on loopback only), without credentials, query or fragment".into()));
         }
-        endpoint.set_path(&format!(
-            "{}/storage/writer/v1/nominal-columnar",
-            endpoint.path().trim_end_matches('/')
-        ));
-        let client = reqwest::Client::builder()
-            .timeout(opts.request_timeout)
-            .connect_timeout(opts.request_timeout.min(Duration::from_secs(10)))
-            .redirect(reqwest::redirect::Policy::none())
-            .retry(reqwest::retry::never())
-            .user_agent(concat!("nominal-streaming/", env!("CARGO_PKG_VERSION")));
-        let client = client
-            .build()
-            .map_err(|_| LogStreamError::Invalid("could not construct HTTP client".into()))?;
+        let streaming = client::async_conjure_streaming_client(endpoint.clone())
+            .map_err(|e| LogStreamError::Invalid(crate::consumer::describe_request_error(&e)))?;
+        let services = client::async_conjure_client("upload-ingest", endpoint)
+            .map_err(|e| LogStreamError::Invalid(crate::consumer::describe_request_error(&e)))?;
+        let client = NominalApiClients::from_conjure_clients(
+            streaming,
+            services,
+            &Arc::new(ConjureRuntime::default()),
+        );
         Ok(Self {
             client,
-            endpoint,
             auth,
             handle,
         })
     }
 }
 
-impl HttpTransport {
-    fn request(&self, body: &Bytes, token: &BearerToken) -> reqwest::RequestBuilder {
-        self.client
-            .post(self.endpoint.clone())
-            .bearer_auth(token.as_str())
-            .header(CONTENT_TYPE, "application/x-protobuf")
-            .header(CONTENT_ENCODING, "zstd")
-            .body(body.clone())
-    }
+fn request(body: Bytes, token: &BearerToken) -> WriteRequest<'static> {
+    let mut request = client::compressed_protobuf_request(body, token);
+    *request.uri_mut() = "/storage/writer/v1/nominal-columnar".parse().unwrap();
+    request
+        .extensions_mut()
+        .insert(conjure_http::client::Endpoint::new(
+            "NominalChannelWriterService",
+            None,
+            "writeNominalColumnarBatches",
+            "/storage/writer/v1/nominal-columnar",
+        ));
+    request
 }
 
 impl LogTransport for HttpTransport {
-    fn send(&self, body: &Bytes) -> Result<(), AttemptError> {
-        let token = (self.auth)().ok_or_else(|| AttemptError {
-            message: "missing auth token".into(),
-            retryable: false,
-            retry_after: None,
-        })?;
+    fn send(&self, body: &Bytes) -> Result<(), String> {
+        let token = (self.auth)().ok_or("missing auth token")?;
         let started = std::time::Instant::now();
-        tracing::debug!(wire_bytes = body.len(), "Sending log request");
-        let result = self.handle.block_on(async {
-            let response =
-                self.request(body, &token)
-                    .send()
-                    .await
-                    .map_err(|error| AttemptError {
-                        message: if error.is_timeout() {
-                            "request timed out"
-                        } else {
-                            "request transport failed"
-                        }
-                        .into(),
-                        retryable: !error.is_builder(),
-                        retry_after: None,
-                    })?;
-            classify_response(response.status(), response.headers())
-        });
+        let result = self
+            .handle
+            .block_on(self.client.send(request(body.clone(), &token)))
+            .map(|_| ())
+            .map_err(|e| crate::consumer::describe_request_error(&e));
         tracing::debug!(
             elapsed_micros = started.elapsed().as_micros() as u64,
             wire_bytes = body.len(),
             success = result.is_ok(),
-            error = result.as_ref().err().map(|e| e.message.as_str()),
+            error = result.as_ref().err().map(String::as_str),
             "Log request completed"
         );
         result
     }
-}
-
-fn classify_response(
-    status: reqwest::StatusCode,
-    headers: &reqwest::header::HeaderMap,
-) -> Result<(), AttemptError> {
-    if status.is_success() {
-        return Ok(());
-    }
-    Err(AttemptError {
-        message: format!("HTTP {}", status.as_u16()),
-        retryable: matches!(status.as_u16(), 408 | 429 | 500 | 502 | 503 | 504),
-        retry_after: headers
-            .get(RETRY_AFTER)
-            .and_then(|h| h.to_str().ok())
-            .and_then(parse_retry_after),
-    })
-}
-
-fn parse_retry_after(value: &str) -> Option<Duration> {
-    value
-        .trim()
-        .parse::<u64>()
-        .ok()
-        .map(Duration::from_secs)
-        .or_else(|| {
-            chrono::DateTime::parse_from_rfc2822(value)
-                .ok()
-                .map(|date| {
-                    (date.with_timezone(&chrono::Utc) - chrono::Utc::now())
-                        .to_std()
-                        .unwrap_or_default()
-                })
-        })
 }
 
 pub(super) fn encode(
@@ -175,7 +115,7 @@ pub(super) fn encode(
     }
     let raw = request.encode_to_vec();
     let compression_started = std::time::Instant::now();
-    let compressed = zstd::bulk::compress(raw.as_slice(), 1)?;
+    let compressed = crate::client::compress(raw.as_slice())?;
     tracing::debug!(
         raw_bytes = raw.len(),
         wire_bytes = compressed.len(),
@@ -185,7 +125,7 @@ pub(super) fn encode(
         zstd_micros = compression_started.elapsed().as_micros() as u64,
         "Encoded log request"
     );
-    Ok(Bytes::from(compressed))
+    Ok(compressed)
 }
 
 pub(super) struct CoreTarget {
@@ -199,76 +139,37 @@ mod tests {
     use super::*;
 
     #[test]
-    fn response_status_controls_retries_and_retry_after() {
-        let headers = reqwest::header::HeaderMap::from_iter([(RETRY_AFTER, "17".parse().unwrap())]);
-        for code in [200, 201, 204, 299] {
-            assert!(
-                classify_response(reqwest::StatusCode::from_u16(code).unwrap(), &headers).is_ok()
-            );
-        }
-        for code in [301, 400, 401, 403, 408, 413, 429, 500, 501, 502, 503, 504] {
-            let error = classify_response(reqwest::StatusCode::from_u16(code).unwrap(), &headers)
-                .err()
-                .unwrap();
-            assert_eq!(
-                error.retryable,
-                matches!(code, 408 | 429 | 500 | 502 | 503 | 504)
-            );
-            assert_eq!(error.retry_after, Some(Duration::from_secs(17)));
-            assert_eq!(error.message, format!("HTTP {code}"));
-        }
-        let invalid =
-            reqwest::header::HeaderMap::from_iter([(RETRY_AFTER, "invalid".parse().unwrap())]);
-        assert!(
-            classify_response(reqwest::StatusCode::TOO_MANY_REQUESTS, &invalid)
-                .err()
-                .unwrap()
-                .retry_after
-                .is_none()
-        );
-    }
-
-    #[test]
-    fn request_preserves_body_and_has_no_diagnostic_headers() {
-        let runtime = tokio::runtime::Runtime::new().unwrap();
-        let transport = HttpTransport::new(
-            Arc::new(|| None),
-            runtime.handle().clone(),
-            &NominalLogStreamOpts::default(),
-        )
-        .unwrap();
-        let body = Bytes::from_static(b"encoded request");
+    fn columnar_request_uses_shared_compression_and_auth() {
         let token = BearerToken::new("test-token").unwrap();
-        let request = transport.request(&body, &token).build().unwrap();
-        assert_eq!(request.method(), reqwest::Method::POST);
-        assert!(request
-            .url()
-            .path()
-            .ends_with("/storage/writer/v1/nominal-columnar"));
-        assert_eq!(request.headers()[CONTENT_TYPE], "application/x-protobuf");
-        assert_eq!(request.headers()[CONTENT_ENCODING], "zstd");
+        let body = client::compress(b"protobuf payload").unwrap();
+        let rid = ResourceIdentifier::new("ri.catalog.main.dataset.test").unwrap();
+        let timeseries = client::encode_request(b"protobuf payload", &token, &rid).unwrap();
         assert_eq!(
-            request.headers()[reqwest::header::AUTHORIZATION],
-            "Bearer test-token"
+            timeseries.uri(),
+            "/storage/writer/v1/nominal/ri.catalog.main.dataset.test"
         );
-        for name in ["X-B3-TraceId", "X-B3-SpanId", "X-B3-Sampled"] {
-            assert!(!request.headers().contains_key(name));
-        }
-        assert_eq!(request.body().unwrap().as_bytes().unwrap(), body.as_ref());
-    }
-
-    #[test]
-    fn retry_after_supports_seconds_and_http_dates() {
-        assert_eq!(parse_retry_after("17"), Some(Duration::from_secs(17)));
+        let request = request(body.clone(), &token);
+        assert_eq!(request.headers(), timeseries.headers());
+        let conjure_http::client::AsyncRequestBody::Fixed(encoded) = timeseries.into_body() else {
+            panic!("time-series request must be replayable");
+        };
         assert_eq!(
-            parse_retry_after("Wed, 21 Oct 2015 07:28:00 GMT"),
-            Some(Duration::ZERO)
+            zstd::decode_all(encoded.as_ref()).unwrap(),
+            b"protobuf payload"
         );
-        let future = (chrono::Utc::now() + chrono::Duration::seconds(90)).to_rfc2822();
-        let delay = parse_retry_after(&future).unwrap();
-        assert!(delay >= Duration::from_secs(89) && delay <= Duration::from_secs(90));
-        assert_eq!(parse_retry_after("invalid"), None);
-        assert_eq!(parse_retry_after("-1"), None);
+        assert_eq!(request.method(), "POST");
+        assert_eq!(request.uri(), "/storage/writer/v1/nominal-columnar");
+        assert_eq!(request.headers()["content-type"], "application/x-protobuf");
+        assert_eq!(request.headers()["content-encoding"], "zstd");
+        assert_eq!(request.headers()["authorization"], "Bearer test-token");
+        let conjure_http::client::AsyncRequestBody::Fixed(encoded) = request.into_body() else {
+            panic!("request must be replayable");
+        };
+        assert_eq!(encoded, body);
+        assert_eq!(
+            zstd::decode_all(encoded.as_ref()).unwrap(),
+            b"protobuf payload"
+        );
     }
 
     #[test]
@@ -277,11 +178,13 @@ mod tests {
             .enable_all()
             .build()
             .unwrap();
-        let transport = HttpTransport::new(
-            Arc::new(|| None),
-            runtime.handle().clone(),
-            &NominalLogStreamOpts::default(),
-        );
-        assert!(matches!(transport, Err(LogStreamError::Invalid(_))));
+        assert!(matches!(
+            HttpTransport::new(
+                Arc::new(|| None),
+                runtime.handle().clone(),
+                &NominalLogStreamOpts::default()
+            ),
+            Err(LogStreamError::Invalid(_))
+        ));
     }
 }

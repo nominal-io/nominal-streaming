@@ -27,11 +27,6 @@ class LogStreamTests(unittest.TestCase):
             "num_upload_workers": 3,
             "num_runtime_workers": 1,
             "base_api_url": "https://example.com/api",
-            "request_timeout_secs": 10.0,
-            "max_retries": 2,
-            "initial_backoff_secs": 0.2,
-            "max_backoff_secs": 1.0,
-            "max_retry_after_secs": 3.0,
         }
         for name, value in values.items():
             with self.subTest(option=name):
@@ -46,21 +41,13 @@ class LogStreamTests(unittest.TestCase):
 
     def test_options_validate_setters_without_changing_previous_value(self):
         opts = PyNominalLogStreamOpts()
+        previous = opts.max_request_delay_secs
         for value in [float("nan"), float("inf"), -1.0]:
             with self.assertRaises(ValueError):
-                PyNominalLogStreamOpts(request_timeout_secs=value)
-        for name in [
-            "max_request_delay_secs",
-            "request_timeout_secs",
-            "initial_backoff_secs",
-            "max_backoff_secs",
-            "max_retry_after_secs",
-        ]:
-            previous = getattr(opts, name)
-            for value in [float("nan"), float("inf"), -1.0]:
-                with self.assertRaises(ValueError):
-                    getattr(opts, "with_" + name)(value)
-                self.assertEqual(getattr(opts, name), previous)
+                PyNominalLogStreamOpts(max_request_delay_secs=value)
+            with self.assertRaises(ValueError):
+                opts.with_max_request_delay_secs(value)
+            self.assertEqual(opts.max_request_delay_secs, previous)
         with self.assertRaises(ValueError):
             PyNominalLogStreamOpts(num_runtime_workers=0)
         with self.assertRaises(ValueError):

@@ -41,7 +41,7 @@ impl NominalLogStreamBuilder {
         Self::default()
     }
 
-    /// Set batching, buffering and retry limits.
+    /// Set batching and buffering limits.
     pub fn with_options(mut self, opts: NominalLogStreamOpts) -> Self {
         self.opts = opts;
         self
@@ -483,10 +483,9 @@ fn worker(shared: Arc<Shared>) {
         let bytes = batch.bytes;
         let request = batch.into_request(&shared.dataset_rid);
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            shared.consumer.consume(&request, |retry| {
+            shared.consumer.consume(&request, || {
                 let mut state = shared.state.lock();
                 state.stats.requests += 1;
-                state.stats.retries += u64::from(retry);
             })
         }))
         .unwrap_or_else(|_| Err("log delivery worker panicked".into()));
@@ -535,7 +534,6 @@ mod pressure_tests {
     use prost::Message;
 
     use super::*;
-    use crate::log::transport;
 
     #[test]
     fn recovery_keeps_stats_available_during_journal_io() {
@@ -587,7 +585,7 @@ mod pressure_tests {
         sizes: Mutex<Vec<usize>>,
     }
     impl LogTransport for HeldFirstUpload {
-        fn send(&self, body: &bytes::Bytes) -> Result<(), transport::AttemptError> {
+        fn send(&self, body: &bytes::Bytes) -> Result<(), String> {
             let request = wire::WriteBatchesRequest::decode(
                 zstd::decode_all(body.as_ref()).unwrap().as_slice(),
             )

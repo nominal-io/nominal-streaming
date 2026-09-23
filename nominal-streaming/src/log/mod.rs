@@ -84,6 +84,7 @@ impl LogRecord {
 }
 
 /// Limits include ready and in-flight batches, so a stalled backend applies backpressure.
+/// Uploads use the same Conjure HTTP client and retry policy as time-series streaming.
 /// Construct with `Default` and customize its public fields before passing to the builder.
 #[derive(Clone, Debug)]
 #[non_exhaustive]
@@ -99,13 +100,6 @@ pub struct NominalLogStreamOpts {
     pub max_request_delay: Duration,
     pub num_upload_workers: usize,
     pub base_api_url: String,
-    pub request_timeout: Duration,
-    /// Additional attempts after the initial request. There is no nested HTTP retry loop.
-    pub max_retries: usize,
-    pub initial_backoff: Duration,
-    pub max_backoff: Duration,
-    /// If Retry-After exceeds this bound, back up instead of retrying earlier than requested.
-    pub max_retry_after: Duration,
 }
 
 impl Default for NominalLogStreamOpts {
@@ -118,11 +112,6 @@ impl Default for NominalLogStreamOpts {
             max_request_delay: Duration::from_millis(250),
             num_upload_workers: 4,
             base_api_url: crate::client::PRODUCTION_API_URL.into(),
-            request_timeout: Duration::from_secs(30),
-            max_retries: 3,
-            initial_backoff: Duration::from_millis(100),
-            max_backoff: Duration::from_secs(5),
-            max_retry_after: Duration::from_secs(30),
         }
     }
 }
@@ -135,11 +124,9 @@ impl NominalLogStreamOpts {
             || self.max_records_per_batch == 0
             || self.num_upload_workers == 0
             || self.max_request_delay.is_zero()
-            || self.request_timeout.is_zero()
-            || self.initial_backoff > self.max_backoff
         {
             return Err(LogStreamError::Invalid(
-                "invalid batch, buffer, worker, timeout or backoff limits".into(),
+                "invalid batch, buffer, worker or flush delay limits".into(),
             ));
         }
         Ok(())
@@ -153,8 +140,8 @@ pub struct LogStreamStats {
     pub acknowledged_records: u64,
     pub backed_up_records: u64,
     pub failed_records: u64,
+    /// Logical upload requests; retries inside the shared HTTP client are not counted separately.
     pub requests: u64,
-    pub retries: u64,
     pub buffered_bytes: usize,
     pub last_error: Option<String>,
 }

@@ -110,7 +110,7 @@ class NominalLogStream:
         """Set stream options before opening.
 
         Args:
-            opts: Batching, buffering, retry and runtime configuration.
+            opts: Batching, buffering and runtime configuration.
         """
         self._impl = self._impl.with_options(opts)
         return self
