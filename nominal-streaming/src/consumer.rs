@@ -1,3 +1,5 @@
+mod avro_writer;
+
 use std::error::Error;
 use std::fmt::Debug;
 use std::fmt::Formatter;
@@ -26,6 +28,8 @@ use parking_lot::Mutex;
 use prost::Message;
 use tracing::warn;
 
+use self::avro_writer::AvroWriter;
+use self::avro_writer::CompleteWrite;
 use crate::client::NominalApiClients;
 use crate::client::WriteRequest;
 use crate::client::{self};
@@ -36,6 +40,12 @@ use crate::types::AuthProvider;
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum ConsumerError {
+    #[error("failed to {operation} file {path:?}: {source}")]
+    FileError {
+        path: PathBuf,
+        operation: &'static str,
+        source: Box<dyn Error + Send + Sync>,
+    },
     #[error("io error: {0}")]
     IoError(#[from] std::io::Error),
     #[error("avro error: {0}")]
@@ -219,7 +229,7 @@ pub static CORE_AVRO_SCHEMA: LazyLock<apache_avro::Schema> = LazyLock::new(|| {
 
 #[derive(Clone)]
 pub struct AvroFileConsumer {
-    writer: Arc<Mutex<apache_avro::Writer<'static, std::fs::File>>>,
+    writer: Arc<Mutex<AvroWriter<std::fs::File>>>,
     path: PathBuf,
 }
 
@@ -281,7 +291,7 @@ impl AvroFileConsumer {
 
         let mut writer = apache_avro::Writer::builder()
             .schema(&CORE_AVRO_SCHEMA)
-            .writer(file)
+            .writer(CompleteWrite(file))
             .codec(apache_avro::Codec::Snappy)
             .build();
 
@@ -294,7 +304,7 @@ impl AvroFileConsumer {
         }
 
         Ok(Self {
-            writer: Arc::new(Mutex::new(writer)),
+            writer: Arc::new(Mutex::new(AvroWriter::new(writer, path.clone()))),
             path,
         })
     }
@@ -302,7 +312,8 @@ impl AvroFileConsumer {
     fn append_series(&self, series: &[Series]) -> ConsumerResult<()> {
         let mut records: Vec<Record> = Vec::new();
         for series in series {
-            let (timestamps, values) = points_to_avro(series.points.as_ref());
+            let (timestamps, values) = points_to_avro(series.points.as_ref())
+                .map_err(|e| self.file_error("convert timestamps for", std::io::Error::other(e)))?;
 
             let mut record = Record::new(&CORE_AVRO_SCHEMA).expect("Failed to create Avro record");
 
@@ -323,47 +334,64 @@ impl AvroFileConsumer {
 
         self.writer
             .lock()
-            .extend(records)
-            .map_err(|e| ConsumerError::AvroError(Box::new(e)))?;
+            .append(records)
+            .map_err(|e| self.file_error("append", e))
+    }
 
-        Ok(())
+    /// Finalize the Avro container and synchronize its contents to disk.
+    ///
+    /// Repeated calls return the same outcome. All clones share this state;
+    /// consuming further requests after finalization returns an error.
+    pub fn finish(&self) -> ConsumerResult<()> {
+        self.writer
+            .lock()
+            .finish()
+            .map_err(|e| self.file_error("finalize", e))
+    }
+
+    fn file_error(&self, operation: &'static str, source: std::io::Error) -> ConsumerError {
+        ConsumerError::FileError {
+            path: self.path.clone(),
+            operation,
+            source: Box::new(source),
+        }
     }
 }
 
-fn points_to_avro(points: Option<&Points>) -> (Vec<Value>, Vec<Value>) {
+fn points_to_avro(points: Option<&Points>) -> ConsumerResult<(Vec<Value>, Vec<Value>)> {
     let Some(Points {
         points_type: Some(points),
     }) = points
     else {
-        return (Vec::new(), Vec::new());
+        return Ok((Vec::new(), Vec::new()));
     };
 
     match points {
         PointsType::DoublePoints(DoublePoints { points }) => points
             .iter()
             .map(|point| {
-                (
-                    convert_timestamp_to_nanoseconds(point.timestamp.unwrap()),
+                Ok((
+                    convert_timestamp_to_nanoseconds(point.timestamp)?,
                     Value::Union(0, Box::new(Value::Double(point.value))),
-                )
+                ))
             })
             .collect(),
         PointsType::StringPoints(StringPoints { points }) => points
             .iter()
             .map(|point| {
-                (
-                    convert_timestamp_to_nanoseconds(point.timestamp.unwrap()),
+                Ok((
+                    convert_timestamp_to_nanoseconds(point.timestamp)?,
                     Value::Union(1, Box::new(Value::String(point.value.clone()))),
-                )
+                ))
             })
             .collect(),
         PointsType::IntegerPoints(IntegerPoints { points }) => points
             .iter()
             .map(|point| {
-                (
-                    convert_timestamp_to_nanoseconds(point.timestamp.unwrap()),
+                Ok((
+                    convert_timestamp_to_nanoseconds(point.timestamp)?,
                     Value::Union(2, Box::new(Value::Long(point.value))),
-                )
+                ))
             })
             .collect(),
         PointsType::ArrayPoints(ArrayPoints { array_type }) => match array_type {
@@ -375,10 +403,10 @@ fn points_to_avro(points: Option<&Points>) -> (Vec<Value>, Vec<Value>) {
                         point.value.iter().map(|v| Value::Double(*v)).collect();
                     let record =
                         Value::Record(vec![("items".to_string(), Value::Array(array_values))]);
-                    (
-                        convert_timestamp_to_nanoseconds(point.timestamp.unwrap()),
+                    Ok((
+                        convert_timestamp_to_nanoseconds(point.timestamp)?,
                         Value::Union(3, Box::new(record)),
-                    )
+                    ))
                 })
                 .collect(),
             Some(ArrayType::StringArrayPoints(points)) => points
@@ -392,13 +420,13 @@ fn points_to_avro(points: Option<&Points>) -> (Vec<Value>, Vec<Value>) {
                         .collect();
                     let record =
                         Value::Record(vec![("items".to_string(), Value::Array(array_values))]);
-                    (
-                        convert_timestamp_to_nanoseconds(point.timestamp.unwrap()),
+                    Ok((
+                        convert_timestamp_to_nanoseconds(point.timestamp)?,
                         Value::Union(4, Box::new(record)),
-                    )
+                    ))
                 })
                 .collect(),
-            None => (Vec::new(), Vec::new()),
+            None => Ok((Vec::new(), Vec::new())),
         },
         PointsType::StructPoints(StructPoints { points }) => points
             .iter()
@@ -407,51 +435,43 @@ fn points_to_avro(points: Option<&Points>) -> (Vec<Value>, Vec<Value>) {
                     "json".to_string(),
                     Value::String(point.json_string.clone()),
                 )]);
-                (
-                    convert_timestamp_to_nanoseconds(point.timestamp.unwrap()),
+                Ok((
+                    convert_timestamp_to_nanoseconds(point.timestamp)?,
                     Value::Union(5, Box::new(record)),
-                )
+                ))
             })
             .collect(),
         PointsType::Uint64Points(Uint64Points { points }) => points
             .iter()
             .map(|point| {
-                (
-                    convert_timestamp_to_nanoseconds(point.timestamp.unwrap()),
+                Ok((
+                    convert_timestamp_to_nanoseconds(point.timestamp)?,
                     Value::Union(2, Box::new(Value::Long(point.value as i64))),
-                )
+                ))
             })
             .collect(),
     }
 }
 
-fn convert_timestamp_to_nanoseconds(timestamp: Timestamp) -> Value {
-    Value::Long(timestamp.seconds * 1_000_000_000 + timestamp.nanos as i64)
+fn convert_timestamp_to_nanoseconds(timestamp: Option<Timestamp>) -> ConsumerResult<Value> {
+    let timestamp =
+        timestamp.ok_or_else(|| ConsumerError::RequestError("missing timestamp".into()))?;
+    if !(0..1_000_000_000).contains(&timestamp.nanos) {
+        return Err(ConsumerError::RequestError(
+            "timestamp nanos must be in 0..1_000_000_000".into(),
+        ));
+    }
+    let nanos = i128::from(timestamp.seconds) * 1_000_000_000 + i128::from(timestamp.nanos);
+    let nanos = i64::try_from(nanos).map_err(|_| {
+        ConsumerError::RequestError("timestamp exceeds Avro i64 nanosecond range".into())
+    })?;
+    Ok(Value::Long(nanos))
 }
 
 impl WriteRequestConsumer for AvroFileConsumer {
     fn consume(&self, request: &WriteRequestNominal) -> ConsumerResult<()> {
         self.append_series(&request.series)?;
         Ok(())
-    }
-}
-
-impl Drop for AvroFileConsumer {
-    /// Defensive flush-on-drop. In normal operation, records reach disk via
-    /// `append_series` → `apache_avro::Writer::extend`, which flushes at the
-    /// end of every call. But `apache_avro::Writer` itself does not flush on
-    /// drop, so any code path that bypasses `extend` (e.g. a direct
-    /// `Writer::append`, or a future writer call that forgets to flush) would
-    /// silently lose buffered records when the consumer goes out of scope.
-    /// This impl makes that failure mode impossible regardless of how the
-    /// inner writer is driven.
-    fn drop(&mut self) {
-        if let Err(e) = self.writer.lock().flush() {
-            warn!(
-                "failed to flush avro writer for {:?} on drop: {e:?}",
-                self.path
-            );
-        }
     }
 }
 
@@ -600,6 +620,104 @@ mod tests {
     use tempfile::NamedTempFile;
 
     use super::*;
+
+    #[test]
+    fn malformed_request_does_not_append_earlier_series() {
+        let file = NamedTempFile::new().unwrap();
+        let consumer = AvroFileConsumer::new_with_full_path(file.path(), true, None).unwrap();
+        let series = |timestamp| {
+            make_series(
+                "ch",
+                Points {
+                    points_type: Some(PointsType::IntegerPoints(IntegerPoints {
+                        points: vec![
+                            nominal_api::tonic::io::nominal::scout::api::proto::IntegerPoint {
+                                timestamp,
+                                value: 42,
+                            },
+                        ],
+                    })),
+                },
+            )
+        };
+        consumer
+            .append_series(&[series(make_timestamp(0, 0))])
+            .unwrap();
+        for timestamp in [
+            None,
+            make_timestamp(0, -1),
+            make_timestamp(0, 1_000_000_000),
+            make_timestamp(i64::MAX, 0),
+        ] {
+            assert!(consumer
+                .append_series(&[series(make_timestamp(1, 0)), series(timestamp)])
+                .is_err());
+        }
+        drop(consumer);
+        assert_eq!(read_integer_point_count(&file.path().to_path_buf()), 1);
+    }
+
+    #[test]
+    fn finish_is_shared_idempotent_and_writes_empty_container() {
+        let file = NamedTempFile::new().unwrap();
+        let consumer = AvroFileConsumer::new_with_full_path(file.path(), true, None).unwrap();
+        let clone = consumer.clone();
+        drop(consumer);
+        clone.consume(&WriteRequestNominal::default()).unwrap();
+        clone.finish().unwrap();
+        clone.finish().unwrap();
+        assert_eq!(
+            Reader::new(std::fs::File::open(file.path()).unwrap())
+                .unwrap()
+                .count(),
+            0
+        );
+        let error = clone.consume(&WriteRequestNominal::default()).unwrap_err();
+        assert!(error.to_string().contains(file.path().to_str().unwrap()));
+    }
+
+    #[test]
+    fn timestamp_boundaries_roundtrip() {
+        let file = NamedTempFile::new().unwrap();
+        let consumer = AvroFileConsumer::new_with_full_path(file.path(), true, None).unwrap();
+        let expected = [i64::MIN, -1, 0, i64::MAX];
+        let points = expected
+            .iter()
+            .map(
+                |value| nominal_api::tonic::io::nominal::scout::api::proto::IntegerPoint {
+                    timestamp: make_timestamp(
+                        value.div_euclid(1_000_000_000),
+                        value.rem_euclid(1_000_000_000) as i32,
+                    ),
+                    value: 42,
+                },
+            )
+            .collect();
+        consumer
+            .append_series(&[make_series(
+                "ch",
+                Points {
+                    points_type: Some(PointsType::IntegerPoints(IntegerPoints { points })),
+                },
+            )])
+            .unwrap();
+        drop(consumer);
+        let records = Reader::new(std::fs::File::open(file.path()).unwrap())
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        let Value::Record(fields) = &records[0] else {
+            panic!("record")
+        };
+        assert_eq!(
+            fields
+                .iter()
+                .find(|(name, _)| name == "timestamps")
+                .unwrap()
+                .1,
+            Value::Array(expected.map(Value::Long).to_vec())
+        );
+    }
 
     #[test]
     fn describe_request_error_is_compact_and_names_the_cause() {
@@ -1030,7 +1148,14 @@ mod tests {
             );
             record.put("tags", HashMap::<String, String>::new());
 
-            consumer.writer.lock().append(record).unwrap();
+            consumer
+                .writer
+                .lock()
+                .writer
+                .as_mut()
+                .unwrap()
+                .append(record)
+                .unwrap();
             // consumer drops here — the only thing that can land the buffered
             // record on disk is a flush from the Drop impl.
         }
