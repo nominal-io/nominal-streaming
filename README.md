@@ -9,7 +9,7 @@ Please refer to the crate documentation at https://docs.rs/nominal-streaming/lat
 Core uploads use Conjure's retry policy: five additional attempts, a 250 ms
 exponential-backoff slot with jitter, 5 second connect and 15 second read/write
 timeouts. A 60 second delivery deadline bounds all HTTP attempts and retry sleeps,
-including `Retry-After` when a response provides it. Queueing, protobuf/zstd
+including supported `Retry-After` waits on HTTP 429 responses. Queueing, protobuf/zstd
 encoding, and file fallback are outside that deadline. Each request is encoded
 once; retries replay its bytes. A timed-out request may already have reached the
 server, so retries and fallback can duplicate data.
