@@ -135,11 +135,83 @@ impl IntoPoints for Vec<StringArrayPoint> {
     }
 }
 
+/// A timestamp that cannot be queued or represented as signed nanoseconds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum TimestampError {
+    #[error("missing timestamp")]
+    Missing,
+    #[error("timestamp nanos must be in 0..1_000_000_000")]
+    InvalidNanos,
+    #[error("timestamp exceeds the signed 64-bit nanosecond range")]
+    OutOfRange,
+}
+
+pub(crate) fn timestamp_nanos(timestamp: Option<Timestamp>) -> Result<i64, TimestampError> {
+    let timestamp = timestamp.ok_or(TimestampError::Missing)?;
+    if !(0..1_000_000_000).contains(&timestamp.nanos) {
+        return Err(TimestampError::InvalidNanos);
+    }
+    let nanos =
+        i128::from(timestamp.seconds) * i128::from(NANOS_PER_SECOND) + i128::from(timestamp.nanos);
+    i64::try_from(nanos).map_err(|_| TimestampError::OutOfRange)
+}
+
+pub(crate) fn validate_points(points: &PointsType) -> Result<(), TimestampError> {
+    match points {
+        PointsType::DoublePoints(points) => points
+            .points
+            .iter()
+            .try_for_each(|point| timestamp_nanos(point.timestamp).map(|_| ())),
+        PointsType::StringPoints(points) => points
+            .points
+            .iter()
+            .try_for_each(|point| timestamp_nanos(point.timestamp).map(|_| ())),
+        PointsType::IntegerPoints(points) => points
+            .points
+            .iter()
+            .try_for_each(|point| timestamp_nanos(point.timestamp).map(|_| ())),
+        PointsType::StructPoints(points) => points
+            .points
+            .iter()
+            .try_for_each(|point| timestamp_nanos(point.timestamp).map(|_| ())),
+        PointsType::Uint64Points(points) => points
+            .points
+            .iter()
+            .try_for_each(|point| timestamp_nanos(point.timestamp).map(|_| ())),
+        PointsType::ArrayPoints(points) => match &points.array_type {
+            Some(ArrayType::DoubleArrayPoints(points)) => points
+                .points
+                .iter()
+                .try_for_each(|point| timestamp_nanos(point.timestamp).map(|_| ())),
+            Some(ArrayType::StringArrayPoints(points)) => points
+                .points
+                .iter()
+                .try_for_each(|point| timestamp_nanos(point.timestamp).map(|_| ())),
+            None => Ok(()),
+        },
+    }
+}
+
 pub trait IntoTimestamp {
     fn into_timestamp(self) -> Timestamp;
+
+    /// Converts and validates a timestamp before it enters a writer buffer.
+    fn try_into_timestamp(self) -> Result<Timestamp, TimestampError>
+    where
+        Self: Sized,
+    {
+        let timestamp = self.into_timestamp();
+        timestamp_nanos(Some(timestamp))?;
+        Ok(timestamp)
+    }
 }
 
 impl IntoTimestamp for Duration {
+    fn try_into_timestamp(self) -> Result<Timestamp, TimestampError> {
+        let nanos = i64::try_from(self.as_nanos()).map_err(|_| TimestampError::OutOfRange)?;
+        Ok(nanos.into_timestamp())
+    }
+
     fn into_timestamp(self) -> Timestamp {
         Timestamp {
             seconds: self.as_secs() as i64,
@@ -160,8 +232,8 @@ impl<T: chrono::TimeZone> IntoTimestamp for chrono::DateTime<T> {
 impl IntoTimestamp for i64 {
     fn into_timestamp(self) -> Timestamp {
         Timestamp {
-            seconds: (self / NANOS_PER_SECOND),
-            nanos: (self % NANOS_PER_SECOND) as i32,
+            seconds: self.div_euclid(NANOS_PER_SECOND),
+            nanos: self.rem_euclid(NANOS_PER_SECOND) as i32,
         }
     }
 }
@@ -173,6 +245,31 @@ mod tests {
     use nominal_api::tonic::io::nominal::scout::api::proto::StringArrayPoint;
 
     use super::*;
+
+    #[test]
+    fn signed_nanoseconds_normalize_and_roundtrip() {
+        for nanos in [i64::MIN, -1_000_000_001, -1, 0, 1, i64::MAX] {
+            let timestamp = nanos.try_into_timestamp().unwrap();
+            assert!((0..1_000_000_000).contains(&timestamp.nanos));
+            assert_eq!(timestamp_nanos(Some(timestamp)), Ok(nanos));
+        }
+    }
+
+    #[test]
+    fn every_point_type_rejects_missing_timestamps() {
+        let cases = [
+            vec![DoublePoint::default()].into_points(),
+            vec![IntegerPoint::default()].into_points(),
+            vec![Uint64Point::default()].into_points(),
+            vec![StringPoint::default()].into_points(),
+            vec![StructPoint::default()].into_points(),
+            vec![DoubleArrayPoint::default()].into_points(),
+            vec![StringArrayPoint::default()].into_points(),
+        ];
+        for points in cases {
+            assert_eq!(validate_points(&points), Err(TimestampError::Missing));
+        }
+    }
 
     #[test]
     fn vec_double_array_point_converts_to_points_type() {

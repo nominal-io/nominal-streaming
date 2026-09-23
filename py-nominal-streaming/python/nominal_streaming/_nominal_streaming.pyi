@@ -2,7 +2,7 @@
 
 Application code should use ``nominal_streaming.NominalDatasetStream``, whose
 Python wrapper also normalizes datetime and string timestamps. Native methods
-accept integer nanoseconds since the Unix epoch, from 0 through 2**64 - 1.
+accept integer nanoseconds since the Unix epoch, from -(2**63) through 2**63 - 1.
 NumPy imports here describe optional array inputs; this stub is not executed
 at runtime and does not make NumPy a runtime requirement.
 """
@@ -366,13 +366,13 @@ class PyNominalDatasetStream:
 
         Args:
             channel_name: Channel name to stream to
-            timestamp: Integer nanoseconds since the Unix epoch, from 0 through 2**64 - 1.
+            timestamp: Integer nanoseconds since the Unix epoch, from -(2**63) through 2**63 - 1.
             value: Data value to stream
             tags: Optional tags to attach to the data.
 
         Raises:
             RuntimeError: If the stream is not open or is shutting down.
-            OverflowError: If a timestamp is negative or exceeds 2**64 - 1.
+            ValueError: If a timestamp is outside the signed 64-bit nanosecond range.
             TypeError: If `value` is not an `int`, `float`, or `str`.
         """
 
@@ -405,7 +405,7 @@ class PyNominalDatasetStream:
         Args:
             channel_name: Channel name.
             timestamps: Integer nanoseconds since the Unix epoch, each from
-                0 through 2**64 - 1. Datetimes and strings require the public wrapper.
+                -(2**63) through 2**63 - 1. Datetimes and strings require the public wrapper.
             values: Numeric or string sequence, or a NumPy array of integer,
                 floating, boolean, or Unicode string values. Arrays with masked
                 elements or datetime64/timedelta64 value dtypes are rejected.
@@ -415,7 +415,7 @@ class PyNominalDatasetStream:
             RuntimeError: If the stream is not open or is shutting down.
             TypeError: If timestamps or values cannot be converted, including
                 unsupported mixtures of strings and numbers.
-            OverflowError: If a timestamp is negative or exceeds 2**64 - 1.
+            ValueError: If a timestamp is outside the signed 64-bit nanosecond range.
             ValueError: If values are empty or the input lengths differ.
         """
 
@@ -434,7 +434,7 @@ class PyNominalDatasetStream:
 
         Raises:
             RuntimeError: If the stream is not open or is shutting down.
-            OverflowError: If a timestamp is negative or exceeds 2**64 - 1.
+            ValueError: If a timestamp is outside the signed 64-bit nanosecond range.
             TypeError: If any value is not an `int`, `float`, or `str`.
         """
 
@@ -459,7 +459,7 @@ class PyNominalDatasetStream:
 
         Raises:
             RuntimeError: If the stream is not open or is shutting down.
-            OverflowError: If a timestamp is negative or exceeds 2**64 - 1.
+            ValueError: If a timestamp is outside the signed 64-bit nanosecond range.
             TypeError: If `value` contains a non-JSON-native element.
             ValueError: If `value` contains NaN, infinity, or a circular reference.
         """
@@ -484,7 +484,7 @@ class PyNominalDatasetStream:
         Raises:
             RuntimeError: If the stream is not open or is shutting down.
             TypeError: If an element cannot be converted to a double.
-            OverflowError: If a timestamp is negative or exceeds 2**64 - 1.
+            ValueError: If a timestamp is outside the signed 64-bit nanosecond range.
         """
 
     def enqueue_string_array(
@@ -505,7 +505,7 @@ class PyNominalDatasetStream:
         Raises:
             RuntimeError: If the stream is not open or is shutting down.
             TypeError: If an element is not a string.
-            OverflowError: If a timestamp is negative or exceeds 2**64 - 1.
+            ValueError: If a timestamp is outside the signed 64-bit nanosecond range.
         """
 
     def __enter__(self) -> Self:

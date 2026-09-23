@@ -178,10 +178,12 @@ fn test_stream() {
             });
         }
 
-        stream.enqueue(
-            &ChannelDescriptor::with_tags("channel_1", [("batch_id", batch.to_string())]),
-            points,
-        );
+        stream
+            .enqueue(
+                &ChannelDescriptor::with_tags("channel_1", [("batch_id", batch.to_string())]),
+                points,
+            )
+            .unwrap();
     }
 
     drop(stream); // wait for points to flush
@@ -223,7 +225,7 @@ fn enqueue_many_writes_every_channel_in_one_request() {
         })
         .collect();
 
-    stream.enqueue_many(entries);
+    stream.enqueue_many(entries).unwrap();
     drop(stream); // wait for points to flush
 
     let requests = test_consumer.requests.lock().unwrap();
@@ -270,7 +272,7 @@ fn enqueue_many_splits_a_batch_larger_than_a_record() {
             .collect::<Vec<_>>()
             .into_points(),
     ));
-    stream.enqueue_many(entries);
+    stream.enqueue_many(entries).unwrap();
     drop(stream);
 
     let requests = test_consumer.requests.lock().unwrap();
@@ -308,8 +310,10 @@ fn enqueue_many_appends_to_channels_already_buffered() {
 
     // the same channel reached once through enqueue and once through enqueue_many must land in
     // one series rather than splitting
-    stream.enqueue(&channel, point(1));
-    stream.enqueue_many(vec![(channel.clone(), point(2))]);
+    stream.enqueue(&channel, point(1)).unwrap();
+    stream
+        .enqueue_many(vec![(channel.clone(), point(2))])
+        .unwrap();
     drop(stream);
 
     let requests = test_consumer.requests.lock().unwrap();
@@ -366,34 +370,48 @@ fn test_stream_types() {
             });
         }
 
-        stream.enqueue(
-            &ChannelDescriptor::with_tags("double", [("batch_id", batch.to_string())]),
-            doubles,
-        );
-        stream.enqueue(
-            &ChannelDescriptor::with_tags("string", [("batch_id", batch.to_string())]),
-            strings,
-        );
-        stream.enqueue(
-            &ChannelDescriptor::with_tags("struct", [("batch_id", batch.to_string())]),
-            structs,
-        );
-        stream.enqueue(
-            &ChannelDescriptor::with_tags("int", [("batch_id", batch.to_string())]),
-            ints,
-        );
-        stream.enqueue(
-            &ChannelDescriptor::with_tags("uint64", [("batch_id", batch.to_string())]),
-            uints,
-        );
-        stream.enqueue(
-            &ChannelDescriptor::with_tags("double_array", [("batch_id", batch.to_string())]),
-            double_arrays,
-        );
-        stream.enqueue(
-            &ChannelDescriptor::with_tags("string_array", [("batch_id", batch.to_string())]),
-            string_arrays,
-        );
+        stream
+            .enqueue(
+                &ChannelDescriptor::with_tags("double", [("batch_id", batch.to_string())]),
+                doubles,
+            )
+            .unwrap();
+        stream
+            .enqueue(
+                &ChannelDescriptor::with_tags("string", [("batch_id", batch.to_string())]),
+                strings,
+            )
+            .unwrap();
+        stream
+            .enqueue(
+                &ChannelDescriptor::with_tags("struct", [("batch_id", batch.to_string())]),
+                structs,
+            )
+            .unwrap();
+        stream
+            .enqueue(
+                &ChannelDescriptor::with_tags("int", [("batch_id", batch.to_string())]),
+                ints,
+            )
+            .unwrap();
+        stream
+            .enqueue(
+                &ChannelDescriptor::with_tags("uint64", [("batch_id", batch.to_string())]),
+                uints,
+            )
+            .unwrap();
+        stream
+            .enqueue(
+                &ChannelDescriptor::with_tags("double_array", [("batch_id", batch.to_string())]),
+                double_arrays,
+            )
+            .unwrap();
+        stream
+            .enqueue(
+                &ChannelDescriptor::with_tags("string_array", [("batch_id", batch.to_string())]),
+                string_arrays,
+            )
+            .unwrap();
     }
 
     drop(stream); // wait for points to flush
@@ -434,17 +452,19 @@ fn concurrent_producers_respect_record_limit() {
                 for i in 0..128 {
                     let points = vec![
                         DoublePoint {
-                            timestamp: None,
+                            timestamp: Some(Default::default()),
                             value: i as f64
                         };
                         8
                     ];
                     match producer % 3 {
-                        0 => stream.enqueue(&channel, points),
-                        1 => stream.enqueue_many(vec![(channel.clone(), points.into_points())]),
+                        0 => stream.enqueue(&channel, points).unwrap(),
+                        1 => stream
+                            .enqueue_many(vec![(channel.clone(), points.into_points())])
+                            .unwrap(),
                         _ => {
                             for _ in points {
-                                writer.push(i as i64, i as f64);
+                                writer.push(i as i64, i as f64).unwrap();
                             }
                         }
                     }
@@ -469,7 +489,7 @@ fn test_writer() {
     for i in 0..5000 {
         let start_time = UNIX_EPOCH.elapsed().unwrap();
         let value = i % 50;
-        writer.push(start_time, value as f64);
+        writer.push(start_time, value as f64).unwrap();
     }
 
     drop(writer); // flush points to stream
@@ -497,9 +517,9 @@ fn test_time_flush() {
     let cd = ChannelDescriptor::new("channel_1");
     let mut writer = stream.double_writer(cd);
 
-    writer.push(UNIX_EPOCH.elapsed().unwrap(), 1.0);
+    writer.push(UNIX_EPOCH.elapsed().unwrap(), 1.0).unwrap();
     thread::sleep(Duration::from_millis(101));
-    writer.push(UNIX_EPOCH.elapsed().unwrap(), 2.0); // first flush
+    writer.push(UNIX_EPOCH.elapsed().unwrap(), 2.0).unwrap(); // first flush
 
     // Wait for delivery before the next write so worker scheduling cannot
     // combine the two writer flushes into one request. The request-count
@@ -513,7 +533,7 @@ fn test_time_flush() {
         thread::sleep(Duration::from_millis(1));
     }
     thread::sleep(Duration::from_millis(101));
-    writer.push(UNIX_EPOCH.elapsed().unwrap(), 3.0); // second flush
+    writer.push(UNIX_EPOCH.elapsed().unwrap(), 3.0).unwrap(); // second flush
 
     drop(writer);
     drop(stream);
@@ -547,7 +567,9 @@ fn simulated_network_retries_transient_failures_and_delivers_data() {
     let cd = ChannelDescriptor::new("networked_double");
     let mut writer = stream.double_writer(cd);
     for i in 0..12 {
-        writer.push(UNIX_EPOCH.elapsed().unwrap(), i as f64);
+        writer
+            .push(UNIX_EPOCH.elapsed().unwrap(), i as f64)
+            .unwrap();
     }
 
     drop(writer);
@@ -597,7 +619,7 @@ fn oversized_batch_delivers_failed_chunks_to_fallback_exactly_once() {
             value: i as f64,
         })
         .collect::<Vec<_>>();
-    stream.enqueue(&channel, expected.clone());
+    stream.enqueue(&channel, expected.clone()).unwrap();
     drop(stream);
 
     let primary = primary.requests.lock().unwrap();
@@ -668,7 +690,9 @@ fn simulated_network_all_requests_timeout_falls_back_under_backpressure() {
     let cd = ChannelDescriptor::new("timeout_double");
     let mut writer = stream.double_writer(cd);
     for i in 0..12 {
-        writer.push(UNIX_EPOCH.elapsed().unwrap(), i as f64);
+        writer
+            .push(UNIX_EPOCH.elapsed().unwrap(), i as f64)
+            .unwrap();
     }
 
     drop(writer);
@@ -715,13 +739,21 @@ fn test_writer_types() {
     for i in 0..5000 {
         let start_time = UNIX_EPOCH.elapsed().unwrap();
         let value = i % 50;
-        double_writer.push(start_time, value as f64);
-        string_writer.push(start_time, format!("{}", value));
-        integer_writer.push(start_time, value);
-        uint64_writer.push(start_time, value as u64);
-        struct_writer.push(start_time, format!("{{\"v\":{}}}", value));
-        double_array_writer.push(start_time, vec![value as f64, (value + 1) as f64]);
-        string_array_writer.push(start_time, vec![format!("{}", value)]);
+        double_writer.push(start_time, value as f64).unwrap();
+        string_writer
+            .push(start_time, format!("{}", value))
+            .unwrap();
+        integer_writer.push(start_time, value).unwrap();
+        uint64_writer.push(start_time, value as u64).unwrap();
+        struct_writer
+            .push(start_time, format!("{{\"v\":{}}}", value))
+            .unwrap();
+        double_array_writer
+            .push(start_time, vec![value as f64, (value + 1) as f64])
+            .unwrap();
+        string_array_writer
+            .push(start_time, vec![format!("{}", value)])
+            .unwrap();
     }
 
     drop(double_writer);
@@ -743,4 +775,57 @@ fn test_writer_types() {
     assert_eq!(counts.get("struct"), Some(&("struct", 5000)));
     assert_eq!(counts.get("double_array"), Some(&("double_array", 5000)));
     assert_eq!(counts.get("string_array"), Some(&("string_array", 5000)));
+}
+
+#[test]
+fn invalid_timestamps_reject_batches_before_buffering() {
+    let consumer = Arc::new(TestDatasourceStream {
+        requests: Mutex::new(vec![]),
+    });
+    let stream = create_stream_with_consumer(consumer.clone(), 1);
+    let channel = ChannelDescriptor::new("time");
+    let point = |timestamp| IntegerPoint {
+        timestamp,
+        value: 1,
+    };
+    assert_eq!(
+        stream.enqueue(&channel, vec![point(None)]),
+        Err(TimestampError::Missing)
+    );
+    assert_eq!(
+        stream.enqueue_many(vec![
+            (
+                channel.clone(),
+                vec![point(Some(0_i64.into_timestamp()))].into_points()
+            ),
+            (channel.clone(), vec![point(None)].into_points()),
+        ]),
+        Err(TimestampError::Missing)
+    );
+    {
+        let mut writer = stream.integer_writer(channel.clone());
+        assert_eq!(
+            writer.push(Duration::from_secs(u64::MAX), 1),
+            Err(TimestampError::OutOfRange)
+        );
+        writer.push(-1_i64, 42).unwrap();
+    }
+    drop(stream);
+    let requests = consumer.requests.lock().unwrap();
+    let points: Vec<_> = requests
+        .iter()
+        .flat_map(|r| &r.series)
+        .flat_map(|s| {
+            let Some(PointsType::IntegerPoints(points)) =
+                s.points.as_ref().and_then(|p| p.points_type.as_ref())
+            else {
+                panic!("integer points")
+            };
+            &points.points
+        })
+        .collect();
+    assert_eq!(points.len(), 1);
+    assert_eq!(points[0].value, 42);
+    assert_eq!(points[0].timestamp.unwrap().seconds, -1);
+    assert_eq!(points[0].timestamp.unwrap().nanos, 999_999_999);
 }

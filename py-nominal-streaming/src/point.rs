@@ -20,10 +20,25 @@ use pyo3::types::PyTuple;
 pyo3::create_exception!(_nominal_streaming, _TimestampTypeError, PyTypeError);
 
 /// Convert a integral nanosecond timestamp into google.protobuf.Timestamp.
-pub fn parse_timestamp(timestamp: u64) -> Timestamp {
-    let seconds = timestamp.div_euclid(1_000_000_000) as i64;
+pub fn parse_timestamp(timestamp: i64) -> Timestamp {
+    let seconds = timestamp.div_euclid(1_000_000_000);
     let nanos = timestamp.rem_euclid(1_000_000_000) as i32;
     Timestamp { seconds, nanos }
+}
+
+pub fn extract_timestamp(timestamp: &Bound<'_, PyAny>) -> PyResult<Timestamp> {
+    timestamp
+        .extract::<i64>()
+        .map(parse_timestamp)
+        .map_err(|error| timestamp_extraction_error(timestamp.py(), error))
+}
+
+fn timestamp_extraction_error(py: Python<'_>, error: PyErr) -> PyErr {
+    if error.is_instance_of::<pyo3::exceptions::PyOverflowError>(py) {
+        PyValueError::new_err("timestamp exceeds the signed 64-bit nanosecond range")
+    } else {
+        error
+    }
 }
 
 /// Convert python tags into the descriptor's tag representation.
@@ -270,12 +285,12 @@ pub fn extract_series_points(
     }
 }
 
-pub fn extract_vec_ts(timestamps: Vec<u64>) -> Vec<Timestamp> {
+pub fn extract_vec_ts(timestamps: Vec<i64>) -> Vec<Timestamp> {
     timestamps.into_iter().map(parse_timestamp).collect()
 }
 
 /// Distinguish timestamp extraction failures from value errors in the Python wrapper.
-pub fn extract_timestamp_input(values: &Bound<'_, PyAny>) -> PyResult<Vec<u64>> {
+pub fn extract_timestamp_input(values: &Bound<'_, PyAny>) -> PyResult<Vec<i64>> {
     #[cfg(Py_3_11)]
     if let Some(timestamps) = crate::numeric_buffer::timestamps(values)? {
         return Ok(timestamps);
@@ -286,7 +301,7 @@ pub fn extract_timestamp_input(values: &Bound<'_, PyAny>) -> PyResult<Vec<u64>> 
             timestamp_error.set_cause(values.py(), Some(error));
             timestamp_error
         } else {
-            error
+            timestamp_extraction_error(values.py(), error)
         }
     })
 }

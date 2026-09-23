@@ -77,24 +77,28 @@ fn enqueue_batch(
     points_per_batch: usize,
 ) {
     let point = |index| DoublePoint {
-        timestamp: None,
+        timestamp: Some(Default::default()),
         value: (batch * points_per_batch + index) as f64,
     };
     match shape {
-        BatchShape::SingleChannel => stream.enqueue(
-            &ChannelDescriptor::new(format!("batch-{batch}")),
-            (0..points_per_batch).map(point).collect::<Vec<_>>(),
-        ),
-        BatchShape::ManyChannels => stream.enqueue_many(
-            (0..points_per_batch)
-                .map(|index| {
-                    (
-                        ChannelDescriptor::new(format!("batch-{batch}-point-{index}")),
-                        vec![point(index)].into_points(),
-                    )
-                })
-                .collect(),
-        ),
+        BatchShape::SingleChannel => stream
+            .enqueue(
+                &ChannelDescriptor::new(format!("batch-{batch}")),
+                (0..points_per_batch).map(point).collect::<Vec<_>>(),
+            )
+            .unwrap(),
+        BatchShape::ManyChannels => stream
+            .enqueue_many(
+                (0..points_per_batch)
+                    .map(|index| {
+                        (
+                            ChannelDescriptor::new(format!("batch-{batch}-point-{index}")),
+                            vec![point(index)].into_points(),
+                        )
+                    })
+                    .collect(),
+            )
+            .unwrap(),
         BatchShape::MixedChannels => {
             let split = points_per_batch / 2;
             let mut entries = vec![(
@@ -107,7 +111,7 @@ fn enqueue_batch(
                     vec![point(index)].into_points(),
                 )
             }));
-            stream.enqueue_many(entries);
+            stream.enqueue_many(entries).unwrap();
         }
     }
 }
@@ -137,13 +141,15 @@ fn drop_wakes_partial_batches_before_flush_deadline() {
     );
     // Let empty processors enter their long idle wait.
     thread::sleep(Duration::from_millis(100));
-    stream.enqueue(
-        &ChannelDescriptor::new("value"),
-        vec![DoublePoint {
-            timestamp: None,
-            value: 1.0,
-        }],
-    );
+    stream
+        .enqueue(
+            &ChannelDescriptor::new("value"),
+            vec![DoublePoint {
+                timestamp: Some(Default::default()),
+                value: 1.0,
+            }],
+        )
+        .unwrap();
     let (done_tx, done_rx) = std::sync::mpsc::channel();
     thread::spawn(move || {
         drop(stream);
@@ -182,15 +188,17 @@ fn drop_drains_oversized_detached_and_buffered_batches() {
     let (done_tx, done_rx) = std::sync::mpsc::channel();
     let producer = thread::spawn(move || {
         for batch in 0..BATCHES {
-            stream.enqueue(
-                &ChannelDescriptor::new(format!("batch-{batch}")),
-                (0..POINTS_PER_BATCH)
-                    .map(|point| DoublePoint {
-                        timestamp: None,
-                        value: (batch * POINTS_PER_BATCH + point) as f64,
-                    })
-                    .collect::<Vec<_>>(),
-            );
+            stream
+                .enqueue(
+                    &ChannelDescriptor::new(format!("batch-{batch}")),
+                    (0..POINTS_PER_BATCH)
+                        .map(|point| DoublePoint {
+                            timestamp: Some(Default::default()),
+                            value: (batch * POINTS_PER_BATCH + point) as f64,
+                        })
+                        .collect::<Vec<_>>(),
+                )
+                .unwrap();
             if batch == 0 {
                 entered_rx
                     .recv_timeout(Duration::from_secs(2))
@@ -301,10 +309,18 @@ fn oversized_enqueue_does_not_wait_for_consumer() {
                 .with_max_buffered_requests(1)
                 .with_request_dispatcher_tasks(1),
         );
-        stream.enqueue(
-            &ChannelDescriptor::new("large"),
-            vec![DoublePoint::default(); 100],
-        );
+        stream
+            .enqueue(
+                &ChannelDescriptor::new("large"),
+                vec![
+                    DoublePoint {
+                        timestamp: Some(Default::default()),
+                        value: 0.0
+                    };
+                    100
+                ],
+            )
+            .unwrap();
         let _ = admitted_tx.send(());
         drop(stream);
         let _ = done_tx.send(());
