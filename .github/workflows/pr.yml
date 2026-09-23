@@ -1,24 +1,27 @@
-name: Lint PR Title
+name: PR structure
+
 on:
   pull_request:
-    types: ["opened", "reopened", "edited", "synchronize"]
+    types: [opened, reopened, synchronize, edited]
+
+permissions:
+  contents: read
 
 jobs:
-  lint-pr-title:
-    name: Lint PR Title
+  validate-pr-title:
     runs-on: depot-ubuntu-24.04
     steps:
-      - name: Checkout repo
+      - name: Checkout repository
         uses: actions/checkout@v5
-      - name: Install Dependencies
+      - name: Install commitlint
         run: npm install -g @commitlint/cli@20 @commitlint/config-conventional@20
-      - name: Lint PR name
+      - name: Check PR title (commitlint)
         env:
           # Store in an environment to guard against script injection
           TITLE: ${{ github.event.pull_request.title }}
         run: |
           echo "$TITLE" | commitlint --config .github/commitlint.config.js
-      - name: Display helpful error message
+      - name: Explain title failure
         if: failure()
         env:
           # Store in an environment to guard against script injection

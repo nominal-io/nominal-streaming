@@ -1,4 +1,4 @@
-name: Build and Push Python Bindings
+name: wheels
 on:
   push:
     tags:
@@ -14,7 +14,8 @@ defaults:
     shell: bash
 
 jobs:
-  build-and-publish:
+  publish-wheel:
+    name: publish-wheel (${{ matrix.platform.label }}, abi3 ${{ matrix.abi.python }})
     runs-on: ${{ matrix.platform.runner }}
     strategy:
       fail-fast: false
@@ -162,7 +163,7 @@ jobs:
           maturin-version: ${{ env.MATURIN_VERSION }}
         env: ${{ matrix.platform.env }}
 
-      - name: Install UV
+      - name: Install uv
         uses: astral-sh/setup-uv@v7
         with:
           version: "0.8.x"

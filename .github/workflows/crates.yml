@@ -1,4 +1,4 @@
-name: Release-plz
+name: crates
 
 on:
   push:
@@ -6,8 +6,7 @@ on:
       - main
 
 jobs:
-  release-plz-release:
-    name: Release-plz release
+  publish-crates:
     runs-on: depot-ubuntu-24.04-4
     if: ${{ github.repository_owner == 'nominal-io' }}
     environment: crates
@@ -20,12 +19,12 @@ jobs:
         with:
           fetch-depth: 0
           token: ${{ secrets.NOMBOT_CLASSIC_PERSONAL_ACCESS_TOKEN }}
-      - name: Setup Rust Toolchain
+      - name: Install Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: stable
           rustflags: ""
-      - name: Run release-plz
+      - name: Publish Rust crates (release-plz)
         uses: release-plz/action@v0.5
         with:
           command: release
@@ -33,8 +32,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.NOMBOT_CLASSIC_PERSONAL_ACCESS_TOKEN }}
 
-  release-plz-pr:
-    name: Release-plz PR
+  release-pr:
     runs-on: depot-ubuntu-24.04-4
     if: ${{ github.repository_owner == 'nominal-io' }}
     permissions:
@@ -49,12 +47,12 @@ jobs:
         with:
           fetch-depth: 0
           token: ${{ secrets.NOMBOT_CLASSIC_PERSONAL_ACCESS_TOKEN }}
-      - name: Setup Rust Toolchain
+      - name: Install Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: stable
           rustflags: ""
-      - name: Run release-plz
+      - name: Update release PR (release-plz)
         uses: release-plz/action@v0.5
         with:
           command: release-pr
