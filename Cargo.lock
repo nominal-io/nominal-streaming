@@ -1600,6 +1600,7 @@ version = "0.10.2"
 dependencies = [
  "apache-avro",
  "async-channel",
+ "bytes",
  "chrono",
  "conjure-error",
  "conjure-http",
@@ -1860,6 +1861,7 @@ dependencies = [
  "nominal-streaming",
  "pyo3",
  "pyo3-build-config",
+ "tempfile",
  "tokio",
  "tracing",
 ]

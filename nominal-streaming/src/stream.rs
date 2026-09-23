@@ -64,6 +64,10 @@ pub struct NominalStreamOpts {
     pub max_buffered_requests: usize,
     pub request_dispatcher_tasks: usize,
     pub base_api_url: String,
+    /// HTTP attempt and retry settings for the builder-created Core consumer.
+    pub transport: crate::client::TransportOptions,
+    /// Overall deadline for HTTP attempts and retry sleeps, excluding encoding and queueing.
+    pub delivery_timeout: Duration,
     /// Emit request runtime metrics from the builder's Core consumer. Disabled by default.
     ///
     /// Completed request metrics piggyback on later data requests to the same dataset.
@@ -85,6 +89,8 @@ impl Default for NominalStreamOpts {
             max_buffered_requests: 4,
             request_dispatcher_tasks: 8,
             base_api_url: PRODUCTION_API_URL.to_string(),
+            transport: crate::client::TransportOptions::default(),
+            delivery_timeout: crate::client::DEFAULT_DELIVERY_TIMEOUT,
             track_metrics: false,
             additional_metric_channels: Vec::new(),
         }
@@ -92,6 +98,23 @@ impl Default for NominalStreamOpts {
 }
 
 impl NominalStreamOpts {
+    /// Bound the builder-created Core consumer's attempts and retry sleeps.
+    /// Panics if the timeout is zero.
+    pub fn with_delivery_timeout(mut self, timeout: Duration) -> Self {
+        assert!(
+            !timeout.is_zero(),
+            "delivery timeout must be greater than zero"
+        );
+        self.delivery_timeout = timeout;
+        self
+    }
+
+    pub fn with_transport_options(mut self, options: crate::client::TransportOptions) -> Self {
+        options.validate().expect("invalid transport options");
+        self.transport = options;
+        self
+    }
+
     pub fn with_max_points_per_record(mut self, max_points_per_record: usize) -> Self {
         self.max_points_per_record = max_points_per_record;
         self
@@ -206,29 +229,7 @@ impl NominalDatasetStreamBuilder {
 
     #[cfg(feature = "logging")]
     fn init_logging(self, directive: Option<&str>) -> Self {
-        use tracing_subscriber::layer::SubscriberExt;
-        use tracing_subscriber::util::SubscriberInitExt;
-
-        // Build the filter, either from an explicit directive or the environment.
-        let base = tracing_subscriber::EnvFilter::builder()
-            .with_default_directive(tracing_subscriber::filter::LevelFilter::DEBUG.into());
-        let env_filter = match directive {
-            Some(d) => base.parse_lossy(d),
-            None => base.from_env_lossy(),
-        };
-
-        let subscriber = tracing_subscriber::registry()
-            .with(
-                tracing_subscriber::fmt::layer()
-                    .with_thread_ids(true)
-                    .with_thread_names(true)
-                    .with_line_number(true),
-            )
-            .with(env_filter);
-
-        if let Err(error) = subscriber.try_init() {
-            eprintln!("nominal streaming failed to enable logging: {error}");
-        }
+        crate::logging::init(directive);
 
         self
     }
@@ -273,11 +274,15 @@ impl NominalDatasetStreamBuilder {
             .as_ref()
             .map(|(auth_provider, dataset, handle)| {
                 NominalCoreConsumer::new(
-                    NominalApiClients::from_uri(self.opts.base_api_url.as_str()),
+                    NominalApiClients::from_uri_with_options(
+                        self.opts.base_api_url.as_str(),
+                        &self.opts.transport,
+                    ),
                     handle.clone(),
                     auth_provider.clone(),
                     dataset.clone(),
                 )
+                .with_delivery_timeout(self.opts.delivery_timeout)
                 .with_track_metrics(self.opts.track_metrics)
                 .with_additional_metric_channels(
                     self.opts.additional_metric_channels.iter().cloned(),

@@ -127,3 +127,83 @@ point counts and value checksums. It measures the complete public enqueue call w
 buffer capacity available; startup and draining are excluded. It does **not** measure
 network throughput. Downstream serialization, compression, and upload backpressure
 can limit the overall streaming improvement.
+## Log streams
+
+`NominalLogStream` sends timestamped string messages and per-record string arguments to
+an existing dataset's log channel. It uses bounded native buffering: enqueue blocks
+when the byte budget is full, while releasing the Python GIL. Individual writes are
+automatically batched into requests by Rust. Uploads use the same HTTP transport and
+retry policy as time series streaming; `stats().requests` counts logical uploads,
+including any transport retries within each upload. Both stream types accept
+`max_retries`, `retry_backoff_slot_secs`, `connect_timeout_secs`, `read_timeout_secs`,
+`write_timeout_secs`, and `delivery_timeout_secs` through their options and `create()`
+factories. The delivery deadline covers HTTP attempts and retry sleeps; it excludes
+queueing, encoding, and fallback, and a timeout can leave delivery uncertain.
+
+```python
+import os
+from pathlib import Path
+from nominal_streaming import NominalLogStream, PyNominalLogStreamOpts
+
+opts = PyNominalLogStreamOpts(
+    max_buffered_bytes=64 * 1024 * 1024,
+    max_retries=5,
+    delivery_timeout_secs=60.0,
+)
+with (NominalLogStream(os.environ["NOMINAL_TOKEN"], opts)
+      .with_core_consumer(os.environ["NOMINAL_DATASET_RID"])
+      .with_file_fallback(Path("log-backup"))) as stream:
+    stream.enqueue("engine", "2026-09-14T12:00:00.123456789Z", "started",
+                   args={"engine": "left"})
+    stream.enqueue("engine", 1_800_000_000_000_000_001, "running",
+                   args={"engine": "left", "phase": "test"})
+    stream.enqueue("engine", 1_800_000_000_000_000_002, "stopped",
+                   args={"engine": "left", "phase": "done"})
+    print(stream.flush().acknowledged_records)
+```
+
+For local-only recording, use `with NominalLogStream().to_file(Path("logs")) as stream:`.
+The destination is a directory of per-channel JSONL journals plus manifests with explicit
+nanosecond timestamp metadata, not a telemetry Avro file. Journal field names reserved
+for timestamp and message cannot also be argument keys. File preservation increments
+`backed_up_records`, not `acknowledged_records`.
+
+Integer timestamps are signed Unix nanoseconds. Aware `datetime` values use exact
+integer arithmetic. ISO 8601 strings require a timezone and support up to nine fractional
+digits; ambiguous dates and naive datetimes are rejected. `tags` is an alias for `args`;
+passing both is an error. All messages and argument keys/values must be strings.
+
+`close()` refuses new writes, drains all accepted records, and reports delivery failures.
+`close(wait=False)` starts graceful background draining; a later `close()` waits and
+reports its result. `stats()` separates acceptance, acknowledgement, backup, and failure.
+Use explicit close or a context manager to observe failures before process exit. No global
+signal handlers are installed, and streams may be used from worker threads.
+
+Run file-only native integration tests after installing the wheel:
+
+```shell
+python -m unittest discover -s py-nominal-streaming/tests -v
+```
+
+If a journal write also fails, accepted batches remain in memory while the stream
+object is alive. After fixing disk access, call `stream.save_failed(Path("recovered-logs"))`
+and then `stream.close()`. Recovery may produce duplicate segments after a partial disk
+write; inspect the manifests before importing recovered files.
+
+Log options follow `PyNominalStreamOpts`: keyword configuration, read-only properties,
+fluent `with_*` setters, and a readable `repr`. Streams copy their options when configured.
+
+```python
+opts = (
+    PyNominalLogStreamOpts()
+    .with_max_request_bytes(8 * 1024 * 1024)
+    .with_num_upload_workers(4)
+    .with_num_runtime_workers(2)
+)
+stream = NominalLogStream().with_options(opts).enable_logging("info")
+```
+
+Configure the destination before opening the stream. Runtime workers drive asynchronous
+HTTP I/O; upload workers perform compression and dispatch. Logs default to two runtime
+workers and four upload workers. Runtime workers must be positive but need not match the
+upload count. Configuration is frozen once opened; use a new stream to change it.
