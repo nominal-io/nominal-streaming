@@ -39,7 +39,7 @@ class TransportOptionsTests(unittest.TestCase):
             "delivery_timeout_secs",
         ):
             for value in (0, -1, float("nan"), float("inf")):
-                with self.subTest(key=key, value=value), self.assertRaises(ValueError):
+                with self.subTest(key=key, value=value), self.assertRaisesRegex(ValueError, key):
                     PyNominalStreamOpts(**{key: value})
         with self.assertRaises(ValueError):
             PyNominalStreamOpts(max_retries=32)

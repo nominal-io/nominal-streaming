@@ -40,12 +40,16 @@ pub const PRODUCTION_API_URL: &str = "https://api.gov.nominal.io/api";
 
 const USER_AGENT: &str = "nominal-streaming";
 
-/// Bounded delivery settings for the builder's Core consumer.
+/// Default overall deadline for HTTP attempts and retry sleeps.
+pub const DEFAULT_DELIVERY_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// HTTP attempt and retry settings for Core uploads.
 ///
 /// Conjure owns retries, including jitter and Retry-After. The pinned runtime retries
 /// 429, 503, and (for these idempotent requests) 500 and transport errors. It does not
 /// retry 502 or 504. Retries replay the same encoded body and may duplicate delivery.
-/// The deadline covers HTTP attempts and retry sleeps, excluding encoding and queueing.
+/// Configure the overall deadline separately with `NominalStreamOpts::with_delivery_timeout`
+/// or `NominalApiClients::send_with_timeout`.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct TransportOptions {
@@ -55,7 +59,6 @@ pub struct TransportOptions {
     pub connect_timeout: Duration,
     pub read_timeout: Duration,
     pub write_timeout: Duration,
-    pub delivery_timeout: Duration,
 }
 
 impl Default for TransportOptions {
@@ -66,7 +69,6 @@ impl Default for TransportOptions {
             connect_timeout: Duration::from_secs(5),
             read_timeout: Duration::from_secs(15),
             write_timeout: Duration::from_secs(15),
-            delivery_timeout: Duration::from_secs(60),
         }
     }
 }
@@ -82,7 +84,6 @@ impl TransportOptions {
             self.connect_timeout,
             self.read_timeout,
             self.write_timeout,
-            self.delivery_timeout,
         ]
         .iter()
         .any(Duration::is_zero)
@@ -176,8 +177,7 @@ impl NominalApiClients {
     }
 
     pub async fn send(&self, req: WriteRequest<'_>) -> Result<Response<ResponseBody>, Error> {
-        self.send_with_timeout(req, TransportOptions::default().delivery_timeout)
-            .await
+        self.send_with_timeout(req, DEFAULT_DELIVERY_TIMEOUT).await
     }
 
     /// Bound all attempts and retry sleeps. A timeout has an unknown delivery outcome.
@@ -419,15 +419,24 @@ mod transport_tests {
         server.abort();
     }
 
-    #[test]
-    fn exhausted_upload_reaches_existing_avro_fallback() {
+    #[rstest::rstest]
+    #[case::exhausted_retries(false)]
+    #[case::delivery_deadline(true)]
+    fn exhausted_upload_reaches_existing_avro_fallback(#[case] deadline: bool) {
         use apache_avro::types::Value;
 
         use crate::stream::NominalDatasetStreamBuilder;
         use crate::stream::NominalStreamOpts;
         use crate::types::ChannelDescriptor;
         let runtime = tokio::runtime::Runtime::new().unwrap();
-        let (url, server, _) = runtime.block_on(scripted_server(vec![503, 503, 503], None));
+        let statuses = if deadline {
+            vec![429]
+        } else {
+            vec![503, 503, 503]
+        };
+        let expected_attempts = statuses.len();
+        let (url, server, _) =
+            runtime.block_on(scripted_server(statuses, deadline.then_some(3600)));
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("fallback.avro");
         let options = TransportOptions {
@@ -435,6 +444,7 @@ mod transport_tests {
             backoff_slot: Duration::from_millis(1),
             ..Default::default()
         };
+        let started = std::time::Instant::now();
         {
             let stream = NominalDatasetStreamBuilder::new()
                 .stream_to_core(
@@ -446,14 +456,25 @@ mod transport_tests {
                 .with_options(
                     NominalStreamOpts::default()
                         .with_base_api_url(url.as_str())
-                        .with_transport_options(options),
+                        .with_transport_options(options)
+                        .with_delivery_timeout(if deadline {
+                            Duration::from_millis(100)
+                        } else {
+                            DEFAULT_DELIVERY_TIMEOUT
+                        }),
                 )
                 .build();
             let mut writer = stream.double_writer(ChannelDescriptor::new("temperature"));
             writer.push(123_i64, 42.5);
         }
+        if deadline {
+            assert!(
+                started.elapsed() < Duration::from_secs(2),
+                "configured delivery deadline was not applied"
+            );
+        }
         let bodies = runtime.block_on(server).unwrap();
-        assert_eq!(bodies.len(), 3);
+        assert_eq!(bodies.len(), expected_attempts);
         assert!(bodies.windows(2).all(|pair| pair[0] == pair[1]));
         let records = apache_avro::Reader::new(std::fs::File::open(path).unwrap())
             .unwrap()
@@ -509,7 +530,7 @@ mod options_tests {
         options.backoff_slot = Duration::MAX;
         assert!(options.validate().is_err());
         options = TransportOptions::default();
-        options.delivery_timeout = Duration::ZERO;
+        options.connect_timeout = Duration::ZERO;
         assert!(options.validate().is_err());
         options = TransportOptions::default();
         options.max_retries = 0;

@@ -103,7 +103,7 @@ impl<A: AuthProvider> NominalCoreConsumer<A> {
             auth_provider,
             data_source_rid,
             metrics: RequestMetrics::default(),
-            delivery_timeout: client::TransportOptions::default().delivery_timeout,
+            delivery_timeout: client::DEFAULT_DELIVERY_TIMEOUT,
         }
     }
 

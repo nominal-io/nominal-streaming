@@ -78,24 +78,12 @@ impl PyNominalStreamOpts {
         let mut transport = TransportOptions::default();
         transport.max_retries = max_retries;
         transport.backoff_slot =
-            Duration::try_from_secs_f64(retry_backoff_slot_secs).map_err(|_| {
-                PyValueError::new_err("retry_backoff_slot_secs must be finite and nonnegative")
-            })?;
+            positive_duration("retry_backoff_slot_secs", retry_backoff_slot_secs)?;
         transport.connect_timeout =
-            Duration::try_from_secs_f64(connect_timeout_secs).map_err(|_| {
-                PyValueError::new_err("connect_timeout_secs must be finite and nonnegative")
-            })?;
-        transport.read_timeout = Duration::try_from_secs_f64(read_timeout_secs).map_err(|_| {
-            PyValueError::new_err("read_timeout_secs must be finite and nonnegative")
-        })?;
-        transport.write_timeout =
-            Duration::try_from_secs_f64(write_timeout_secs).map_err(|_| {
-                PyValueError::new_err("write_timeout_secs must be finite and nonnegative")
-            })?;
-        transport.delivery_timeout =
-            Duration::try_from_secs_f64(delivery_timeout_secs).map_err(|_| {
-                PyValueError::new_err("delivery_timeout_secs must be finite and nonnegative")
-            })?;
+            positive_duration("connect_timeout_secs", connect_timeout_secs)?;
+        transport.read_timeout = positive_duration("read_timeout_secs", read_timeout_secs)?;
+        transport.write_timeout = positive_duration("write_timeout_secs", write_timeout_secs)?;
+        let delivery_timeout = positive_duration("delivery_timeout_secs", delivery_timeout_secs)?;
         transport.validate().map_err(PyValueError::new_err)?;
         Ok(PyNominalStreamOpts {
             inner: NominalStreamOpts::default()
@@ -106,6 +94,7 @@ impl PyNominalStreamOpts {
                 .with_base_api_url(base_api_url)
                 .with_track_metrics(track_metrics)
                 .with_transport_options(transport)
+                .with_delivery_timeout(delivery_timeout)
                 .with_additional_metric_channels(DICT_METRIC_CHANNELS),
             num_runtime_workers,
         })
@@ -138,7 +127,7 @@ impl PyNominalStreamOpts {
 
     #[getter]
     fn delivery_timeout_secs(&self) -> f64 {
-        self.inner.transport.delivery_timeout.as_secs_f64()
+        self.inner.delivery_timeout.as_secs_f64()
     }
 
     #[getter]
@@ -228,4 +217,13 @@ impl PyNominalStreamOpts {
     fn __str__(&self) -> String {
         self.to_string()
     }
+}
+
+fn positive_duration(name: &str, seconds: f64) -> PyResult<Duration> {
+    Duration::try_from_secs_f64(seconds)
+        .ok()
+        .filter(|duration| !duration.is_zero())
+        .ok_or_else(|| {
+            PyValueError::new_err(format!("{name} must be finite and greater than zero"))
+        })
 }

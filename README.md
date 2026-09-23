@@ -25,8 +25,9 @@ use std::time::Duration;
 
 let mut transport = TransportOptions::default();
 transport.max_retries = 3; // additional attempts; zero disables retries
-transport.delivery_timeout = Duration::from_secs(30);
-let options = NominalStreamOpts::default().with_transport_options(transport);
+let options = NominalStreamOpts::default()
+    .with_transport_options(transport)
+    .with_delivery_timeout(Duration::from_secs(30));
 ```
 
 ```python
