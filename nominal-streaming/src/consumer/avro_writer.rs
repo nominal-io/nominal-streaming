@@ -1,5 +1,6 @@
 use std::io::Write;
 use std::io::{self};
+use std::sync::Arc;
 
 use apache_avro::types::Record;
 
@@ -29,8 +30,8 @@ impl<W: Write> Write for CompleteWrite<W> {
 }
 
 pub(super) struct AvroWriter<W: DurableWrite> {
-    pub(super) writer: Option<apache_avro::Writer<'static, CompleteWrite<W>>>,
-    failure: Option<String>,
+    writer: Option<apache_avro::Writer<'static, CompleteWrite<W>>>,
+    failure: Option<Arc<io::Error>>,
     path: std::path::PathBuf,
 }
 
@@ -48,18 +49,18 @@ impl<W: DurableWrite> AvroWriter<W> {
 
     fn check_failure(&self) -> io::Result<()> {
         match &self.failure {
-            Some(message) => Err(io::Error::other(message.clone())),
+            Some(error) => Err(io::Error::new(error.kind(), Arc::clone(error))),
             None => Ok(()),
         }
     }
 
     fn remember(&mut self, result: io::Result<()>) -> io::Result<()> {
-        if let Err(error) = &result {
-            self.failure = Some(error.to_string());
+        if let Err(error) = result {
+            self.failure = Some(Arc::new(error));
             // A partial block or a compressed buffer cannot safely be retried.
             self.writer = None;
         }
-        result
+        self.check_failure()
     }
 
     pub(super) fn append(&mut self, records: Vec<Record<'_>>) -> io::Result<()> {
@@ -68,7 +69,7 @@ impl<W: DurableWrite> AvroWriter<W> {
             .writer
             .as_mut()
             .ok_or_else(|| io::Error::other("Avro writer is finished"))?;
-        let result = writer.extend(records).map(|_| ()).map_err(io::Error::other);
+        let result = writer.extend(records).map(|_| ()).map_err(avro_error);
         self.remember(result)
     }
 
@@ -79,11 +80,19 @@ impl<W: DurableWrite> AvroWriter<W> {
         };
         let result = (|| {
             // into_inner also writes a header for an empty container.
-            let mut sink = writer.into_inner().map_err(io::Error::other)?;
+            let mut sink = writer.into_inner().map_err(avro_error)?;
             sink.flush()?;
             sink.0.sync_all()
         })();
         self.remember(result)
+    }
+}
+
+// Preserve the actual I/O cause: apache-avro's display text omits it.
+fn avro_error(error: apache_avro::Error) -> io::Error {
+    match error {
+        apache_avro::Error::WriteBytes(source) | apache_avro::Error::WriteMarker(source) => source,
+        other => io::Error::other(other),
     }
 }
 
@@ -121,7 +130,10 @@ mod tests {
                 .fail_after
                 .is_some_and(|limit| self.bytes.len() >= limit)
             {
-                return Err(io::Error::other("injected write failure"));
+                return Err(io::Error::new(
+                    io::ErrorKind::WriteZero,
+                    "injected write failure",
+                ));
             }
             let len = bytes.len().min(3);
             self.bytes.extend_from_slice(&bytes[..len]);
@@ -139,7 +151,10 @@ mod tests {
     impl DurableWrite for FaultyWriter {
         fn sync_all(&self) -> io::Result<()> {
             if self.fail_sync {
-                Err(io::Error::other("injected sync failure"))
+                Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "injected sync failure",
+                ))
             } else {
                 Ok(())
             }
@@ -164,6 +179,27 @@ mod tests {
         record.put("values", apache_avro::types::Value::Array(vec![]));
         record.put("tags", std::collections::HashMap::<String, String>::new());
         record
+    }
+
+    #[test]
+    fn drop_flushes_buffered_records() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let mut state = AvroWriter::new(
+            apache_avro::Writer::with_codec(
+                &super::super::CORE_AVRO_SCHEMA,
+                CompleteWrite(file.reopen().unwrap()),
+                apache_avro::Codec::Snappy,
+            ),
+            file.path().to_path_buf(),
+        );
+        // append buffers the record; dropping the owner must flush it.
+        state.writer.as_mut().unwrap().append(record()).unwrap();
+        drop(state);
+        let records = apache_avro::Reader::new(file.reopen().unwrap())
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(records.len(), 1);
     }
 
     #[test]
@@ -197,7 +233,10 @@ mod tests {
                 fail_after: Some(limit),
                 ..Default::default()
             });
-            let error = state.append(vec![record()]).unwrap_err().to_string();
+            let first = state.append(vec![record()]).unwrap_err();
+            assert_eq!(first.kind(), io::ErrorKind::WriteZero);
+            assert!(first.to_string().contains("injected write failure"));
+            let error = first.to_string();
             assert_eq!(state.append(vec![record()]).unwrap_err().to_string(), error);
             assert_eq!(state.finish().unwrap_err().to_string(), error);
             assert!(state.writer.is_none());
@@ -223,7 +262,18 @@ mod tests {
             ..Default::default()
         });
         state.append(vec![record()]).unwrap();
-        let error = state.finish().unwrap_err().to_string();
+        let first = state.finish().unwrap_err();
+        let repeated = state.finish().unwrap_err();
+        assert_eq!(first.kind(), io::ErrorKind::PermissionDenied);
+        assert_eq!(repeated.kind(), first.kind());
+        let original = repeated
+            .get_ref()
+            .unwrap()
+            .downcast_ref::<Arc<io::Error>>()
+            .unwrap();
+        assert_eq!(original.kind(), first.kind());
+        assert_eq!(original.to_string(), "injected sync failure");
+        let error = first.to_string();
         assert!(error.contains("injected sync failure"));
         assert_eq!(state.finish().unwrap_err().to_string(), error);
         assert_eq!(state.append(vec![record()]).unwrap_err().to_string(), error);

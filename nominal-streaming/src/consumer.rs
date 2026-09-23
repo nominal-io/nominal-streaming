@@ -312,8 +312,7 @@ impl AvroFileConsumer {
     fn append_series(&self, series: &[Series]) -> ConsumerResult<()> {
         let mut records: Vec<Record> = Vec::new();
         for series in series {
-            let (timestamps, values) = points_to_avro(series.points.as_ref())
-                .map_err(|e| self.file_error("convert timestamps for", std::io::Error::other(e)))?;
+            let (timestamps, values) = points_to_avro(series.points.as_ref())?;
 
             let mut record = Record::new(&CORE_AVRO_SCHEMA).expect("Failed to create Avro record");
 
@@ -649,9 +648,10 @@ mod tests {
             make_timestamp(0, 1_000_000_000),
             make_timestamp(i64::MAX, 0),
         ] {
-            assert!(consumer
+            let error = consumer
                 .append_series(&[series(make_timestamp(1, 0)), series(timestamp)])
-                .is_err());
+                .unwrap_err();
+            assert!(matches!(error, ConsumerError::RequestError(_)));
         }
         drop(consumer);
         assert_eq!(read_integer_point_count(&file.path().to_path_buf()), 1);
@@ -1126,44 +1126,6 @@ mod tests {
         assert!(
             second_size < first_size,
             "second write should shrink the file (first: {first_size} bytes, second: {second_size} bytes)"
-        );
-    }
-
-    #[test]
-    fn dropping_consumer_flushes_buffered_records() {
-        // Defensive test against future misuse of avro api (writing without flushing).
-        // Current stream implementation uses .extend(), which flushes internally.
-        let tmp_file = NamedTempFile::new().unwrap();
-        let path: PathBuf = tmp_file.path().to_path_buf();
-
-        {
-            let consumer = AvroFileConsumer::new_with_full_path(&path, true, None).unwrap();
-
-            let mut record = Record::new(&CORE_AVRO_SCHEMA).expect("Failed to create Avro record");
-            record.put("channel", "ch".to_string());
-            record.put("timestamps", Value::Array(vec![Value::Long(0)]));
-            record.put(
-                "values",
-                Value::Array(vec![Value::Union(2, Box::new(Value::Long(42)))]),
-            );
-            record.put("tags", HashMap::<String, String>::new());
-
-            consumer
-                .writer
-                .lock()
-                .writer
-                .as_mut()
-                .unwrap()
-                .append(record)
-                .unwrap();
-            // consumer drops here — the only thing that can land the buffered
-            // record on disk is a flush from the Drop impl.
-        }
-
-        assert_eq!(
-            read_integer_point_count(&path),
-            1,
-            "expected the buffered point to land on disk after the consumer dropped"
         );
     }
 
