@@ -33,6 +33,24 @@ jobs:
       - name: Check formatting (rustfmt)
         run: just rust::check
 
+  rust-unused-deps:
+    runs-on: depot-ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
+        with:
+          toolchain: stable
+          cache: false
+          rustflags: ""
+      - name: Install just
+        uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b # v3.1.0
+      - name: Install cargo-machete
+        run: just rust::install-machete
+      - name: Check unused Rust dependencies
+        run: just rust::check-dependencies
+
   rust-build-test:
     runs-on: depot-ubuntu-24.04-4
     steps:
@@ -63,10 +81,6 @@ jobs:
           rustflags: ""
       - name: Install just
         uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b # v3.1.0
-      - name: Install cargo-machete
-        run: just rust::install-machete
-      - name: Check unused dependencies
-        run: just rust::check-dependencies
       - name: Check lint rules (Clippy)
         run: just rust::lint
 
