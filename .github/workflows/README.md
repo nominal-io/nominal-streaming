@@ -5,7 +5,7 @@
 | [pr.yml](pr.yml) | PR structure: validate the PR title | PR opened, reopened, synchronized, or edited |
 | [validate.yml](validate.yml) | Code validation: Rust dependency usage, Rust, Python, and TOML formatting, linting, builds, and tests | PR opened, reopened, or synchronized; pushes to main |
 | [deps.yml](deps.yml) | Approve Dependabot PRs | PR events, filtered to Dependabot in this repository |
-| [crates.yml](crates.yml) | Publish Rust crates and maintain release PRs | Pushes to main |
+| [release-plz.yml](release-plz.yml) | Publish Rust crates and maintain release PRs | Pushes to main |
 | [wheels.yml](wheels.yml) | Build and publish Python wheels | Version tags; manual dispatch builds without publishing |
 
 PR metadata validation is separate from code validation so title and description
@@ -52,6 +52,8 @@ Publishing and Dependabot approval are not general PR validation checks.
 
 Update required-check contexts when renaming jobs, and external links or dispatch
 callers when renaming workflow files.
+The crates.io trusted publisher for `nominal-streaming` is registered to
+`release-plz.yml`; changing this filename also requires updating that publisher.
 
 ## TOML formatting
 
