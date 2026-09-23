@@ -1,4 +1,4 @@
-mod avro_writer;
+mod avro_io;
 
 use std::error::Error;
 use std::fmt::Debug;
@@ -28,8 +28,8 @@ use parking_lot::Mutex;
 use prost::Message;
 use tracing::warn;
 
-use self::avro_writer::AvroWriter;
-use self::avro_writer::CompleteWrite;
+use self::avro_io::append_records;
+use self::avro_io::CompleteWrite;
 use crate::client::NominalApiClients;
 use crate::client::WriteRequest;
 use crate::client::{self};
@@ -229,7 +229,7 @@ pub static CORE_AVRO_SCHEMA: LazyLock<apache_avro::Schema> = LazyLock::new(|| {
 
 #[derive(Clone)]
 pub struct AvroFileConsumer {
-    writer: Arc<Mutex<AvroWriter<std::fs::File>>>,
+    writer: Arc<Mutex<Option<apache_avro::Writer<'static, CompleteWrite<std::fs::File>>>>>,
     path: PathBuf,
 }
 
@@ -304,7 +304,7 @@ impl AvroFileConsumer {
         }
 
         Ok(Self {
-            writer: Arc::new(Mutex::new(AvroWriter::new(writer, path.clone()))),
+            writer: Arc::new(Mutex::new(Some(writer))),
             path,
         })
     }
@@ -331,21 +331,7 @@ impl AvroFileConsumer {
             records.push(record);
         }
 
-        self.writer
-            .lock()
-            .append(records)
-            .map_err(|e| self.file_error("append", e))
-    }
-
-    /// Finalize the Avro container and synchronize its contents to disk.
-    ///
-    /// Repeated calls return the same outcome. All clones share this state;
-    /// consuming further requests after finalization returns an error.
-    pub fn finish(&self) -> ConsumerResult<()> {
-        self.writer
-            .lock()
-            .finish()
-            .map_err(|e| self.file_error("finalize", e))
+        append_records(&mut self.writer.lock(), records).map_err(|e| self.file_error("append", e))
     }
 
     fn file_error(&self, operation: &'static str, source: std::io::Error) -> ConsumerError {
@@ -658,22 +644,31 @@ mod tests {
     }
 
     #[test]
-    fn finish_is_shared_idempotent_and_writes_empty_container() {
+    fn each_request_is_readable_before_the_consumer_is_dropped() {
         let file = NamedTempFile::new().unwrap();
         let consumer = AvroFileConsumer::new_with_full_path(file.path(), true, None).unwrap();
         let clone = consumer.clone();
         drop(consumer);
-        clone.consume(&WriteRequestNominal::default()).unwrap();
-        clone.finish().unwrap();
-        clone.finish().unwrap();
-        assert_eq!(
-            Reader::new(std::fs::File::open(file.path()).unwrap())
-                .unwrap()
-                .count(),
-            0
-        );
-        let error = clone.consume(&WriteRequestNominal::default()).unwrap_err();
-        assert!(error.to_string().contains(file.path().to_str().unwrap()));
+        let request = WriteRequestNominal {
+            series: vec![make_series(
+                "ch",
+                Points {
+                    points_type: Some(PointsType::IntegerPoints(IntegerPoints {
+                        points: vec![
+                            nominal_api::tonic::io::nominal::scout::api::proto::IntegerPoint {
+                                timestamp: make_timestamp(0, 0),
+                                value: 42,
+                            },
+                        ],
+                    })),
+                },
+            )],
+            ..Default::default()
+        };
+        for count in 1..=2 {
+            clone.consume(&request).unwrap();
+            assert_eq!(read_integer_point_count(&file.path().to_path_buf()), count);
+        }
     }
 
     #[test]
