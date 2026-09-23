@@ -2,7 +2,7 @@ set windows-shell := ["powershell.exe", "-NoLogo", "-Command"]
 
 # TODO(drake): switch away from nightly when stable rustfmt supports group_imports and imports_granularity.
 fmt-toolchain := "nightly-2026-01-05"
-machete-version := "0.9.2"
+machete-version := "0.9.1"
 
 # List available commands by default
 default:
