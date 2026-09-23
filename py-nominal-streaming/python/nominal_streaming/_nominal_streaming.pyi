@@ -49,6 +49,12 @@ class PyNominalStreamOpts:
         num_runtime_workers: int = 8,
         base_api_url: str = "https://api.gov.nominal.io/api",
         track_metrics: bool = False,
+        max_retries: int = 5,
+        retry_backoff_slot_secs: float = 0.25,
+        connect_timeout_secs: float = 5.0,
+        read_timeout_secs: float = 15.0,
+        write_timeout_secs: float = 15.0,
+        delivery_timeout_secs: float = 60.0,
     ) -> None:
         """Initialize a PyNominalStreamOpts instance.
 
@@ -60,9 +66,28 @@ class PyNominalStreamOpts:
                 Must be at most `num_runtime_workers`.
             num_runtime_workers: Number of runtime worker threads for concurrent processing.
             track_metrics: Emit runtime metric channels; disabled by default.
+            max_retries: Additional Conjure attempts after the initial request, from 0 to 31.
+            retry_backoff_slot_secs: Positive initial exponential-backoff slot with jitter.
+            connect_timeout_secs: Positive connection timeout in seconds.
+            read_timeout_secs: Positive socket read timeout in seconds.
+            write_timeout_secs: Positive socket write timeout in seconds.
+            delivery_timeout_secs: Positive deadline for HTTP attempts and retry sleeps.
+                Excludes queueing, encoding, and fallback. Timeout can leave delivery uncertain.
             base_api_url: Base URL of the Nominal API endpoint to stream data to.
         """
 
+    @property
+    def max_retries(self) -> int: ...
+    @property
+    def retry_backoff_slot_secs(self) -> float: ...
+    @property
+    def connect_timeout_secs(self) -> float: ...
+    @property
+    def read_timeout_secs(self) -> float: ...
+    @property
+    def write_timeout_secs(self) -> float: ...
+    @property
+    def delivery_timeout_secs(self) -> float: ...
     @property
     def track_metrics(self) -> bool:
         """Whether runtime metric channels are enabled."""

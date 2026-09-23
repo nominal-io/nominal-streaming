@@ -3,7 +3,9 @@
 use std::fmt;
 use std::time::Duration;
 
+use nominal_streaming::client::TransportOptions;
 use nominal_streaming::stream::NominalStreamOpts;
+use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
 use crate::nominal_dataset_stream::DICT_METRIC_CHANNELS;
@@ -39,6 +41,8 @@ impl fmt::Display for PyNominalStreamOpts {
 #[pymethods]
 impl PyNominalStreamOpts {
     #[new]
+    // Preserve the existing keyword-only Python constructor while exposing transport settings.
+    #[allow(clippy::too_many_arguments)]
     #[pyo3(signature = (
         *,
         max_points_per_batch=250_000,
@@ -48,6 +52,13 @@ impl PyNominalStreamOpts {
         num_runtime_workers=8,
         base_api_url="https://api.gov.nominal.io/api",
         track_metrics=false,
+        max_retries=5,
+        retry_backoff_slot_secs=0.25,
+        connect_timeout_secs=5.0,
+        read_timeout_secs=15.0,
+        write_timeout_secs=15.0,
+        delivery_timeout_secs=60.0,
+
     ))]
     fn new(
         max_points_per_batch: usize,
@@ -57,8 +68,36 @@ impl PyNominalStreamOpts {
         num_runtime_workers: usize,
         base_api_url: &str,
         track_metrics: bool,
-    ) -> Self {
-        PyNominalStreamOpts {
+        max_retries: u32,
+        retry_backoff_slot_secs: f64,
+        connect_timeout_secs: f64,
+        read_timeout_secs: f64,
+        write_timeout_secs: f64,
+        delivery_timeout_secs: f64,
+    ) -> PyResult<Self> {
+        let mut transport = TransportOptions::default();
+        transport.max_retries = max_retries;
+        transport.backoff_slot =
+            Duration::try_from_secs_f64(retry_backoff_slot_secs).map_err(|_| {
+                PyValueError::new_err("retry_backoff_slot_secs must be finite and nonnegative")
+            })?;
+        transport.connect_timeout =
+            Duration::try_from_secs_f64(connect_timeout_secs).map_err(|_| {
+                PyValueError::new_err("connect_timeout_secs must be finite and nonnegative")
+            })?;
+        transport.read_timeout = Duration::try_from_secs_f64(read_timeout_secs).map_err(|_| {
+            PyValueError::new_err("read_timeout_secs must be finite and nonnegative")
+        })?;
+        transport.write_timeout =
+            Duration::try_from_secs_f64(write_timeout_secs).map_err(|_| {
+                PyValueError::new_err("write_timeout_secs must be finite and nonnegative")
+            })?;
+        transport.delivery_timeout =
+            Duration::try_from_secs_f64(delivery_timeout_secs).map_err(|_| {
+                PyValueError::new_err("delivery_timeout_secs must be finite and nonnegative")
+            })?;
+        transport.validate().map_err(PyValueError::new_err)?;
+        Ok(PyNominalStreamOpts {
             inner: NominalStreamOpts::default()
                 .with_max_points_per_record(max_points_per_batch)
                 .with_max_request_delay(Duration::from_secs_f64(max_request_delay_secs))
@@ -66,9 +105,40 @@ impl PyNominalStreamOpts {
                 .with_request_dispatcher_tasks(num_upload_workers)
                 .with_base_api_url(base_api_url)
                 .with_track_metrics(track_metrics)
+                .with_transport_options(transport)
                 .with_additional_metric_channels(DICT_METRIC_CHANNELS),
             num_runtime_workers,
-        }
+        })
+    }
+
+    #[getter]
+    fn max_retries(&self) -> u32 {
+        self.inner.transport.max_retries
+    }
+
+    #[getter]
+    fn retry_backoff_slot_secs(&self) -> f64 {
+        self.inner.transport.backoff_slot.as_secs_f64()
+    }
+
+    #[getter]
+    fn connect_timeout_secs(&self) -> f64 {
+        self.inner.transport.connect_timeout.as_secs_f64()
+    }
+
+    #[getter]
+    fn read_timeout_secs(&self) -> f64 {
+        self.inner.transport.read_timeout.as_secs_f64()
+    }
+
+    #[getter]
+    fn write_timeout_secs(&self) -> f64 {
+        self.inner.transport.write_timeout.as_secs_f64()
+    }
+
+    #[getter]
+    fn delivery_timeout_secs(&self) -> f64 {
+        self.inner.transport.delivery_timeout.as_secs_f64()
     }
 
     #[getter]

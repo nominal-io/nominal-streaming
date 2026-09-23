@@ -64,6 +64,8 @@ pub struct NominalStreamOpts {
     pub max_buffered_requests: usize,
     pub request_dispatcher_tasks: usize,
     pub base_api_url: String,
+    /// HTTP retries and deadline for the builder-created Core consumer.
+    pub transport: crate::client::TransportOptions,
     /// Emit request runtime metrics from the builder's Core consumer. Disabled by default.
     ///
     /// Completed request metrics piggyback on later data requests to the same dataset.
@@ -85,6 +87,7 @@ impl Default for NominalStreamOpts {
             max_buffered_requests: 4,
             request_dispatcher_tasks: 8,
             base_api_url: PRODUCTION_API_URL.to_string(),
+            transport: crate::client::TransportOptions::default(),
             track_metrics: false,
             additional_metric_channels: Vec::new(),
         }
@@ -92,6 +95,12 @@ impl Default for NominalStreamOpts {
 }
 
 impl NominalStreamOpts {
+    pub fn with_transport_options(mut self, options: crate::client::TransportOptions) -> Self {
+        options.validate().expect("invalid transport options");
+        self.transport = options;
+        self
+    }
+
     pub fn with_max_points_per_record(mut self, max_points_per_record: usize) -> Self {
         self.max_points_per_record = max_points_per_record;
         self
@@ -273,11 +282,15 @@ impl NominalDatasetStreamBuilder {
             .as_ref()
             .map(|(auth_provider, dataset, handle)| {
                 NominalCoreConsumer::new(
-                    NominalApiClients::from_uri(self.opts.base_api_url.as_str()),
+                    NominalApiClients::from_uri_with_options(
+                        self.opts.base_api_url.as_str(),
+                        &self.opts.transport,
+                    ),
                     handle.clone(),
                     auth_provider.clone(),
                     dataset.clone(),
                 )
+                .with_delivery_timeout(self.opts.transport.delivery_timeout)
                 .with_track_metrics(self.opts.track_metrics)
                 .with_additional_metric_channels(
                     self.opts.additional_metric_channels.iter().cloned(),

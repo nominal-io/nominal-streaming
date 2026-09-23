@@ -116,6 +116,12 @@ class NominalDatasetStream:
         num_upload_workers: int = 8,
         num_runtime_workers: int = 8,
         track_metrics: bool = False,
+        max_retries: int = 5,
+        retry_backoff_slot_secs: float = 0.25,
+        connect_timeout_secs: float = 5.0,
+        read_timeout_secs: float = 15.0,
+        write_timeout_secs: float = 15.0,
+        delivery_timeout_secs: float = 60.0,
     ) -> Self:
         """Factory constructor to build a NominalDatasetStream using optional overrides for configuration options
 
@@ -132,6 +138,13 @@ class NominalDatasetStream:
             num_upload_workers: Overrides the default number of upload worker threads
                 NOTE: must be set as low as the number of runtime workers.
             track_metrics: Emit runtime metric channels; disabled by default.
+            max_retries: Additional Conjure attempts after the initial request, from 0 to 31.
+            retry_backoff_slot_secs: Positive initial exponential-backoff slot with jitter.
+            connect_timeout_secs: Positive connection timeout in seconds.
+            read_timeout_secs: Positive socket read timeout in seconds.
+            write_timeout_secs: Positive socket write timeout in seconds.
+            delivery_timeout_secs: Positive deadline for HTTP attempts and retry sleeps.
+                Excludes queueing, encoding, and fallback. Timeout can leave delivery uncertain.
             num_runtime_workers: Overrides the default number of runtime worker threads
                 NOTE: must be set as high as the number of upload workers.
 
@@ -144,6 +157,12 @@ class NominalDatasetStream:
             num_runtime_workers=num_runtime_workers,
             base_api_url=base_api_url,
             track_metrics=track_metrics,
+            max_retries=max_retries,
+            retry_backoff_slot_secs=retry_backoff_slot_secs,
+            connect_timeout_secs=connect_timeout_secs,
+            read_timeout_secs=read_timeout_secs,
+            write_timeout_secs=write_timeout_secs,
+            delivery_timeout_secs=delivery_timeout_secs,
         )
         return cls(auth_header, opts)
 

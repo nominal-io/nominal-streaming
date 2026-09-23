@@ -87,6 +87,7 @@ pub struct NominalCoreConsumer<A: AuthProvider> {
     auth_provider: A,
     data_source_rid: ResourceIdentifier,
     metrics: RequestMetrics,
+    delivery_timeout: std::time::Duration,
 }
 
 impl<A: AuthProvider> NominalCoreConsumer<A> {
@@ -102,7 +103,19 @@ impl<A: AuthProvider> NominalCoreConsumer<A> {
             auth_provider,
             data_source_rid,
             metrics: RequestMetrics::default(),
+            delivery_timeout: client::TransportOptions::default().delivery_timeout,
         }
+    }
+
+    /// Bound delivery attempts and retry sleeps, excluding encoding and queueing.
+    /// Timeout leaves delivery uncertain; any configured fallback runs afterward.
+    pub fn with_delivery_timeout(mut self, timeout: std::time::Duration) -> Self {
+        assert!(
+            !timeout.is_zero(),
+            "delivery timeout must be greater than zero"
+        );
+        self.delivery_timeout = timeout;
+        self
     }
 
     /// Piggyback completed request metrics on later data requests to the same dataset.
@@ -139,7 +152,7 @@ impl<A: AuthProvider> NominalCoreConsumer<A> {
     fn send(&self, request: WriteRequest<'static>) -> ConsumerResult<()> {
         self.handle.block_on(async {
             self.client
-                .send(request)
+                .send_with_timeout(request, self.delivery_timeout)
                 .await
                 .map_err(|e| ConsumerError::RequestError(describe_request_error(&e)))
         })?;
