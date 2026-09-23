@@ -503,7 +503,17 @@ fn convert_timestamp_to_nanoseconds(timestamp: Timestamp) -> Value {
 
 impl WriteRequestConsumer for AvroFileConsumer {
     fn finish(&self) -> ConsumerResult<()> {
-        AvroFileConsumer::finish(self)
+        let writer = self.writer.lock().take().ok_or_else(|| {
+            self.file_error(
+                "finalize",
+                std::io::Error::other("Avro writer is no longer available"),
+            )
+        })?;
+        writer
+            .into_inner()
+            .map_err(avro_error)
+            .and_then(|file| file.0.sync_all())
+            .map_err(|error| self.file_error("finalize", error))
     }
 
     fn consume(&self, request: &WriteRequestNominal) -> ConsumerResult<()> {
@@ -668,6 +678,39 @@ mod tests {
     use tempfile::NamedTempFile;
 
     use super::*;
+
+    #[test]
+    fn finalization_writes_an_empty_container_and_closes_all_clones() {
+        let file = NamedTempFile::new().unwrap();
+        let consumer = AvroFileConsumer::new_with_full_path(file.path(), true, None).unwrap();
+        let clone = consumer.clone();
+        consumer.finish().unwrap();
+        assert_eq!(Reader::new(file.reopen().unwrap()).unwrap().count(), 0);
+        assert!(clone.consume(&WriteRequestNominal::default()).is_err());
+    }
+
+    #[test]
+    fn finalization_reports_file_errors() {
+        let file = NamedTempFile::new().unwrap();
+        let consumer = AvroFileConsumer {
+            writer: Arc::new(Mutex::new(Some(apache_avro::Writer::with_codec(
+                &CORE_AVRO_SCHEMA,
+                CompleteWrite(std::fs::File::open(file.path()).unwrap()),
+                apache_avro::Codec::Snappy,
+            )))),
+            path: file.path().to_path_buf(),
+        };
+        // Finishing an empty container must write its header, which a read-only file rejects.
+        let error = consumer.finish().unwrap_err();
+        assert!(matches!(
+            error,
+            ConsumerError::FileError {
+                operation: "finalize",
+                ..
+            }
+        ));
+        assert!(consumer.finish().is_err());
+    }
 
     #[test]
     fn short_and_interrupted_writes_produce_readable_avro() {
