@@ -17,6 +17,7 @@
           nativeBuildInputs = [
             rustc
             cargo
+            cargo-machete
             cargo-nextest
             pkg-config
           ];

@@ -15,6 +15,7 @@ Some common commands are as follows:
   - `just dev`: Builds rust crate and builds / installs python bindings in developer mode instead.
 - `just check`: Check Rust formatting and Python linting and formatting.
   - `just rust::check` or `just python::check` for language specific versions.
+- `just rust::check-dependencies`: Check the workspace for unused Rust dependencies with cargo-machete 0.9.1. `just install` installs it; the Nix dev shell includes it; CI runs it in the `rust-unused-deps` job.
 - `just rust::lint`: Run Clippy on the workspace with core features and the Python 3.11 ABI enabled; warnings fail the check.
 - `just fix`: Automatically format across rust and python bindings.
   - `just rust::fix` or `just python::fix` for language specific versions.
