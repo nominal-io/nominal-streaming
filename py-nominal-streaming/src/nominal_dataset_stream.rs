@@ -75,6 +75,7 @@ pub struct PyNominalDatasetStream {
     /// Separate from `is_open` because it has to be settable from a shared reference: shutdown
     /// begins on whichever thread caught the signal, while other threads may be mid-`enqueue`.
     accepting_writes: Arc<AtomicBool>,
+    close_error: Option<String>,
 }
 
 impl PyNominalDatasetStream {
@@ -143,6 +144,7 @@ impl PyNominalDatasetStream {
             runtime: None,
             is_open: Arc::new(AtomicBool::new(false)),
             accepting_writes: Arc::new(AtomicBool::new(false)),
+            close_error: None,
         })
     }
 
@@ -215,6 +217,7 @@ impl PyNominalDatasetStream {
             }
         };
 
+        self.close_error = None;
         self.runtime_task = Some(runtime_task);
         self.runtime = Some(runtime);
         self.accepting_writes.store(true, Ordering::SeqCst);
@@ -237,13 +240,14 @@ impl PyNominalDatasetStream {
     pub fn close(&mut self, py: Python<'_>) -> PyResult<()> {
         self.accepting_writes.store(false, Ordering::SeqCst);
         if let Some(StreamRuntime {
-            stream,
+            mut stream,
             shutdown_tx,
         }) = self.runtime.take()
         {
-            // Drop the stream first: its own `Drop` waits for every buffered point to be uploaded,
-            // and those uploads run on the runtime we are about to shut down.
-            info!("Dropping stream to drain buffered points");
+            info!("Draining stream before runtime shutdown");
+            if let Err(error) = py.detach(|| stream.close()) {
+                self.close_error = Some(error.to_string());
+            }
             py.detach(|| drop(stream));
 
             info!("Signalling runtime thread to shut down");
@@ -253,14 +257,17 @@ impl PyNominalDatasetStream {
         // Join the runtime thread (releases GIL)
         if let Some(j) = self.runtime_task.take() {
             info!("Joining runtime thread");
-            py.detach(|| {
-                let _ = j.join();
-            });
+            if py.detach(|| j.join()).is_err() && self.close_error.is_none() {
+                self.close_error = Some("stream runtime worker panicked".into());
+            }
         }
 
         // Mark closed (idempotent)
         self.is_open.store(false, Ordering::SeqCst);
-        Ok(())
+        match &self.close_error {
+            Some(error) => Err(PyRuntimeError::new_err(error.clone())),
+            None => Ok(()),
+        }
     }
 
     /// Teardown used by the SIGINT handler.
@@ -415,10 +422,14 @@ impl PyNominalDatasetStream {
         &mut self,
         py: Python<'_>,
         _t: Py<PyAny>,
-        _e: Py<PyAny>,
+        body_error: Py<PyAny>,
         _tb: Py<PyAny>,
     ) -> PyResult<()> {
-        self.close(py)
+        self.close(py).inspect_err(|error| {
+            if !body_error.is_none(py) {
+                error.set_cause(py, Some(PyErr::from_value(body_error.into_bound(py))));
+            }
+        })
     }
 }
 

@@ -258,7 +258,11 @@ class NominalDatasetStream:
         return self.open()
 
     def close(self, wait: bool = True) -> None:
-        """Exit the stream and close out any used system resources.
+        """Drain buffered data and release resources, raising on delivery or finalization failure.
+
+        Successful file fallback counts as preserved data. Repeated close calls retain any
+        failure until the stream is opened again. Both values of ``wait`` currently drain;
+        custom consumers that never return can prevent shutdown from completing.
 
         NOTE: uninstalls the installed sigint handler and restores any pre-existing sigint handlers
         """
@@ -286,7 +290,12 @@ class NominalDatasetStream:
 
         NOTE: uninstalls the installed sigint handler and restores any pre-existing sigint handlers
         """
-        self.close()
+        try:
+            self.close()
+        except Exception as close_error:
+            if exc_value is not None:
+                raise close_error from exc_value
+            raise
 
     def enqueue(
         self,

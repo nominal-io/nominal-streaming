@@ -39,6 +39,7 @@ use tracing::error;
 
 use crate::client::NominalApiClients;
 use crate::client::PRODUCTION_API_URL;
+use crate::consumer::checked_consumer_call;
 use crate::consumer::AvroFileConsumer;
 use crate::consumer::DualWriteRequestConsumer;
 use crate::consumer::ListeningWriteRequestConsumer;
@@ -313,14 +314,30 @@ impl NominalDatasetStreamBuilder {
 #[deprecated]
 pub type NominalDatasourceStream = NominalDatasetStream;
 
+/// A failure observed while draining or finalizing a stream.
+#[derive(Debug, Clone, thiserror::Error)]
+#[error("stream close failed: {0}")]
+pub struct StreamError(String);
+
+fn panic_error(payload: Box<dyn std::any::Any + Send>) -> StreamError {
+    let message = payload
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| payload.downcast_ref::<&str>().copied())
+        .unwrap_or("unknown panic");
+    StreamError(format!("worker panicked: {message}"))
+}
+
 pub struct NominalDatasetStream {
     opts: NominalStreamOpts,
     running: Arc<AtomicBool>,
-    unflushed_points: Arc<AtomicUsize>,
     primary_buffer: Arc<SeriesBuffer>,
     secondary_buffer: Arc<SeriesBuffer>,
-    primary_handle: thread::JoinHandle<()>,
-    secondary_handle: thread::JoinHandle<()>,
+    primary_handle: thread::Thread,
+    secondary_handle: thread::Thread,
+    workers: Vec<thread::JoinHandle<Result<(), StreamError>>>,
+    consumer: Arc<dyn WriteRequestConsumer>,
+    close_result: Option<Result<(), StreamError>>,
     /// Records the total time spent processing batches on background threads.
     ///
     /// This field is only available when the `instrument` feature is enabled.
@@ -338,6 +355,30 @@ pub struct NominalDatasetStream {
 }
 
 impl NominalDatasetStream {
+    /// Drain accepted data, join workers, and finalize consumers. Repeated calls return
+    /// the original result. Successful fallback counts as preserved data.
+    ///
+    /// Drop channel writers before calling this method so their local buffers are enqueued.
+    /// This blocks without a timeout; a custom consumer that never returns can block close.
+    pub fn close(&mut self) -> Result<(), StreamError> {
+        if let Some(result) = &self.close_result {
+            return result.clone();
+        }
+        self.running.store(false, Ordering::Release);
+        self.primary_handle.unpark();
+        self.secondary_handle.unpark();
+        let mut result = Ok(());
+        for worker in self.workers.drain(..) {
+            let worker_result = worker.join().map_err(panic_error).and_then(|result| result);
+            result = result.and(worker_result);
+        }
+        let finish_result = checked_consumer_call(|| self.consumer.finish())
+            .map_err(|error| StreamError(error.to_string()));
+        result = result.and(finish_result);
+        self.close_result = Some(result.clone());
+        result
+    }
+
     pub fn builder() -> NominalDatasetStreamBuilder {
         NominalDatasetStreamBuilder::new()
     }
@@ -359,7 +400,6 @@ impl NominalDatasetStream {
             crossbeam_channel::bounded::<(WriteRequestNominal, usize)>(opts.max_buffered_requests);
 
         let running = Arc::new(AtomicBool::new(true));
-        let unflushed_points = Arc::new(AtomicUsize::new(0));
 
         #[cfg(feature = "instrument")]
         let batch_processor_ns = Arc::new(AtomicU64::new(0));
@@ -382,7 +422,7 @@ impl NominalDatasetStream {
                         opts.max_request_delay,
                         #[cfg(feature = "instrument")]
                         bp_ns,
-                    );
+                    )
                 }
             })
             .unwrap();
@@ -402,46 +442,49 @@ impl NominalDatasetStream {
                         opts.max_request_delay,
                         #[cfg(feature = "instrument")]
                         bp_ns,
-                    );
+                    )
                 }
             })
             .unwrap();
 
         let consumer = Arc::new(consumer);
 
+        let primary_thread = primary_handle.thread().clone();
+        let secondary_thread = secondary_handle.thread().clone();
+        let mut workers = vec![primary_handle, secondary_handle];
         for i in 0..opts.request_dispatcher_tasks {
-            thread::Builder::new()
-                .name(format!("nmstream_dispatch_{i}"))
-                .spawn({
-                    let running = Arc::clone(&running);
-                    let unflushed_points = Arc::clone(&unflushed_points);
-                    let rx = request_rx.clone();
-                    let consumer = consumer.clone();
-                    #[cfg(feature = "instrument")]
-                    let disp_ns = Arc::clone(&dispatcher_ns);
-                    move || {
-                        debug!("starting request dispatcher #{}", i);
-                        request_dispatcher(
-                            running,
-                            unflushed_points,
-                            rx,
-                            consumer,
-                            #[cfg(feature = "instrument")]
-                            disp_ns,
-                        );
-                    }
-                })
-                .unwrap();
+            workers.push(
+                thread::Builder::new()
+                    .name(format!("nmstream_dispatch_{i}"))
+                    .spawn({
+                        let rx = request_rx.clone();
+                        let consumer = consumer.clone();
+                        #[cfg(feature = "instrument")]
+                        let disp_ns = Arc::clone(&dispatcher_ns);
+                        move || {
+                            debug!("starting request dispatcher #{}", i);
+                            request_dispatcher(
+                                rx,
+                                consumer,
+                                #[cfg(feature = "instrument")]
+                                disp_ns,
+                            )
+                        }
+                    })
+                    .unwrap(),
+            );
         }
 
         NominalDatasetStream {
             opts,
             running,
-            unflushed_points,
             primary_buffer,
             secondary_buffer,
-            primary_handle,
-            secondary_handle,
+            primary_handle: primary_thread,
+            secondary_handle: secondary_thread,
+            workers,
+            consumer,
+            close_result: None,
             #[cfg(feature = "instrument")]
             batch_processor_ns,
             #[cfg(feature = "instrument")]
@@ -559,25 +602,23 @@ impl NominalDatasetStream {
     }
 
     fn when_capacity(&self, new_count: usize, callback: impl FnOnce(SeriesBufferGuard)) {
-        self.unflushed_points
-            .fetch_add(new_count, Ordering::Release);
-
+        assert!(self.running.load(Ordering::Acquire), "stream is closed");
         if self.primary_buffer.has_capacity(new_count) {
             debug!("adding {} points to primary buffer", new_count);
             callback(self.primary_buffer.lock());
         } else if self.secondary_buffer.has_capacity(new_count) {
             // primary buffer is definitely full
-            self.primary_handle.thread().unpark();
+            self.primary_handle.unpark();
             debug!("adding {} points to secondary buffer", new_count);
             callback(self.secondary_buffer.lock());
         } else {
             let buf = if self.primary_buffer < self.secondary_buffer {
                 debug!("waiting for primary buffer to flush to append {new_count} points...");
-                self.primary_handle.thread().unpark();
+                self.primary_handle.unpark();
                 &self.primary_buffer
             } else {
                 debug!("waiting for secondary buffer to flush to append {new_count} points...");
-                self.secondary_handle.thread().unpark();
+                self.secondary_handle.unpark();
                 &self.secondary_buffer
             };
 
@@ -1005,7 +1046,8 @@ fn batch_processor(
     request_chan: crossbeam_channel::Sender<(WriteRequestNominal, usize)>,
     max_request_delay: Duration,
     #[cfg(feature = "instrument")] bp_ns: Arc<AtomicU64>,
-) {
+) -> Result<(), StreamError> {
+    let mut result = Ok(());
     loop {
         debug!("starting processor loop");
         if points_buffer.is_empty() {
@@ -1040,6 +1082,9 @@ fn batch_processor(
                 };
                 if let Err(error) = request_chan.send((request, count)) {
                     error!("failed to send request to dispatcher: {error}");
+                    result = Err(StreamError(
+                        "request dispatcher disconnected before delivery".into(),
+                    ));
                 }
             },
         );
@@ -1053,43 +1098,30 @@ fn batch_processor(
         }
     }
     debug!("batch processor thread exiting");
+    result
 }
 
 impl Drop for NominalDatasetStream {
     fn drop(&mut self) {
-        debug!("starting drop for NominalDatasetStream");
-        self.running.store(false, Ordering::Release);
-        // Wake sleeping workers to flush pending points and exit.
-        self.primary_handle.thread().unpark();
-        self.secondary_handle.thread().unpark();
-        loop {
-            let count = self.unflushed_points.load(Ordering::Acquire);
-            if count == 0 {
-                break;
-            }
-            debug!(
-                "waiting for all points to be flushed before dropping stream, {count} points remaining",
-            );
-            // todo: reduce this + give up after some maximum timeout is reached
-            thread::sleep(Duration::from_millis(50));
+        if let Err(error) = self.close() {
+            error!("{error}");
         }
     }
 }
 
 fn request_dispatcher<C: WriteRequestConsumer + 'static>(
-    running: Arc<AtomicBool>,
-    unflushed_points: Arc<AtomicUsize>,
     request_rx: crossbeam_channel::Receiver<(WriteRequestNominal, usize)>,
     consumer: Arc<C>,
     #[cfg(feature = "instrument")] disp_ns: Arc<AtomicU64>,
-) {
+) -> Result<(), StreamError> {
+    let mut result = Ok(());
     let mut total_request_time = 0;
     loop {
         match request_rx.recv() {
             Ok((request, point_count)) => {
                 debug!("received writerequest from channel");
                 let req_start = Instant::now();
-                match consumer.consume(&request) {
+                match checked_consumer_call(|| consumer.consume(&request)) {
                     Ok(_) => {
                         let time = req_start.elapsed().as_millis();
                         debug!("request of {} points sent in {} ms", point_count, time);
@@ -1097,19 +1129,13 @@ fn request_dispatcher<C: WriteRequestConsumer + 'static>(
                     }
                     Err(e) => {
                         error!("Failed to send request: {e:?}");
+                        if result.is_ok() {
+                            result = Err(StreamError(e.to_string()));
+                        }
                     }
                 }
                 #[cfg(feature = "instrument")]
                 disp_ns.fetch_add(req_start.elapsed().as_nanos() as u64, Ordering::Relaxed);
-                unflushed_points.fetch_sub(point_count, Ordering::Release);
-
-                if unflushed_points.load(Ordering::Acquire) == 0 && !running.load(Ordering::Acquire)
-                {
-                    debug!("all points flushed, closing dispatcher thread");
-                    // notify the processor thread that all points have been flushed
-                    drop(request_rx);
-                    break;
-                }
             }
             Err(e) => {
                 debug!("request channel closed, exiting dispatcher thread. info: '{e}'");
@@ -1121,6 +1147,7 @@ fn request_dispatcher<C: WriteRequestConsumer + 'static>(
         "request dispatcher thread exiting. total request time: {}",
         total_request_time
     );
+    result
 }
 
 #[cfg(test)]
