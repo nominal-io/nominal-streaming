@@ -44,7 +44,7 @@ pub enum ConsumerError {
     FileError {
         path: PathBuf,
         operation: &'static str,
-        source: Box<dyn Error + Send + Sync>,
+        source: std::io::Error,
     },
     #[error("io error: {0}")]
     IoError(#[from] std::io::Error),
@@ -353,7 +353,7 @@ impl AvroFileConsumer {
         ConsumerError::FileError {
             path: self.path.clone(),
             operation,
-            source: Box::new(source),
+            source,
         }
     }
 }
