@@ -69,6 +69,12 @@ class NominalLogStream:
         max_request_bytes: int = 8 * 1024 * 1024,
         max_batch_bytes: int = 16 * 1024 * 1024,
         max_buffered_bytes: int = 64 * 1024 * 1024,
+        max_retries: int = 5,
+        retry_backoff_slot_secs: float = 0.25,
+        connect_timeout_secs: float = 5.0,
+        read_timeout_secs: float = 15.0,
+        write_timeout_secs: float = 15.0,
+        delivery_timeout_secs: float = 60.0,
     ) -> Self:
         """Create a stream with connection, batching and runtime options.
 
@@ -82,6 +88,13 @@ class NominalLogStream:
             max_request_bytes: Maximum uncompressed protobuf request size.
             max_batch_bytes: Charged memory limit per batch.
             max_buffered_bytes: Charged memory limit across all accepted records.
+            max_retries: Additional Conjure attempts after the initial request, from 0 to 31.
+            retry_backoff_slot_secs: Positive initial exponential-backoff slot with jitter.
+            connect_timeout_secs: Positive connection timeout in seconds.
+            read_timeout_secs: Positive socket read timeout in seconds.
+            write_timeout_secs: Positive socket write timeout in seconds.
+            delivery_timeout_secs: Positive deadline for HTTP attempts and retry sleeps.
+                Excludes queueing, encoding, and fallback. Timeout can leave delivery uncertain.
         """
         return cls(
             auth_header,
@@ -94,6 +107,12 @@ class NominalLogStream:
                 max_request_bytes=max_request_bytes,
                 max_batch_bytes=max_batch_bytes,
                 max_buffered_bytes=max_buffered_bytes,
+                max_retries=max_retries,
+                retry_backoff_slot_secs=retry_backoff_slot_secs,
+                connect_timeout_secs=connect_timeout_secs,
+                read_timeout_secs=read_timeout_secs,
+                write_timeout_secs=write_timeout_secs,
+                delivery_timeout_secs=delivery_timeout_secs,
             ),
         )
 

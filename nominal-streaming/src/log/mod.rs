@@ -100,6 +100,10 @@ pub struct NominalLogStreamOpts {
     pub max_request_delay: Duration,
     pub num_upload_workers: usize,
     pub base_api_url: String,
+    /// Shared HTTP attempt timeouts and retry policy.
+    pub transport: crate::client::TransportOptions,
+    /// Overall HTTP deadline, including retries and sleeps; excludes queueing and journal I/O.
+    pub delivery_timeout: Duration,
 }
 
 impl Default for NominalLogStreamOpts {
@@ -112,21 +116,27 @@ impl Default for NominalLogStreamOpts {
             max_request_delay: Duration::from_millis(250),
             num_upload_workers: 4,
             base_api_url: crate::client::PRODUCTION_API_URL.into(),
+            transport: Default::default(),
+            delivery_timeout: crate::client::DEFAULT_DELIVERY_TIMEOUT,
         }
     }
 }
 
 impl NominalLogStreamOpts {
     fn validate(&self) -> Result<(), LogStreamError> {
+        self.transport
+            .validate()
+            .map_err(|message| LogStreamError::Invalid(message.into()))?;
         if self.max_request_bytes < 512
             || self.max_batch_bytes < 512
             || self.max_buffered_bytes < self.max_batch_bytes
             || self.max_records_per_batch == 0
             || self.num_upload_workers == 0
             || self.max_request_delay.is_zero()
+            || self.delivery_timeout.is_zero()
         {
             return Err(LogStreamError::Invalid(
-                "invalid batch, buffer, worker or flush delay limits".into(),
+                "invalid batch, buffer, worker or timeout limits".into(),
             ));
         }
         Ok(())

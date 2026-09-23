@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
 use bytes::Bytes;
-use conjure_http::client::ConjureRuntime;
 use conjure_object::BearerToken;
 use conjure_object::ResourceIdentifier;
 use nominal_api::tonic::nominal::direct_channel_writer::v2 as wire;
@@ -24,6 +23,7 @@ pub(super) struct HttpTransport {
     client: NominalApiClients,
     auth: TokenProvider,
     handle: tokio::runtime::Handle,
+    delivery_timeout: std::time::Duration,
 }
 
 impl HttpTransport {
@@ -51,19 +51,14 @@ impl HttpTransport {
         {
             return Err(LogStreamError::Invalid("base_api_url must use HTTPS (HTTP permitted on loopback only), without credentials, query or fragment".into()));
         }
-        let streaming = client::async_conjure_streaming_client(endpoint.clone())
-            .map_err(|e| LogStreamError::Invalid(crate::consumer::describe_request_error(&e)))?;
-        let services = client::async_conjure_client("upload-ingest", endpoint)
-            .map_err(|e| LogStreamError::Invalid(crate::consumer::describe_request_error(&e)))?;
-        let client = NominalApiClients::from_conjure_clients(
-            streaming,
-            services,
-            &Arc::new(ConjureRuntime::default()),
-        );
+        let client =
+            NominalApiClients::try_from_uri_with_options(endpoint.as_str(), &opts.transport)
+                .map_err(|e| LogStreamError::Invalid(client::describe_request_error(&e)))?;
         Ok(Self {
             client,
             auth,
             handle,
+            delivery_timeout: opts.delivery_timeout,
         })
     }
 }
@@ -85,20 +80,13 @@ fn request(body: Bytes, token: &BearerToken) -> WriteRequest<'static> {
 impl LogTransport for HttpTransport {
     fn send(&self, body: &Bytes) -> Result<(), String> {
         let token = (self.auth)().ok_or("missing auth token")?;
-        let started = std::time::Instant::now();
-        let result = self
-            .handle
-            .block_on(self.client.send(request(body.clone(), &token)))
+        self.handle
+            .block_on(
+                self.client
+                    .send_with_timeout(request(body.clone(), &token), self.delivery_timeout),
+            )
             .map(|_| ())
-            .map_err(|e| crate::consumer::describe_request_error(&e));
-        tracing::debug!(
-            elapsed_micros = started.elapsed().as_micros() as u64,
-            wire_bytes = body.len(),
-            success = result.is_ok(),
-            error = result.as_ref().err().map(String::as_str),
-            "Log request completed"
-        );
-        result
+            .map_err(|e| client::describe_request_error(&e))
     }
 }
 

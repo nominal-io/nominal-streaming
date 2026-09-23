@@ -16,7 +16,7 @@ server, so retries and fallback can duplicate data.
 
 The pinned Conjure runtime retries 429, 503, and (with idempotent requests) 500
 and transport failures; it does not retry 502 or 504. Exhaustion or a deadline
-returns the existing upload error and invokes a configured Avro fallback.
+returns the existing upload error and invokes the configured Avro or journal fallback.
 
 ```rust
 use nominal_streaming::client::TransportOptions;
@@ -36,7 +36,9 @@ from nominal_streaming import PyNominalStreamOpts
 options = PyNominalStreamOpts(max_retries=3, delivery_timeout_secs=30.0)
 ```
 
-Python also accepts these settings in `NominalDatasetStream.create`. Both APIs
+Python accepts the same settings in `NominalDatasetStream.create` and
+`NominalLogStream.create`. Rust logs expose the same `TransportOptions` through
+`NominalLogStreamOpts.transport`, with a separate `delivery_timeout`. Both APIs
 expose the backoff slot and individual socket timeouts. Durations must be positive
 and Python durations must be finite; retry counts range from 0 through 31.
 Manually constructed Rust consumers can use `NominalCoreConsumer::with_delivery_timeout`;

@@ -5,6 +5,9 @@ use nominal_streaming::log::NominalLogStreamOpts;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
+use crate::nominal_stream_opts::positive_duration;
+use crate::nominal_stream_opts::transport_options;
+
 fn duration(value: f64) -> PyResult<Duration> {
     Duration::try_from_secs_f64(value)
         .map_err(|_| PyValueError::new_err("duration must be finite and nonnegative"))
@@ -23,7 +26,8 @@ impl PyNominalLogStreamOpts {
     #[new]
     #[pyo3(signature = (*, max_request_bytes=8*1024*1024, max_batch_bytes=16*1024*1024, max_buffered_bytes=64*1024*1024,
         max_points_per_batch=10_000, max_request_delay_secs=0.25, num_upload_workers=4, num_runtime_workers=2,
-        base_api_url="https://api.gov.nominal.io/api"))]
+        base_api_url="https://api.gov.nominal.io/api", max_retries=5, retry_backoff_slot_secs=0.25,
+        connect_timeout_secs=5.0, read_timeout_secs=15.0, write_timeout_secs=15.0, delivery_timeout_secs=60.0))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         max_request_bytes: usize,
@@ -34,6 +38,12 @@ impl PyNominalLogStreamOpts {
         num_upload_workers: usize,
         num_runtime_workers: usize,
         base_api_url: &str,
+        max_retries: u32,
+        retry_backoff_slot_secs: f64,
+        connect_timeout_secs: f64,
+        read_timeout_secs: f64,
+        write_timeout_secs: f64,
+        delivery_timeout_secs: f64,
     ) -> PyResult<Self> {
         if num_runtime_workers == 0 {
             return Err(PyValueError::new_err(
@@ -48,11 +58,49 @@ impl PyNominalLogStreamOpts {
         inner.max_request_delay = duration(max_request_delay_secs)?;
         inner.num_upload_workers = num_upload_workers;
         inner.base_api_url = base_api_url.into();
+        inner.transport = transport_options(
+            max_retries,
+            retry_backoff_slot_secs,
+            connect_timeout_secs,
+            read_timeout_secs,
+            write_timeout_secs,
+        )?;
+        inner.delivery_timeout = positive_duration("delivery_timeout_secs", delivery_timeout_secs)?;
         Ok(Self {
             num_runtime_workers,
             inner,
         })
     }
+    #[getter]
+    fn max_retries(&self) -> u32 {
+        self.inner.transport.max_retries
+    }
+
+    #[getter]
+    fn retry_backoff_slot_secs(&self) -> f64 {
+        self.inner.transport.backoff_slot.as_secs_f64()
+    }
+
+    #[getter]
+    fn connect_timeout_secs(&self) -> f64 {
+        self.inner.transport.connect_timeout.as_secs_f64()
+    }
+
+    #[getter]
+    fn read_timeout_secs(&self) -> f64 {
+        self.inner.transport.read_timeout.as_secs_f64()
+    }
+
+    #[getter]
+    fn write_timeout_secs(&self) -> f64 {
+        self.inner.transport.write_timeout.as_secs_f64()
+    }
+
+    #[getter]
+    fn delivery_timeout_secs(&self) -> f64 {
+        self.inner.delivery_timeout.as_secs_f64()
+    }
+
     #[getter]
     fn max_request_bytes(&self) -> usize {
         self.inner.max_request_bytes

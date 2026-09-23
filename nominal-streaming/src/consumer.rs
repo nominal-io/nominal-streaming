@@ -1,7 +1,6 @@
 use std::error::Error;
 use std::fmt::Debug;
 use std::fmt::Formatter;
-use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::LazyLock;
@@ -26,6 +25,7 @@ use parking_lot::Mutex;
 use prost::Message;
 use tracing::warn;
 
+use crate::client::describe_request_error;
 use crate::client::NominalApiClients;
 use crate::client::WriteRequest;
 use crate::client::{self};
@@ -49,32 +49,6 @@ pub enum ConsumerError {
 }
 
 pub type ConsumerResult<T> = Result<T, ConsumerError>;
-
-/// Compact, single-line summary of a failed request: the conjure error kind, the
-/// HTTP status when the failure came from a response, and the cause chain's
-/// Display output.
-///
-/// Deliberately NOT the conjure `Error`'s Debug form, which embeds captured
-/// backtraces and parameter maps — several KB per line in the per-request warn
-/// logs that high-volume callers (e.g. Lambda ingest) run with.
-pub(crate) fn describe_request_error(e: &conjure_error::Error) -> String {
-    let mut out = match e.kind() {
-        conjure_error::ErrorKind::Service(s) => format!("service error {}", s.error_code()),
-        conjure_error::ErrorKind::Throttle(_) => "throttled (429)".to_owned(),
-        conjure_error::ErrorKind::Unavailable(_) => "unavailable (503)".to_owned(),
-        _ => "unknown error kind".to_owned(),
-    };
-    let mut cause: Option<&(dyn Error + 'static)> = Some(e.cause());
-    while let Some(c) = cause {
-        if let Some(remote) = c.downcast_ref::<client::conjure::runtime::errors::RemoteError>() {
-            let _ = write!(out, ": {c} (http {})", remote.status());
-        } else {
-            let _ = write!(out, ": {c}");
-        }
-        cause = c.source();
-    }
-    out
-}
 
 pub trait WriteRequestConsumer: Send + Sync + Debug {
     fn consume(&self, request: &WriteRequestNominal) -> ConsumerResult<()>;

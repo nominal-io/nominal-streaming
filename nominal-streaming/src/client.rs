@@ -1,4 +1,5 @@
 use std::fmt::Debug;
+use std::fmt::Write as _;
 use std::sync::Arc;
 use std::sync::LazyLock;
 use std::time::Duration;
@@ -186,10 +187,58 @@ impl NominalApiClients {
         req: WriteRequest<'_>,
         timeout: Duration,
     ) -> Result<Response<ResponseBody>, Error> {
-        tokio::time::timeout(timeout, self.streaming.send(req))
-            .await
-            .map_err(Error::internal_safe)?
+        let endpoint = req
+            .extensions()
+            .get::<conjure_http::client::Endpoint>()
+            .map(|endpoint| endpoint.name())
+            .unwrap_or("unknown");
+        let started = std::time::Instant::now();
+        let result = tokio::time::timeout(timeout, self.streaming.send(req)).await;
+        let deadline_expired = result.is_err();
+        let result = result
+            .map_err(Error::internal_safe)
+            .and_then(|result| result);
+        tracing::debug!(
+            endpoint,
+            elapsed_micros = started.elapsed().as_micros() as u64,
+            deadline_expired,
+            delivery_timeout_ms = timeout.as_millis() as u64,
+            success = result.is_ok(),
+            status = result
+                .as_ref()
+                .ok()
+                .map(|response| response.status().as_u16()),
+            error = result.as_ref().err().map(describe_request_error),
+            "Core upload completed"
+        );
+        result
     }
+}
+
+/// Compact, single-line summary of a failed request: the conjure error kind, the
+/// HTTP status when the failure came from a response, and the cause chain's
+/// Display output.
+///
+/// Deliberately NOT the conjure `Error`'s Debug form, which embeds captured
+/// backtraces and parameter maps — several KB per line in the per-request warn
+/// logs that high-volume callers (e.g. Lambda ingest) run with.
+pub(crate) fn describe_request_error(e: &conjure_error::Error) -> String {
+    let mut out = match e.kind() {
+        conjure_error::ErrorKind::Service(s) => format!("service error {}", s.error_code()),
+        conjure_error::ErrorKind::Throttle(_) => "throttled (429)".to_owned(),
+        conjure_error::ErrorKind::Unavailable(_) => "unavailable (503)".to_owned(),
+        _ => "unknown error kind".to_owned(),
+    };
+    let mut cause: Option<&(dyn std::error::Error + 'static)> = Some(e.cause());
+    while let Some(c) = cause {
+        if let Some(remote) = c.downcast_ref::<conjure::runtime::errors::RemoteError>() {
+            let _ = write!(out, ": {c} (http {})", remote.status());
+        } else {
+            let _ = write!(out, ": {c}");
+        }
+        cause = c.source();
+    }
+    out
 }
 
 pub static PRODUCTION_CLIENTS: LazyLock<NominalApiClients> =
@@ -481,6 +530,84 @@ mod transport_tests {
             "values".into(),
             Value::Array(vec![Value::Union(0, Box::new(Value::Double(42.5)))])
         )));
+    }
+
+    #[rstest::rstest]
+    #[case::acknowledged(vec![503, 204], None, true)]
+    #[case::exhausted_retries(vec![503, 503, 503], None, false)]
+    #[case::delivery_deadline(vec![429], Some(3600), false)]
+    #[case::bad_gateway(vec![502], None, false)]
+    #[case::gateway_timeout(vec![504], None, false)]
+    fn log_delivery_preserves_only_unconfirmed_records(
+        #[case] statuses: Vec<u16>,
+        #[case] retry_after: Option<u64>,
+        #[case] acknowledged: bool,
+    ) {
+        use crate::log::LogRecord;
+        use crate::log::NominalLogStream;
+        use crate::log::NominalLogStreamOpts;
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let expected_attempts = statuses.len();
+        let (url, server, attempts) = runtime.block_on(scripted_server(statuses, retry_after));
+        let directory = tempfile::tempdir().unwrap();
+        let options = NominalLogStreamOpts {
+            base_api_url: url.to_string(),
+            transport: TransportOptions {
+                max_retries: 2,
+                backoff_slot: Duration::from_millis(1),
+                ..Default::default()
+            },
+            delivery_timeout: Duration::from_millis(500),
+            ..Default::default()
+        };
+        let stream = NominalLogStream::builder()
+            .stream_to_core(
+                "test-token".parse::<BearerToken>().unwrap(),
+                "ri.catalog.main.dataset.test".parse().unwrap(),
+                runtime.handle().clone(),
+            )
+            .with_file_fallback(directory.path())
+            .with_options(options)
+            .build()
+            .unwrap();
+        stream
+            .enqueue(
+                "application",
+                LogRecord::new(123, "hello", [("service".into(), "test".into())].into()),
+            )
+            .unwrap();
+        let started = std::time::Instant::now();
+        let stats = stream.close().unwrap();
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert_eq!(stats.requests, 1);
+        assert_eq!(stats.failed_records, 0);
+        assert_eq!(stats.acknowledged_records, u64::from(acknowledged));
+        assert_eq!(stats.backed_up_records, u64::from(!acknowledged));
+        assert_eq!(
+            attempts.load(std::sync::atomic::Ordering::SeqCst),
+            expected_attempts
+        );
+        let bodies = runtime.block_on(server).unwrap();
+        assert!(bodies.windows(2).all(|pair| pair[0] == pair[1]));
+        let files = std::fs::read_dir(directory.path())
+            .unwrap()
+            .map(|f| f.unwrap().path())
+            .collect::<Vec<_>>();
+        if acknowledged {
+            assert!(files.is_empty());
+        } else {
+            assert_eq!(files.len(), 2, "one journal segment and one manifest");
+            let journal = files
+                .iter()
+                .find(|p| p.extension().is_some_and(|e| e == "jsonl"))
+                .unwrap();
+            let row: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(journal).unwrap()).unwrap();
+            assert_eq!(
+                row,
+                serde_json::json!({"MESSAGE":"hello", "__REALTIME_TIMESTAMP":"123", "service":"test"})
+            );
+        }
     }
 
     #[tokio::test]

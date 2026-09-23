@@ -134,14 +134,22 @@ an existing dataset's log channel. It uses bounded native buffering: enqueue blo
 when the byte budget is full, while releasing the Python GIL. Individual writes are
 automatically batched into requests by Rust. Uploads use the same HTTP transport and
 retry policy as time series streaming; `stats().requests` counts logical uploads,
-including any transport retries within each upload.
+including any transport retries within each upload. Both stream types accept
+`max_retries`, `retry_backoff_slot_secs`, `connect_timeout_secs`, `read_timeout_secs`,
+`write_timeout_secs`, and `delivery_timeout_secs` through their options and `create()`
+factories. The delivery deadline covers HTTP attempts and retry sleeps; it excludes
+queueing, encoding, and fallback, and a timeout can leave delivery uncertain.
 
 ```python
 import os
 from pathlib import Path
 from nominal_streaming import NominalLogStream, PyNominalLogStreamOpts
 
-opts = PyNominalLogStreamOpts(max_buffered_bytes=64 * 1024 * 1024)
+opts = PyNominalLogStreamOpts(
+    max_buffered_bytes=64 * 1024 * 1024,
+    max_retries=5,
+    delivery_timeout_secs=60.0,
+)
 with (NominalLogStream(os.environ["NOMINAL_TOKEN"], opts)
       .with_core_consumer(os.environ["NOMINAL_DATASET_RID"])
       .with_file_fallback(Path("log-backup"))) as stream:

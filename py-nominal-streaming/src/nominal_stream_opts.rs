@@ -75,16 +75,14 @@ impl PyNominalStreamOpts {
         write_timeout_secs: f64,
         delivery_timeout_secs: f64,
     ) -> PyResult<Self> {
-        let mut transport = TransportOptions::default();
-        transport.max_retries = max_retries;
-        transport.backoff_slot =
-            positive_duration("retry_backoff_slot_secs", retry_backoff_slot_secs)?;
-        transport.connect_timeout =
-            positive_duration("connect_timeout_secs", connect_timeout_secs)?;
-        transport.read_timeout = positive_duration("read_timeout_secs", read_timeout_secs)?;
-        transport.write_timeout = positive_duration("write_timeout_secs", write_timeout_secs)?;
+        let transport = transport_options(
+            max_retries,
+            retry_backoff_slot_secs,
+            connect_timeout_secs,
+            read_timeout_secs,
+            write_timeout_secs,
+        )?;
         let delivery_timeout = positive_duration("delivery_timeout_secs", delivery_timeout_secs)?;
-        transport.validate().map_err(PyValueError::new_err)?;
         Ok(PyNominalStreamOpts {
             inner: NominalStreamOpts::default()
                 .with_max_points_per_record(max_points_per_batch)
@@ -219,11 +217,28 @@ impl PyNominalStreamOpts {
     }
 }
 
-fn positive_duration(name: &str, seconds: f64) -> PyResult<Duration> {
+pub(crate) fn positive_duration(name: &str, seconds: f64) -> PyResult<Duration> {
     Duration::try_from_secs_f64(seconds)
         .ok()
         .filter(|duration| !duration.is_zero())
         .ok_or_else(|| {
             PyValueError::new_err(format!("{name} must be finite and greater than zero"))
         })
+}
+
+pub(crate) fn transport_options(
+    max_retries: u32,
+    retry_backoff_slot_secs: f64,
+    connect_timeout_secs: f64,
+    read_timeout_secs: f64,
+    write_timeout_secs: f64,
+) -> PyResult<TransportOptions> {
+    let mut transport = TransportOptions::default();
+    transport.max_retries = max_retries;
+    transport.backoff_slot = positive_duration("retry_backoff_slot_secs", retry_backoff_slot_secs)?;
+    transport.connect_timeout = positive_duration("connect_timeout_secs", connect_timeout_secs)?;
+    transport.read_timeout = positive_duration("read_timeout_secs", read_timeout_secs)?;
+    transport.write_timeout = positive_duration("write_timeout_secs", write_timeout_secs)?;
+    transport.validate().map_err(PyValueError::new_err)?;
+    Ok(transport)
 }
