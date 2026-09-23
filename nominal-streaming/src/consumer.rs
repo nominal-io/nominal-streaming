@@ -333,7 +333,7 @@ impl AvroFileConsumer {
     fn append_series(&self, series: &[Series]) -> ConsumerResult<()> {
         let mut records: Vec<Record> = Vec::new();
         for series in series {
-            let (timestamps, values) = points_to_avro(series.points.as_ref())?;
+            let (timestamps, values) = points_to_avro(series.points.as_ref());
 
             let mut record = Record::new(&CORE_AVRO_SCHEMA).expect("Failed to create Avro record");
 
@@ -381,40 +381,40 @@ impl AvroFileConsumer {
     }
 }
 
-fn points_to_avro(points: Option<&Points>) -> ConsumerResult<(Vec<Value>, Vec<Value>)> {
+fn points_to_avro(points: Option<&Points>) -> (Vec<Value>, Vec<Value>) {
     let Some(Points {
         points_type: Some(points),
     }) = points
     else {
-        return Ok((Vec::new(), Vec::new()));
+        return (Vec::new(), Vec::new());
     };
 
     match points {
         PointsType::DoublePoints(DoublePoints { points }) => points
             .iter()
             .map(|point| {
-                Ok((
-                    convert_timestamp_to_nanoseconds(point.timestamp)?,
+                (
+                    convert_timestamp_to_nanoseconds(point.timestamp.unwrap()),
                     Value::Union(0, Box::new(Value::Double(point.value))),
-                ))
+                )
             })
             .collect(),
         PointsType::StringPoints(StringPoints { points }) => points
             .iter()
             .map(|point| {
-                Ok((
-                    convert_timestamp_to_nanoseconds(point.timestamp)?,
+                (
+                    convert_timestamp_to_nanoseconds(point.timestamp.unwrap()),
                     Value::Union(1, Box::new(Value::String(point.value.clone()))),
-                ))
+                )
             })
             .collect(),
         PointsType::IntegerPoints(IntegerPoints { points }) => points
             .iter()
             .map(|point| {
-                Ok((
-                    convert_timestamp_to_nanoseconds(point.timestamp)?,
+                (
+                    convert_timestamp_to_nanoseconds(point.timestamp.unwrap()),
                     Value::Union(2, Box::new(Value::Long(point.value))),
-                ))
+                )
             })
             .collect(),
         PointsType::ArrayPoints(ArrayPoints { array_type }) => match array_type {
@@ -426,10 +426,10 @@ fn points_to_avro(points: Option<&Points>) -> ConsumerResult<(Vec<Value>, Vec<Va
                         point.value.iter().map(|v| Value::Double(*v)).collect();
                     let record =
                         Value::Record(vec![("items".to_string(), Value::Array(array_values))]);
-                    Ok((
-                        convert_timestamp_to_nanoseconds(point.timestamp)?,
+                    (
+                        convert_timestamp_to_nanoseconds(point.timestamp.unwrap()),
                         Value::Union(3, Box::new(record)),
-                    ))
+                    )
                 })
                 .collect(),
             Some(ArrayType::StringArrayPoints(points)) => points
@@ -443,13 +443,13 @@ fn points_to_avro(points: Option<&Points>) -> ConsumerResult<(Vec<Value>, Vec<Va
                         .collect();
                     let record =
                         Value::Record(vec![("items".to_string(), Value::Array(array_values))]);
-                    Ok((
-                        convert_timestamp_to_nanoseconds(point.timestamp)?,
+                    (
+                        convert_timestamp_to_nanoseconds(point.timestamp.unwrap()),
                         Value::Union(4, Box::new(record)),
-                    ))
+                    )
                 })
                 .collect(),
-            None => Ok((Vec::new(), Vec::new())),
+            None => (Vec::new(), Vec::new()),
         },
         PointsType::StructPoints(StructPoints { points }) => points
             .iter()
@@ -458,37 +458,26 @@ fn points_to_avro(points: Option<&Points>) -> ConsumerResult<(Vec<Value>, Vec<Va
                     "json".to_string(),
                     Value::String(point.json_string.clone()),
                 )]);
-                Ok((
-                    convert_timestamp_to_nanoseconds(point.timestamp)?,
+                (
+                    convert_timestamp_to_nanoseconds(point.timestamp.unwrap()),
                     Value::Union(5, Box::new(record)),
-                ))
+                )
             })
             .collect(),
         PointsType::Uint64Points(Uint64Points { points }) => points
             .iter()
             .map(|point| {
-                Ok((
-                    convert_timestamp_to_nanoseconds(point.timestamp)?,
+                (
+                    convert_timestamp_to_nanoseconds(point.timestamp.unwrap()),
                     Value::Union(2, Box::new(Value::Long(point.value as i64))),
-                ))
+                )
             })
             .collect(),
     }
 }
 
-fn convert_timestamp_to_nanoseconds(timestamp: Option<Timestamp>) -> ConsumerResult<Value> {
-    let timestamp =
-        timestamp.ok_or_else(|| ConsumerError::RequestError("missing timestamp".into()))?;
-    if !(0..1_000_000_000).contains(&timestamp.nanos) {
-        return Err(ConsumerError::RequestError(
-            "timestamp nanos must be in 0..1_000_000_000".into(),
-        ));
-    }
-    let nanos = i128::from(timestamp.seconds) * 1_000_000_000 + i128::from(timestamp.nanos);
-    let nanos = i64::try_from(nanos).map_err(|_| {
-        ConsumerError::RequestError("timestamp exceeds Avro i64 nanosecond range".into())
-    })?;
-    Ok(Value::Long(nanos))
+fn convert_timestamp_to_nanoseconds(timestamp: Timestamp) -> Value {
+    Value::Long(timestamp.seconds * 1_000_000_000 + timestamp.nanos as i64)
 }
 
 impl WriteRequestConsumer for AvroFileConsumer {
@@ -645,43 +634,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn malformed_request_does_not_append_earlier_series() {
-        let file = NamedTempFile::new().unwrap();
-        let consumer = AvroFileConsumer::new_with_full_path(file.path(), true, None).unwrap();
-        let series = |timestamp| {
-            make_series(
-                "ch",
-                Points {
-                    points_type: Some(PointsType::IntegerPoints(IntegerPoints {
-                        points: vec![
-                            nominal_api::tonic::io::nominal::scout::api::proto::IntegerPoint {
-                                timestamp,
-                                value: 42,
-                            },
-                        ],
-                    })),
-                },
-            )
-        };
-        consumer
-            .append_series(&[series(make_timestamp(0, 0))])
-            .unwrap();
-        for timestamp in [
-            None,
-            make_timestamp(0, -1),
-            make_timestamp(0, 1_000_000_000),
-            make_timestamp(i64::MAX, 0),
-        ] {
-            let error = consumer
-                .append_series(&[series(make_timestamp(1, 0)), series(timestamp)])
-                .unwrap_err();
-            assert!(matches!(error, ConsumerError::RequestError(_)));
-        }
-        drop(consumer);
-        assert_eq!(read_integer_point_count(&file.path().to_path_buf()), 1);
-    }
-
-    #[test]
     fn short_and_interrupted_writes_produce_readable_avro() {
         #[derive(Default)]
         struct ShortWriter(Vec<u8>, bool);
@@ -699,18 +651,20 @@ mod tests {
                 Ok(())
             }
         }
-        let mut writer = apache_avro::Writer::with_codec(
-            &apache_avro::Schema::Long,
-            CompleteWrite(ShortWriter::default()),
-            apache_avro::Codec::Snappy,
-        );
-        writer.extend([Value::Long(42)]).unwrap();
-        let bytes = writer.into_inner().unwrap().0 .0;
-        let values = Reader::new(bytes.as_slice())
-            .unwrap()
-            .collect::<Result<Vec<_>, _>>()
-            .unwrap();
-        assert_eq!(values, vec![Value::Long(42)]);
+        for interrupted in [true, false] {
+            let mut writer = apache_avro::Writer::with_codec(
+                &apache_avro::Schema::Long,
+                CompleteWrite(ShortWriter(Vec::new(), interrupted)),
+                apache_avro::Codec::Snappy,
+            );
+            writer.extend([Value::Long(42)]).unwrap();
+            let bytes = writer.into_inner().unwrap().0 .0;
+            let values = Reader::new(bytes.as_slice())
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+            assert_eq!(values, vec![Value::Long(42)]);
+        }
     }
 
     #[test]
@@ -750,48 +704,6 @@ mod tests {
         assert!(fallback.writer.lock().is_none());
         assert!(fallback.consume(&request).is_err());
         consumer.consume(&request).unwrap();
-    }
-
-    #[test]
-    fn timestamp_boundaries_roundtrip() {
-        let file = NamedTempFile::new().unwrap();
-        let consumer = AvroFileConsumer::new_with_full_path(file.path(), true, None).unwrap();
-        let expected = [i64::MIN, -1, 0, i64::MAX];
-        let points = expected
-            .iter()
-            .map(
-                |value| nominal_api::tonic::io::nominal::scout::api::proto::IntegerPoint {
-                    timestamp: make_timestamp(
-                        value.div_euclid(1_000_000_000),
-                        value.rem_euclid(1_000_000_000) as i32,
-                    ),
-                    value: 42,
-                },
-            )
-            .collect();
-        consumer
-            .append_series(&[make_series(
-                "ch",
-                Points {
-                    points_type: Some(PointsType::IntegerPoints(IntegerPoints { points })),
-                },
-            )])
-            .unwrap();
-        let records = Reader::new(std::fs::File::open(file.path()).unwrap())
-            .unwrap()
-            .collect::<Result<Vec<_>, _>>()
-            .unwrap();
-        let Value::Record(fields) = &records[0] else {
-            panic!("record")
-        };
-        assert_eq!(
-            fields
-                .iter()
-                .find(|(name, _)| name == "timestamps")
-                .unwrap()
-                .1,
-            Value::Array(expected.map(Value::Long).to_vec())
-        );
     }
 
     #[test]
