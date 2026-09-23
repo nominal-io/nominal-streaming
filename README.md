@@ -42,3 +42,7 @@ and Python durations must be finite; retry counts range from 0 through 31.
 Manually constructed Rust consumers can use `NominalCoreConsumer::with_delivery_timeout`;
 `NominalApiClients::from_uri_with_options` configures socket timeouts and retries,
 while its `send_with_timeout` method sets a per-call deadline (`send` uses 60 seconds).
+
+## Log streaming
+
+For timestamped messages with per-record arguments, use the dedicated Rust/Python `NominalLogStream`. It provides bounded buffering, protobuf + zstd uploads, exponential-backoff retries, and journal JSON backup of failed deliveries. See [Python log stream usage](py-nominal-streaming/README.md#log-streams).

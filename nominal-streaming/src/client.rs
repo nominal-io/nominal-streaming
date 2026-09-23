@@ -251,15 +251,7 @@ pub fn encode_request(
     api_key: &BearerToken,
     data_source_rid: &ResourceIdentifier,
 ) -> std::io::Result<WriteRequest<'static>> {
-    let body = zstd::encode_all(write_request_bytes, ZSTD_LEVEL)?;
-
-    let mut request = Request::new(AsyncRequestBody::Fixed(body.into()));
-
-    let headers = request.headers_mut();
-    headers.insert(CONTENT_TYPE, "application/x-protobuf".parse().unwrap());
-    headers.insert(CONTENT_ENCODING, "zstd".parse().unwrap());
-
-    *request.method_mut() = conjure_http::private::http::Method::POST;
+    let mut request = compressed_protobuf_request(compress(write_request_bytes)?, api_key);
     let mut path = conjure_http::private::UriBuilder::new();
     path.push_literal("/storage/writer/v1/nominal");
 
@@ -267,7 +259,6 @@ pub fn encode_request(
     path.push_path_parameter(&nominal_data_source_or_dataset_rid);
 
     *request.uri_mut() = path.build();
-    conjure_http::private::encode_header_auth(&mut request, api_key);
     request
         .extensions_mut()
         .insert(conjure_http::client::Endpoint::new(
@@ -545,4 +536,22 @@ mod options_tests {
         )
         .is_err());
     }
+}
+
+/// Compress once into a fixed body that Conjure can replay without re-encoding.
+pub(crate) fn compress(bytes: &[u8]) -> std::io::Result<bytes::Bytes> {
+    zstd::bulk::compress(bytes, ZSTD_LEVEL).map(Into::into)
+}
+
+pub(crate) fn compressed_protobuf_request(
+    body: bytes::Bytes,
+    api_key: &BearerToken,
+) -> WriteRequest<'static> {
+    let mut request = Request::new(AsyncRequestBody::Fixed(body));
+    let headers = request.headers_mut();
+    headers.insert(CONTENT_TYPE, "application/x-protobuf".parse().unwrap());
+    headers.insert(CONTENT_ENCODING, "zstd".parse().unwrap());
+    *request.method_mut() = conjure_http::private::http::Method::POST;
+    conjure_http::private::encode_header_auth(&mut request, api_key);
+    request
 }
