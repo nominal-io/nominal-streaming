@@ -1,0 +1,2 @@
+# Format repository and crate configuration, excluding build and environment trees.
+include = ["*.toml", "nominal-streaming/*.toml", "py-nominal-streaming/*.toml"]

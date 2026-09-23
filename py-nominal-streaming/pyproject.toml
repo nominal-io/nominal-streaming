@@ -10,13 +10,7 @@ classifiers = [
 ]
 
 # Let maturin source the version from Cargo.toml
-dynamic = [
-  "readme",
-  "urls",
-  "authors",
-  "license",
-  "version",
-]
+dynamic = ["readme", "urls", "authors", "license", "version"]
 
 dependencies = [
   "typing-extensions>=4,<5",
@@ -33,7 +27,7 @@ build-backend = "maturin"
 
 [tool.maturin]
 # Put the compiled extension *inside* the top-level `nominal_streaming` folder
-module-name  = "nominal_streaming._nominal_streaming"
+module-name = "nominal_streaming._nominal_streaming"
 requires-python = ">=3.10"
 profile = "release"
 strip = true
