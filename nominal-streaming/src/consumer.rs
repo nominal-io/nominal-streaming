@@ -1,9 +1,9 @@
-mod avro_io;
-
 use std::error::Error;
 use std::fmt::Debug;
 use std::fmt::Formatter;
 use std::fmt::Write as _;
+use std::io::Write;
+use std::io::{self};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::LazyLock;
@@ -28,8 +28,6 @@ use parking_lot::Mutex;
 use prost::Message;
 use tracing::warn;
 
-use self::avro_io::append_records;
-use self::avro_io::CompleteWrite;
 use crate::client::NominalApiClients;
 use crate::client::WriteRequest;
 use crate::client::{self};
@@ -227,6 +225,29 @@ pub static CORE_AVRO_SCHEMA: LazyLock<apache_avro::Schema> = LazyLock::new(|| {
     apache_avro::Schema::parse(&json).expect("Failed to parse Avro schema")
 });
 
+// apache-avro 0.17 uses Write::write for container framing and block payloads,
+// and assumes it writes every byte. Complete each write, including EINTR retries.
+struct CompleteWrite<W>(W);
+
+impl<W: Write> Write for CompleteWrite<W> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.0.write_all(bytes)?;
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.0.flush()
+    }
+}
+
+// Preserve the actual I/O cause: apache-avro's display text omits it.
+fn avro_error(error: apache_avro::Error) -> io::Error {
+    match error {
+        apache_avro::Error::WriteBytes(source) | apache_avro::Error::WriteMarker(source) => source,
+        other => io::Error::other(other),
+    }
+}
+
 #[derive(Clone)]
 pub struct AvroFileConsumer {
     writer: Arc<Mutex<Option<apache_avro::Writer<'static, CompleteWrite<std::fs::File>>>>>,
@@ -331,7 +352,24 @@ impl AvroFileConsumer {
             records.push(record);
         }
 
-        append_records(&mut self.writer.lock(), records).map_err(|e| self.file_error("append", e))
+        let mut writer = self.writer.lock();
+        let result = writer
+            .as_mut()
+            .ok_or_else(|| {
+                self.file_error(
+                    "append",
+                    io::Error::other("Avro writer is no longer available"),
+                )
+            })?
+            .extend(records)
+            .map(|_| ())
+            .map_err(|error| self.file_error("append", avro_error(error)));
+        if let Err(error) = &result {
+            // A partial write leaves a compressed block that cannot safely be retried.
+            *writer = None;
+            tracing::error!("{error}; disabling further writes to this Avro file");
+        }
+        result
     }
 
     fn file_error(&self, operation: &'static str, source: std::io::Error) -> ConsumerError {
@@ -644,31 +682,74 @@ mod tests {
     }
 
     #[test]
-    fn each_request_is_readable_before_the_consumer_is_dropped() {
+    fn short_and_interrupted_writes_produce_readable_avro() {
+        #[derive(Default)]
+        struct ShortWriter(Vec<u8>, bool);
+        impl Write for ShortWriter {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                if !self.1 {
+                    self.1 = true;
+                    return Err(io::ErrorKind::Interrupted.into());
+                }
+                let len = bytes.len().min(3);
+                self.0.extend_from_slice(&bytes[..len]);
+                Ok(len)
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let mut writer = apache_avro::Writer::with_codec(
+            &apache_avro::Schema::Long,
+            CompleteWrite(ShortWriter::default()),
+            apache_avro::Codec::Snappy,
+        );
+        writer.extend([Value::Long(42)]).unwrap();
+        let bytes = writer.into_inner().unwrap().0 .0;
+        let values = Reader::new(bytes.as_slice())
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(values, vec![Value::Long(42)]);
+    }
+
+    #[test]
+    fn failed_file_does_not_prevent_later_live_delivery() {
         let file = NamedTempFile::new().unwrap();
-        let consumer = AvroFileConsumer::new_with_full_path(file.path(), true, None).unwrap();
-        let clone = consumer.clone();
-        drop(consumer);
+        let fallback = AvroFileConsumer {
+            writer: Arc::new(Mutex::new(Some(apache_avro::Writer::new(
+                &CORE_AVRO_SCHEMA,
+                CompleteWrite(std::fs::File::open(file.path()).unwrap()),
+            )))),
+            path: file.path().to_path_buf(),
+        };
+        #[derive(Debug)]
+        struct RecoveringPrimary(std::sync::atomic::AtomicBool);
+        impl WriteRequestConsumer for RecoveringPrimary {
+            fn consume(&self, _: &WriteRequestNominal) -> ConsumerResult<()> {
+                if self.0.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                    Ok(())
+                } else {
+                    Err(ConsumerError::RequestError("offline".into()))
+                }
+            }
+        }
+        let consumer = RequestConsumerWithFallback::new(
+            RecoveringPrimary(std::sync::atomic::AtomicBool::new(false)),
+            fallback.clone(),
+        );
         let request = WriteRequestNominal {
-            series: vec![make_series(
-                "ch",
-                Points {
-                    points_type: Some(PointsType::IntegerPoints(IntegerPoints {
-                        points: vec![
-                            nominal_api::tonic::io::nominal::scout::api::proto::IntegerPoint {
-                                timestamp: make_timestamp(0, 0),
-                                value: 42,
-                            },
-                        ],
-                    })),
-                },
-            )],
+            series: vec![Series::default()],
             ..Default::default()
         };
-        for count in 1..=2 {
-            clone.consume(&request).unwrap();
-            assert_eq!(read_integer_point_count(&file.path().to_path_buf()), count);
-        }
+        let error = consumer.consume(&request).unwrap_err();
+        assert!(matches!(error, ConsumerError::FileError { .. }));
+        assert!(error
+            .to_string()
+            .contains(&file.path().display().to_string()));
+        assert!(fallback.writer.lock().is_none());
+        assert!(fallback.consume(&request).is_err());
+        consumer.consume(&request).unwrap();
     }
 
     #[test]
@@ -696,7 +777,6 @@ mod tests {
                 },
             )])
             .unwrap();
-        drop(consumer);
         let records = Reader::new(std::fs::File::open(file.path()).unwrap())
             .unwrap()
             .collect::<Result<Vec<_>, _>>()
