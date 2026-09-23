@@ -80,12 +80,19 @@ impl Debug for NominalApiClients {
 
 impl NominalApiClients {
     pub fn from_uri(base_uri: &str) -> Self {
-        let base_uri = base_uri.parse::<url::Url>().unwrap();
-        let streaming = async_conjure_streaming_client(base_uri.clone())
-            .expect("Failed to create streaming client");
-        let services = async_conjure_client("upload-ingest", base_uri)
-            .expect("Failed to create upload/ingest client");
-        Self::from_conjure_clients(streaming, services, &Arc::new(ConjureRuntime::default()))
+        Self::try_from_uri(base_uri).expect("failed to create Nominal clients")
+    }
+
+    /// Construct clients without panicking on an invalid URL or client configuration.
+    pub(crate) fn try_from_uri(base_uri: &str) -> Result<Self, Error> {
+        let base_uri = base_uri.parse::<url::Url>().map_err(Error::internal_safe)?;
+        let streaming = async_conjure_streaming_client(base_uri.clone())?;
+        let services = async_conjure_client("upload-ingest", base_uri)?;
+        Ok(Self::from_conjure_clients(
+            streaming,
+            services,
+            &Arc::new(ConjureRuntime::default()),
+        ))
     }
 
     /// NOTE: the conjure client type is a shared handle, and cheap to clone.
