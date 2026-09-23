@@ -8,50 +8,35 @@ use std::time::Duration;
 use nominal_api::tonic::nominal::direct_channel_writer::v2 as wire;
 use prost::Message;
 
-use super::transport::AttemptError;
 use super::transport::LogTransport;
 use super::*;
 
 struct ScriptedTransport {
     attempts: AtomicUsize,
     failures: usize,
-    retryable: bool,
     requests: Mutex<Vec<wire::WriteBatchesRequest>>,
 }
 
 impl LogTransport for ScriptedTransport {
-    fn send(&self, body: &bytes::Bytes) -> Result<(), AttemptError> {
+    fn send(&self, body: &bytes::Bytes) -> Result<(), String> {
         let request =
             wire::WriteBatchesRequest::decode(zstd::decode_all(body.as_ref()).unwrap().as_slice())
                 .unwrap();
         self.requests.lock().unwrap().push(request);
         if self.attempts.fetch_add(1, Ordering::Relaxed) < self.failures {
-            Err(AttemptError {
-                message: "scripted delivery error".into(),
-                retryable: self.retryable,
-                retry_after: None,
-            })
+            Err("scripted delivery error".into())
         } else {
             Ok(())
         }
     }
 }
 
-fn target(failures: usize, retryable: bool) -> Arc<ScriptedTransport> {
+fn target(failures: usize) -> Arc<ScriptedTransport> {
     Arc::new(ScriptedTransport {
         attempts: AtomicUsize::new(0),
         failures,
-        retryable,
         requests: Mutex::new(Vec::new()),
     })
-}
-
-fn fast_options() -> NominalLogStreamOpts {
-    NominalLogStreamOpts {
-        initial_backoff: Duration::ZERO,
-        max_backoff: Duration::ZERO,
-        ..Default::default()
-    }
 }
 
 fn record(message: &str) -> LogRecord {
@@ -151,12 +136,12 @@ fn byte_and_record_limits_rotate_batches_and_timer_flushes() {
 }
 
 #[test]
-fn confirmed_delivery_retries_then_never_creates_backup() {
+fn confirmed_delivery_never_creates_backup() {
     let dir = tempfile::tempdir().unwrap();
     let backup = dir.path().join("should-not-exist");
-    let transport = target(2, true);
+    let transport = target(0);
     let stream = NominalLogStream::start(
-        fast_options(),
+        NominalLogStreamOpts::default(),
         Some(transport.clone()),
         "dataset".into(),
         Some(backup.clone()),
@@ -167,49 +152,44 @@ fn confirmed_delivery_retries_then_never_creates_backup() {
     let stats = stream.close().unwrap();
     assert_eq!(stats.accepted_records, 2);
     assert_eq!(stats.acknowledged_records, 2);
-    assert_eq!(stats.requests, 3);
-    assert_eq!(stats.retries, 2);
+    assert_eq!(stats.requests, 1);
     assert_eq!(stats.backed_up_records, 0);
     assert!(!backup.exists());
     let requests = transport.requests.lock().unwrap();
-    assert_eq!(requests[0], requests[1]);
-    assert_eq!(requests[1], requests[2]);
+    assert_eq!(requests.len(), 1);
     assert_eq!(requests[0].batches.len(), 2);
     assert!(requests[0].batches.iter().all(|b| b.tags.is_empty()));
 }
 
 #[test]
-fn failed_delivery_preserves_records_and_reports_retry_status() {
-    for (retryable, requests, retries) in [(true, 4, 3), (false, 1, 0)] {
-        let dir = tempfile::tempdir().unwrap();
-        let stream = NominalLogStream::start(
-            fast_options(),
-            Some(target(usize::MAX, retryable)),
-            "dataset".into(),
-            Some(dir.path().into()),
-        )
-        .unwrap();
-        stream.enqueue("a", record("backup")).unwrap();
-        let stats = stream.close().unwrap();
-        assert_eq!(stats.requests, requests);
-        assert_eq!(stats.retries, retries);
-        assert_eq!(stats.backed_up_records, 1);
-        assert_eq!(stats.acknowledged_records, 0);
-        assert_eq!(stats.failed_records, 0);
-        assert_eq!(stats.buffered_bytes, 0);
-        assert!(stats.last_error.is_some());
-    }
+fn failed_delivery_preserves_records_and_reports_delivery_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let stream = NominalLogStream::start(
+        NominalLogStreamOpts::default(),
+        Some(target(usize::MAX)),
+        "dataset".into(),
+        Some(dir.path().into()),
+    )
+    .unwrap();
+    stream.enqueue("a", record("backup")).unwrap();
+    let stats = stream.close().unwrap();
+    assert_eq!(stats.requests, 1);
+    assert_eq!(stats.backed_up_records, 1);
+    assert_eq!(stats.acknowledged_records, 0);
+    assert_eq!(stats.failed_records, 0);
+    assert_eq!(stats.buffered_bytes, 0);
+    assert_eq!(stats.last_error.as_deref(), Some("scripted delivery error"));
 }
 
 #[test]
-fn concurrent_producers_upload_every_record_once_without_retries() {
-    let transport = target(0, false);
+fn concurrent_producers_upload_every_record_once() {
+    let transport = target(0);
     let stream = NominalLogStream::start(
         NominalLogStreamOpts {
             max_records_per_batch: 73,
             max_request_delay: Duration::from_millis(1),
             num_upload_workers: 4,
-            ..fast_options()
+            ..NominalLogStreamOpts::default()
         },
         Some(transport.clone()),
         "dataset".into(),
@@ -231,7 +211,6 @@ fn concurrent_producers_upload_every_record_once_without_retries() {
     let stats = stream.close().unwrap();
     assert_eq!(stats.accepted_records, 4_000);
     assert_eq!(stats.acknowledged_records, 4_000);
-    assert_eq!(stats.retries, 0);
     let mut messages = std::collections::HashSet::new();
     let requests = transport.requests.lock().unwrap();
     for request in requests.iter() {
@@ -256,9 +235,9 @@ fn mixed_delivery_backs_up_only_the_unconfirmed_batch() {
         NominalLogStreamOpts {
             num_upload_workers: 1,
             max_records_per_batch: 1,
-            ..fast_options()
+            ..NominalLogStreamOpts::default()
         },
-        Some(target(1, false)),
+        Some(target(1)),
         "dataset".into(),
         Some(dir.path().into()),
     )
@@ -335,7 +314,7 @@ fn backpressure_counts_inflight_bytes_and_close_wakes_blocked_producer() {
         finish: crossbeam_channel::Receiver<()>,
     }
     impl LogTransport for Blocked {
-        fn send(&self, _body: &bytes::Bytes) -> Result<(), AttemptError> {
+        fn send(&self, _body: &bytes::Bytes) -> Result<(), String> {
             self.started.send(()).unwrap();
             self.finish.recv().unwrap();
             Ok(())
@@ -348,7 +327,7 @@ fn backpressure_counts_inflight_bytes_and_close_wakes_blocked_producer() {
         max_buffered_bytes: 512,
         max_records_per_batch: 1,
         num_upload_workers: 1,
-        ..fast_options()
+        ..NominalLogStreamOpts::default()
     };
     let stream = NominalLogStream::start(
         options,
@@ -387,15 +366,10 @@ fn partial_rescue_keeps_accounting_and_never_overwrites_reserved_arguments() {
     let options = NominalLogStreamOpts {
         max_records_per_batch: 1,
         num_upload_workers: 1,
-        ..fast_options()
+        ..NominalLogStreamOpts::default()
     };
-    let stream = NominalLogStream::start(
-        options,
-        Some(target(usize::MAX, false)),
-        "dataset".into(),
-        None,
-    )
-    .unwrap();
+    let stream =
+        NominalLogStream::start(options, Some(target(usize::MAX)), "dataset".into(), None).unwrap();
     let mut collision = record("real message");
     collision
         .args
@@ -412,56 +386,11 @@ fn partial_rescue_keeps_accounting_and_never_overwrites_reserved_arguments() {
 }
 
 #[test]
-fn exponential_backoff_is_bounded_and_actually_delays_retries() {
-    let transport = target(3, true);
-    let options = NominalLogStreamOpts {
-        initial_backoff: Duration::from_millis(10),
-        max_backoff: Duration::from_millis(20),
-        ..Default::default()
-    };
-    let stream = NominalLogStream::start(options, Some(transport), "dataset".into(), None).unwrap();
-    stream.enqueue("a", record("retry")).unwrap();
-    let start = std::time::Instant::now();
-    let stats = stream.close().unwrap();
-    assert!(start.elapsed() >= Duration::from_millis(50)); // 10 + 20 + 20
-    assert_eq!(stats.requests, 4);
-    assert_eq!(stats.retries, 3);
-    assert_eq!(stats.acknowledged_records, 1);
-}
-
-#[test]
-fn excessive_retry_after_backs_up_without_retrying_early() {
-    struct RateLimited;
-    impl LogTransport for RateLimited {
-        fn send(&self, _: &bytes::Bytes) -> Result<(), AttemptError> {
-            Err(AttemptError {
-                message: "HTTP 429".into(),
-                retryable: true,
-                retry_after: Some(Duration::from_secs(3600)),
-            })
-        }
-    }
-    let dir = tempfile::tempdir().unwrap();
-    let stream = NominalLogStream::start(
-        fast_options(),
-        Some(Arc::new(RateLimited)),
-        "dataset".into(),
-        Some(dir.path().into()),
-    )
-    .unwrap();
-    stream.enqueue("a", record("limited")).unwrap();
-    let stats = stream.close().unwrap();
-    assert_eq!(stats.requests, 1);
-    assert_eq!(stats.retries, 0);
-    assert_eq!(stats.backed_up_records, 1);
-}
-
-#[test]
 fn serialized_limit_splits_unicode_and_arguments_independently_of_memory_budget() {
-    let transport = target(0, true);
+    let transport = target(0);
     let opts = NominalLogStreamOpts {
         max_request_bytes: 512,
-        ..fast_options()
+        ..NominalLogStreamOpts::default()
     };
     let stream =
         NominalLogStream::start(opts, Some(transport.clone()), "fixture".into(), None).unwrap();
@@ -497,10 +426,10 @@ fn serialized_limit_splits_unicode_and_arguments_independently_of_memory_budget(
 
 #[test]
 fn serialized_oversized_singleton_rejects_entire_input() {
-    let transport = target(0, true);
+    let transport = target(0);
     let opts = NominalLogStreamOpts {
         max_request_bytes: 512,
-        ..fast_options()
+        ..NominalLogStreamOpts::default()
     };
     let stream =
         NominalLogStream::start(opts, Some(transport.clone()), "fixture".into(), None).unwrap();
@@ -515,11 +444,11 @@ fn serialized_oversized_singleton_rejects_entire_input() {
 fn admission_reserves_encoding_capacity_before_accepting() {
     let input = record(&"x".repeat(2048));
     let record_only = input.accounted_bytes("a");
-    let transport = target(0, true);
+    let transport = target(0);
     let opts = NominalLogStreamOpts {
         max_batch_bytes: record_only,
         max_buffered_bytes: record_only,
-        ..fast_options()
+        ..NominalLogStreamOpts::default()
     };
     let stream =
         NominalLogStream::start(opts, Some(transport.clone()), "fixture".into(), None).unwrap();
@@ -530,11 +459,11 @@ fn admission_reserves_encoding_capacity_before_accepting() {
 
 #[test]
 fn request_limit_includes_multiple_channels_and_dataset_envelope() {
-    let transport = target(0, true);
+    let transport = target(0);
     let opts = NominalLogStreamOpts {
         max_request_bytes: 512,
         max_request_delay: Duration::from_secs(60),
-        ..fast_options()
+        ..NominalLogStreamOpts::default()
     };
     let stream =
         NominalLogStream::start(opts, Some(transport.clone()), "r".repeat(250), None).unwrap();
@@ -571,11 +500,11 @@ fn encoder_rejects_oversize_before_encoding_and_preserves_roundtrip() {
 fn exactly_full_serialized_batch_dispatches_without_waiting_for_timer() {
     let input = record(&"x".repeat(600));
     let limit = super::batch::RecordSize::new(&input).singleton_len("channel", "fixture");
-    let transport = target(0, true);
+    let transport = target(0);
     let opts = NominalLogStreamOpts {
         max_request_bytes: limit,
         max_request_delay: Duration::from_secs(60),
-        ..fast_options()
+        ..NominalLogStreamOpts::default()
     };
     let stream =
         NominalLogStream::start(opts, Some(transport.clone()), "fixture".into(), None).unwrap();
@@ -595,14 +524,14 @@ fn exactly_full_serialized_batch_dispatches_without_waiting_for_timer() {
 fn panicking_delivery_retains_records_and_flush_returns_error() {
     struct PanickingTransport;
     impl LogTransport for PanickingTransport {
-        fn send(&self, _body: &bytes::Bytes) -> Result<(), AttemptError> {
+        fn send(&self, _body: &bytes::Bytes) -> Result<(), String> {
             panic!("auth provider failed");
         }
     }
 
     let stream = Arc::new(
         NominalLogStream::start(
-            fast_options(),
+            NominalLogStreamOpts::default(),
             Some(Arc::new(PanickingTransport)),
             "fixture".into(),
             None,
@@ -635,10 +564,14 @@ fn panicking_delivery_retains_records_and_flush_returns_error() {
 
 #[test]
 fn channel_writer_merges_common_arguments_with_record_overrides() {
-    let target = target(0, false);
-    let stream =
-        NominalLogStream::start(fast_options(), Some(target.clone()), "fixture".into(), None)
-            .unwrap();
+    let target = target(0);
+    let stream = NominalLogStream::start(
+        NominalLogStreamOpts::default(),
+        Some(target.clone()),
+        "fixture".into(),
+        None,
+    )
+    .unwrap();
     let writer = stream.log_writer("app", HashMap::from([("service".into(), "api".into())]));
     writer.push(1, "started").unwrap();
     writer

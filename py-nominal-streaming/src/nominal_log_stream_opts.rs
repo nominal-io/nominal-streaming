@@ -23,8 +23,7 @@ impl PyNominalLogStreamOpts {
     #[new]
     #[pyo3(signature = (*, max_request_bytes=8*1024*1024, max_batch_bytes=16*1024*1024, max_buffered_bytes=64*1024*1024,
         max_points_per_batch=10_000, max_request_delay_secs=0.25, num_upload_workers=4, num_runtime_workers=2,
-        base_api_url="https://api.gov.nominal.io/api", request_timeout_secs=30.0,
-        max_retries=3, initial_backoff_secs=0.1, max_backoff_secs=5.0, max_retry_after_secs=30.0))]
+        base_api_url="https://api.gov.nominal.io/api"))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         max_request_bytes: usize,
@@ -35,11 +34,6 @@ impl PyNominalLogStreamOpts {
         num_upload_workers: usize,
         num_runtime_workers: usize,
         base_api_url: &str,
-        request_timeout_secs: f64,
-        max_retries: usize,
-        initial_backoff_secs: f64,
-        max_backoff_secs: f64,
-        max_retry_after_secs: f64,
     ) -> PyResult<Self> {
         if num_runtime_workers == 0 {
             return Err(PyValueError::new_err(
@@ -54,11 +48,6 @@ impl PyNominalLogStreamOpts {
         inner.max_request_delay = duration(max_request_delay_secs)?;
         inner.num_upload_workers = num_upload_workers;
         inner.base_api_url = base_api_url.into();
-        inner.request_timeout = duration(request_timeout_secs)?;
-        inner.max_retries = max_retries;
-        inner.initial_backoff = duration(initial_backoff_secs)?;
-        inner.max_backoff = duration(max_backoff_secs)?;
-        inner.max_retry_after = duration(max_retry_after_secs)?;
         Ok(Self {
             num_runtime_workers,
             inner,
@@ -141,58 +130,6 @@ impl PyNominalLogStreamOpts {
         slf.inner.base_api_url = value;
         Ok(slf)
     }
-    #[getter]
-    fn request_timeout_secs(&self) -> f64 {
-        self.inner.request_timeout.as_secs_f64()
-    }
-    fn with_request_timeout_secs(
-        mut slf: PyRefMut<'_, Self>,
-        value: f64,
-    ) -> PyResult<PyRefMut<'_, Self>> {
-        slf.inner.request_timeout = duration(value)?;
-        Ok(slf)
-    }
-    #[getter]
-    fn max_retries(&self) -> usize {
-        self.inner.max_retries
-    }
-    fn with_max_retries(mut slf: PyRefMut<'_, Self>, value: usize) -> PyResult<PyRefMut<'_, Self>> {
-        slf.inner.max_retries = value;
-        Ok(slf)
-    }
-    #[getter]
-    fn initial_backoff_secs(&self) -> f64 {
-        self.inner.initial_backoff.as_secs_f64()
-    }
-    fn with_initial_backoff_secs(
-        mut slf: PyRefMut<'_, Self>,
-        value: f64,
-    ) -> PyResult<PyRefMut<'_, Self>> {
-        slf.inner.initial_backoff = duration(value)?;
-        Ok(slf)
-    }
-    #[getter]
-    fn max_backoff_secs(&self) -> f64 {
-        self.inner.max_backoff.as_secs_f64()
-    }
-    fn with_max_backoff_secs(
-        mut slf: PyRefMut<'_, Self>,
-        value: f64,
-    ) -> PyResult<PyRefMut<'_, Self>> {
-        slf.inner.max_backoff = duration(value)?;
-        Ok(slf)
-    }
-    #[getter]
-    fn max_retry_after_secs(&self) -> f64 {
-        self.inner.max_retry_after.as_secs_f64()
-    }
-    fn with_max_retry_after_secs(
-        mut slf: PyRefMut<'_, Self>,
-        value: f64,
-    ) -> PyResult<PyRefMut<'_, Self>> {
-        slf.inner.max_retry_after = duration(value)?;
-        Ok(slf)
-    }
     fn with_num_runtime_workers(
         mut slf: PyRefMut<'_, Self>,
         value: usize,
@@ -216,6 +153,6 @@ impl PyNominalLogStreamOpts {
 
 impl std::fmt::Display for PyNominalLogStreamOpts {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "PyNominalLogStreamOpts(max_request_bytes={}, max_batch_bytes={}, max_buffered_bytes={}, max_points_per_batch={}, max_request_delay_secs={}, num_upload_workers={}, base_api_url={:?}, request_timeout_secs={}, max_retries={}, initial_backoff_secs={}, max_backoff_secs={}, max_retry_after_secs={}, num_runtime_workers={})", self.inner.max_request_bytes, self.inner.max_batch_bytes, self.inner.max_buffered_bytes, self.inner.max_records_per_batch, self.inner.max_request_delay.as_secs_f64(), self.inner.num_upload_workers, self.inner.base_api_url.clone(), self.inner.request_timeout.as_secs_f64(), self.inner.max_retries, self.inner.initial_backoff.as_secs_f64(), self.inner.max_backoff.as_secs_f64(), self.inner.max_retry_after.as_secs_f64(), self.num_runtime_workers)
+        write!(f, "PyNominalLogStreamOpts(max_request_bytes={}, max_batch_bytes={}, max_buffered_bytes={}, max_points_per_batch={}, max_request_delay_secs={}, num_upload_workers={}, base_api_url={:?}, num_runtime_workers={})", self.inner.max_request_bytes, self.inner.max_batch_bytes, self.inner.max_buffered_bytes, self.inner.max_records_per_batch, self.inner.max_request_delay.as_secs_f64(), self.inner.num_upload_workers, self.inner.base_api_url.clone(), self.num_runtime_workers)
     }
 }

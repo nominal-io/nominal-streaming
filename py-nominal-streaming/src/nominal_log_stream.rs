@@ -24,8 +24,8 @@ pub struct PyLogStreamStats {
     acknowledged_records: u64,
     backed_up_records: u64,
     failed_records: u64,
+    /// Logical upload requests, counting transport retries within the same request.
     requests: u64,
-    retries: u64,
     buffered_bytes: usize,
     last_error: Option<String>,
 }
@@ -37,7 +37,6 @@ impl From<LogStreamStats> for PyLogStreamStats {
             backed_up_records: s.backed_up_records,
             failed_records: s.failed_records,
             requests: s.requests,
-            retries: s.retries,
             buffered_bytes: s.buffered_bytes,
             last_error: s.last_error,
         }

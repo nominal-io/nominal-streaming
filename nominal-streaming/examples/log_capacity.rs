@@ -198,7 +198,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let s = monitor_stream.stats();
             println!(
                 "{}",
-                json!({"kind":"progress", "seconds":started.elapsed().as_secs_f64(), "accepted":s.accepted_records,"acknowledged":s.acknowledged_records,"requests":s.requests,"retries":s.retries,"buffered_bytes":s.buffered_bytes})
+                json!({"kind":"progress", "seconds":started.elapsed().as_secs_f64(), "accepted":s.accepted_records,"acknowledged":s.acknowledged_records,"requests":s.requests,"buffered_bytes":s.buffered_bytes})
             );
             std::thread::sleep(Duration::from_millis(500));
         }
@@ -223,7 +223,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             break;
         }
         let s = stream.stats();
-        if s.backed_up_records > 0 || s.failed_records > 0 || s.retries > 0 {
+        if s.backed_up_records > 0 || s.failed_records > 0 {
             input_error = Some("stopped producer after delivery pressure".into());
             break;
         }
@@ -236,7 +236,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let s = stream.stats();
     println!(
         "{}",
-        json!({"kind":"result","run":run,"phase":phase,"base_ns":base,"configured_records":count,"enqueue_chunk":enqueue_chunk,"policy":policy,"max_request_bytes":request_bytes,"flush_delay_ms":flush_delay_ms,"simple_message_bytes":simple_message_bytes,"extra_args":extra_args,"extra_message_bytes":extra_message_bytes,"batch_records":batch,"workers":workers,"max_batch_bytes":batch_bytes,"max_buffered_bytes":buffer_bytes,"producer_seconds":producer_seconds,"total_seconds":total_seconds,"drain_seconds":total_seconds-producer_seconds,"ack_per_second":s.acknowledged_records as f64/total_seconds,"requests_per_second":s.requests as f64/total_seconds,"accepted":s.accepted_records,"acknowledged":s.acknowledged_records,"backed_up":s.backed_up_records,"failed":s.failed_records,"requests":s.requests,"retries":s.retries,"buffered_bytes":s.buffered_bytes,"last_error":s.last_error,"input_error":input_error,"close_error":close_error})
+        json!({"kind":"result","run":run,"phase":phase,"base_ns":base,"configured_records":count,"enqueue_chunk":enqueue_chunk,"policy":policy,"max_request_bytes":request_bytes,"flush_delay_ms":flush_delay_ms,"simple_message_bytes":simple_message_bytes,"extra_args":extra_args,"extra_message_bytes":extra_message_bytes,"batch_records":batch,"workers":workers,"max_batch_bytes":batch_bytes,"max_buffered_bytes":buffer_bytes,"producer_seconds":producer_seconds,"total_seconds":total_seconds,"drain_seconds":total_seconds-producer_seconds,"ack_per_second":s.acknowledged_records as f64/total_seconds,"requests_per_second":s.requests as f64/total_seconds,"accepted":s.accepted_records,"acknowledged":s.acknowledged_records,"backed_up":s.backed_up_records,"failed":s.failed_records,"requests":s.requests,"buffered_bytes":s.buffered_bytes,"last_error":s.last_error,"input_error":input_error,"close_error":close_error})
     );
     if s.acknowledged_records != count as u64 || input_error.is_some() || close_error.is_some() {
         std::process::exit(2);

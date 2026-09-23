@@ -132,7 +132,9 @@ can limit the overall streaming improvement.
 `NominalLogStream` sends timestamped string messages and per-record string arguments to
 an existing dataset's log channel. It uses bounded native buffering: enqueue blocks
 when the byte budget is full, while releasing the Python GIL. Individual writes are
-automatically batched into requests by Rust.
+automatically batched into requests by Rust. Uploads use the same HTTP transport and
+retry policy as time series streaming; `stats().requests` counts logical uploads,
+including any transport retries within each upload.
 
 ```python
 import os
