@@ -339,38 +339,29 @@ fn points_to_avro(points: Option<&Points>) -> ConsumerResult<(Vec<Value>, Vec<Va
     };
 
     match points {
-        PointsType::DoublePoints(DoublePoints { points }) => points
-            .iter()
-            .map(|point| {
-                Ok((
-                    convert_timestamp_to_nanoseconds(point.timestamp)?,
-                    Value::Union(0, Box::new(Value::Double(point.value))),
-                ))
-            })
-            .collect(),
-        PointsType::StringPoints(StringPoints { points }) => points
-            .iter()
-            .map(|point| {
-                Ok((
-                    convert_timestamp_to_nanoseconds(point.timestamp)?,
-                    Value::Union(1, Box::new(Value::String(point.value.clone()))),
-                ))
-            })
-            .collect(),
-        PointsType::IntegerPoints(IntegerPoints { points }) => points
-            .iter()
-            .map(|point| {
+        PointsType::DoublePoints(DoublePoints { points }) => collect_avro_points(points, |point| {
+            Ok((
+                convert_timestamp_to_nanoseconds(point.timestamp)?,
+                Value::Union(0, Box::new(Value::Double(point.value))),
+            ))
+        }),
+        PointsType::StringPoints(StringPoints { points }) => collect_avro_points(points, |point| {
+            Ok((
+                convert_timestamp_to_nanoseconds(point.timestamp)?,
+                Value::Union(1, Box::new(Value::String(point.value.clone()))),
+            ))
+        }),
+        PointsType::IntegerPoints(IntegerPoints { points }) => {
+            collect_avro_points(points, |point| {
                 Ok((
                     convert_timestamp_to_nanoseconds(point.timestamp)?,
                     Value::Union(2, Box::new(Value::Long(point.value))),
                 ))
             })
-            .collect(),
+        }
         PointsType::ArrayPoints(ArrayPoints { array_type }) => match array_type {
-            Some(ArrayType::DoubleArrayPoints(points)) => points
-                .points
-                .iter()
-                .map(|point| {
+            Some(ArrayType::DoubleArrayPoints(points)) => {
+                collect_avro_points(&points.points, |point| {
                     let array_values: Vec<Value> =
                         point.value.iter().map(|v| Value::Double(*v)).collect();
                     let record =
@@ -380,11 +371,9 @@ fn points_to_avro(points: Option<&Points>) -> ConsumerResult<(Vec<Value>, Vec<Va
                         Value::Union(3, Box::new(record)),
                     ))
                 })
-                .collect(),
-            Some(ArrayType::StringArrayPoints(points)) => points
-                .points
-                .iter()
-                .map(|point| {
+            }
+            Some(ArrayType::StringArrayPoints(points)) => {
+                collect_avro_points(&points.points, |point| {
                     let array_values: Vec<Value> = point
                         .value
                         .iter()
@@ -397,32 +386,41 @@ fn points_to_avro(points: Option<&Points>) -> ConsumerResult<(Vec<Value>, Vec<Va
                         Value::Union(4, Box::new(record)),
                     ))
                 })
-                .collect(),
+            }
             None => Ok((Vec::new(), Vec::new())),
         },
-        PointsType::StructPoints(StructPoints { points }) => points
-            .iter()
-            .map(|point| {
-                let record = Value::Record(vec![(
-                    "json".to_string(),
-                    Value::String(point.json_string.clone()),
-                )]);
-                Ok((
-                    convert_timestamp_to_nanoseconds(point.timestamp)?,
-                    Value::Union(5, Box::new(record)),
-                ))
-            })
-            .collect(),
-        PointsType::Uint64Points(Uint64Points { points }) => points
-            .iter()
-            .map(|point| {
-                Ok((
-                    convert_timestamp_to_nanoseconds(point.timestamp)?,
-                    Value::Union(2, Box::new(Value::Long(point.value as i64))),
-                ))
-            })
-            .collect(),
+        PointsType::StructPoints(StructPoints { points }) => collect_avro_points(points, |point| {
+            let record = Value::Record(vec![(
+                "json".to_string(),
+                Value::String(point.json_string.clone()),
+            )]);
+            Ok((
+                convert_timestamp_to_nanoseconds(point.timestamp)?,
+                Value::Union(5, Box::new(record)),
+            ))
+        }),
+        PointsType::Uint64Points(Uint64Points { points }) => collect_avro_points(points, |point| {
+            Ok((
+                convert_timestamp_to_nanoseconds(point.timestamp)?,
+                Value::Union(2, Box::new(Value::Long(point.value as i64))),
+            ))
+        }),
     }
+}
+
+fn collect_avro_points<T>(
+    points: &[T],
+    convert: impl Fn(&T) -> ConsumerResult<(Value, Value)>,
+) -> ConsumerResult<(Vec<Value>, Vec<Value>)> {
+    // Fallible collection loses the exact size hint; allocate both columns once.
+    let mut timestamps = Vec::with_capacity(points.len());
+    let mut values = Vec::with_capacity(points.len());
+    for point in points {
+        let (timestamp, value) = convert(point)?;
+        timestamps.push(timestamp);
+        values.push(value);
+    }
+    Ok((timestamps, values))
 }
 
 fn convert_timestamp_to_nanoseconds(timestamp: Option<Timestamp>) -> ConsumerResult<Value> {
