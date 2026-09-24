@@ -221,6 +221,12 @@ impl IntoTimestamp for Duration {
 }
 
 impl<T: chrono::TimeZone> IntoTimestamp for chrono::DateTime<T> {
+    fn try_into_timestamp(self) -> Result<Timestamp, TimestampError> {
+        self.timestamp_nanos_opt()
+            .map(IntoTimestamp::into_timestamp)
+            .ok_or(TimestampError::OutOfRange)
+    }
+
     fn into_timestamp(self) -> Timestamp {
         Timestamp {
             seconds: self.timestamp(),
@@ -230,6 +236,11 @@ impl<T: chrono::TimeZone> IntoTimestamp for chrono::DateTime<T> {
 }
 
 impl IntoTimestamp for i64 {
+    fn try_into_timestamp(self) -> Result<Timestamp, TimestampError> {
+        // Every i64 is already a valid signed nanosecond count.
+        Ok(self.into_timestamp())
+    }
+
     fn into_timestamp(self) -> Timestamp {
         Timestamp {
             seconds: self.div_euclid(NANOS_PER_SECOND),
@@ -252,6 +263,10 @@ mod tests {
             let timestamp = nanos.try_into_timestamp().unwrap();
             assert!((0..1_000_000_000).contains(&timestamp.nanos));
             assert_eq!(timestamp_nanos(Some(timestamp)), Ok(nanos));
+            let datetime =
+                chrono::DateTime::from_timestamp(timestamp.seconds, timestamp.nanos as u32)
+                    .unwrap();
+            assert_eq!(datetime.try_into_timestamp(), Ok(timestamp));
         }
     }
 

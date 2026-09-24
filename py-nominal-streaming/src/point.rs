@@ -19,17 +19,10 @@ use pyo3::types::PyTuple;
 
 pyo3::create_exception!(_nominal_streaming, _TimestampTypeError, PyTypeError);
 
-/// Convert a integral nanosecond timestamp into google.protobuf.Timestamp.
-pub fn parse_timestamp(timestamp: i64) -> Timestamp {
-    let seconds = timestamp.div_euclid(1_000_000_000);
-    let nanos = timestamp.rem_euclid(1_000_000_000) as i32;
-    Timestamp { seconds, nanos }
-}
-
 pub fn extract_timestamp(timestamp: &Bound<'_, PyAny>) -> PyResult<Timestamp> {
     timestamp
         .extract::<i64>()
-        .map(parse_timestamp)
+        .map(IntoTimestamp::into_timestamp)
         .map_err(|error| timestamp_extraction_error(timestamp.py(), error))
 }
 
@@ -286,7 +279,10 @@ pub fn extract_series_points(
 }
 
 pub fn extract_vec_ts(timestamps: Vec<i64>) -> Vec<Timestamp> {
-    timestamps.into_iter().map(parse_timestamp).collect()
+    timestamps
+        .into_iter()
+        .map(IntoTimestamp::into_timestamp)
+        .collect()
 }
 
 /// Distinguish timestamp extraction failures from value errors in the Python wrapper.

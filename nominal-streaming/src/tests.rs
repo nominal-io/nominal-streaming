@@ -808,6 +808,8 @@ fn invalid_timestamps_reject_batches_before_buffering() {
             writer.push(Duration::from_secs(u64::MAX), 1),
             Err(TimestampError::OutOfRange)
         );
+        let too_late = chrono::DateTime::from_timestamp(10_000_000_000, 0).unwrap();
+        assert_eq!(writer.push(too_late, 1), Err(TimestampError::OutOfRange));
         writer.push(-1_i64, 42).unwrap();
     }
     drop(stream);
