@@ -23,7 +23,7 @@ values are supported, including the full `i64` range when writing Avro files.
 Invalid timestamps reject the whole submitted batch before any points are buffered.
 Raw protobuf timestamps must be present and have nanos in `0..1_000_000_000`.
 The backend can still reject data after enqueue succeeds; this validates client input,
-not delivery. Python accepts signed nanoseconds and raises `ValueError` outside that range.
+not delivery. Python accepts signed nanoseconds and raises `OverflowError` outside that range.
 
 ## Conceptual overview
 

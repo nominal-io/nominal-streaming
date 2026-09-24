@@ -281,11 +281,11 @@ impl PyNominalDatasetStream {
         &self,
         py: Python<'_>,
         channel_name: &str,
-        timestamp: &Bound<'_, PyAny>,
+        timestamp: i64,
         value: &Bound<'_, PyAny>,
         tags: Option<HashMap<String, String>>,
     ) -> PyResult<()> {
-        let ts = extract_timestamp(timestamp)?;
+        let ts = timestamp.into_timestamp();
         let ch = description_with_tags(channel_name, tags);
         self.push_one(py, ch, extract_single_points(ts, value)?)
     }
@@ -308,11 +308,11 @@ impl PyNominalDatasetStream {
     pub fn enqueue_from_dict(
         &self,
         py: Python<'_>,
-        timestamp: &Bound<'_, PyAny>,
+        timestamp: i64,
         channel_values: &Bound<'_, PyDict>,
         tags: Option<HashMap<String, String>>,
     ) -> PyResult<()> {
-        let ts = extract_timestamp(timestamp)?;
+        let ts = timestamp.into_timestamp();
         let start = self
             .builder
             .opts
@@ -335,17 +335,16 @@ impl PyNominalDatasetStream {
         self.push_many(py, entries)?;
         if let Some(start) = start {
             let end = std::time::UNIX_EPOCH.elapsed().unwrap().as_nanos() as i128;
-            let timestamp_nanos = i128::from(ts.seconds) * 1_000_000_000 + i128::from(ts.nanos);
             self.push_many(
                 py,
                 vec![
                     (
                         ChannelDescriptor::new(ENQUE_DICT_START_STALENESS),
-                        single_double(ts, (start - timestamp_nanos) as f64 / 1e9),
+                        single_double(ts, (start - i128::from(timestamp)) as f64 / 1e9),
                     ),
                     (
                         ChannelDescriptor::new(ENQUE_DICT_END_STALENESS),
-                        single_double(ts, (end - timestamp_nanos) as f64 / 1e9),
+                        single_double(ts, (end - i128::from(timestamp)) as f64 / 1e9),
                     ),
                 ],
             )?;
@@ -361,7 +360,7 @@ impl PyNominalDatasetStream {
         &self,
         py: Python<'_>,
         channel_name: &str,
-        timestamp: &Bound<'_, PyAny>,
+        timestamp: i64,
         value: &Bound<'_, PyAny>,
         tags: Option<HashMap<String, String>>,
     ) -> PyResult<()> {
@@ -369,7 +368,7 @@ impl PyNominalDatasetStream {
         kwargs.set_item("allow_nan", false)?;
         let json_string: String = json_dumps(py)?.call((value,), Some(&kwargs))?.extract()?;
 
-        let ts = extract_timestamp(timestamp)?;
+        let ts = timestamp.into_timestamp();
         let ch = description_with_tags(channel_name, tags);
         self.push_one(py, ch, single_struct(ts, json_string))
     }
@@ -382,11 +381,11 @@ impl PyNominalDatasetStream {
         &self,
         py: Python<'_>,
         channel_name: &str,
-        timestamp: &Bound<'_, PyAny>,
+        timestamp: i64,
         value: Vec<f64>,
         tags: Option<HashMap<String, String>>,
     ) -> PyResult<()> {
-        let ts = extract_timestamp(timestamp)?;
+        let ts = timestamp.into_timestamp();
         let ch = description_with_tags(channel_name, tags);
         self.push_one(py, ch, single_double_array(ts, value))
     }
@@ -399,11 +398,11 @@ impl PyNominalDatasetStream {
         &self,
         py: Python<'_>,
         channel_name: &str,
-        timestamp: &Bound<'_, PyAny>,
+        timestamp: i64,
         value: Vec<String>,
         tags: Option<HashMap<String, String>>,
     ) -> PyResult<()> {
-        let ts = extract_timestamp(timestamp)?;
+        let ts = timestamp.into_timestamp();
         let ch = description_with_tags(channel_name, tags);
         self.push_one(py, ch, single_string_array(ts, value))
     }

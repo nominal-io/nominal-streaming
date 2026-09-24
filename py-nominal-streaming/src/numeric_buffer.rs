@@ -3,7 +3,7 @@
 use pyo3::buffer::Element;
 use pyo3::buffer::ElementType;
 use pyo3::buffer::PyUntypedBuffer;
-use pyo3::exceptions::PyValueError;
+use pyo3::exceptions::PyOverflowError;
 use pyo3::prelude::*;
 use pyo3::sync::PyOnceLock;
 use pyo3::types::PyType;
@@ -66,7 +66,7 @@ pub fn timestamps(values: &Bound<'_, PyAny>) -> PyResult<Option<Vec<i64>>> {
                 .into_iter()
                 .map(|v| {
                     i64::try_from(v).map_err(|_| {
-                        PyValueError::new_err(
+                        PyOverflowError::new_err(
                             "timestamp exceeds the signed 64-bit nanosecond range",
                         )
                     })

@@ -19,21 +19,6 @@ use pyo3::types::PyTuple;
 
 pyo3::create_exception!(_nominal_streaming, _TimestampTypeError, PyTypeError);
 
-pub fn extract_timestamp(timestamp: &Bound<'_, PyAny>) -> PyResult<Timestamp> {
-    timestamp
-        .extract::<i64>()
-        .map(IntoTimestamp::into_timestamp)
-        .map_err(|error| timestamp_extraction_error(timestamp.py(), error))
-}
-
-fn timestamp_extraction_error(py: Python<'_>, error: PyErr) -> PyErr {
-    if error.is_instance_of::<pyo3::exceptions::PyOverflowError>(py) {
-        PyValueError::new_err("timestamp exceeds the signed 64-bit nanosecond range")
-    } else {
-        error
-    }
-}
-
 /// Convert python tags into the descriptor's tag representation.
 ///
 /// Absent and empty tags both become `None` so that the same channel written with `tags=None` and
@@ -297,7 +282,7 @@ pub fn extract_timestamp_input(values: &Bound<'_, PyAny>) -> PyResult<Vec<i64>> 
             timestamp_error.set_cause(values.py(), Some(error));
             timestamp_error
         } else {
-            timestamp_extraction_error(values.py(), error)
+            error
         }
     })
 }

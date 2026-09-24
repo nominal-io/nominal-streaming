@@ -372,7 +372,7 @@ class PyNominalDatasetStream:
 
         Raises:
             RuntimeError: If the stream is not open or is shutting down.
-            ValueError: If a timestamp is outside the signed 64-bit nanosecond range.
+            OverflowError: If a timestamp is outside the signed 64-bit nanosecond range.
             TypeError: If `value` is not an `int`, `float`, or `str`.
         """
 
@@ -415,7 +415,7 @@ class PyNominalDatasetStream:
             RuntimeError: If the stream is not open or is shutting down.
             TypeError: If timestamps or values cannot be converted, including
                 unsupported mixtures of strings and numbers.
-            ValueError: If a timestamp is outside the signed 64-bit nanosecond range.
+            OverflowError: If a timestamp is outside the signed 64-bit nanosecond range.
             ValueError: If values are empty or the input lengths differ.
         """
 
@@ -434,7 +434,7 @@ class PyNominalDatasetStream:
 
         Raises:
             RuntimeError: If the stream is not open or is shutting down.
-            ValueError: If a timestamp is outside the signed 64-bit nanosecond range.
+            OverflowError: If a timestamp is outside the signed 64-bit nanosecond range.
             TypeError: If any value is not an `int`, `float`, or `str`.
         """
 
@@ -459,7 +459,7 @@ class PyNominalDatasetStream:
 
         Raises:
             RuntimeError: If the stream is not open or is shutting down.
-            ValueError: If a timestamp is outside the signed 64-bit nanosecond range.
+            OverflowError: If a timestamp is outside the signed 64-bit nanosecond range.
             TypeError: If `value` contains a non-JSON-native element.
             ValueError: If `value` contains NaN, infinity, or a circular reference.
         """
@@ -484,7 +484,7 @@ class PyNominalDatasetStream:
         Raises:
             RuntimeError: If the stream is not open or is shutting down.
             TypeError: If an element cannot be converted to a double.
-            ValueError: If a timestamp is outside the signed 64-bit nanosecond range.
+            OverflowError: If a timestamp is outside the signed 64-bit nanosecond range.
         """
 
     def enqueue_string_array(
@@ -505,7 +505,7 @@ class PyNominalDatasetStream:
         Raises:
             RuntimeError: If the stream is not open or is shutting down.
             TypeError: If an element is not a string.
-            ValueError: If a timestamp is outside the signed 64-bit nanosecond range.
+            OverflowError: If a timestamp is outside the signed 64-bit nanosecond range.
         """
 
     def __enter__(self) -> Self:

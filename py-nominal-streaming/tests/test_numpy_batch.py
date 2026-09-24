@@ -175,17 +175,17 @@ class BatchTests(unittest.TestCase):
 
     def test_out_of_range_timestamps_are_rejected(self):
         for timestamps in (np.array([0, 2**63], dtype="uint64"), [0, 2**63], [0, -(2**63) - 1]):
-            with self.subTest(timestamps=timestamps), self.assertRaises(ValueError):
+            with self.subTest(timestamps=timestamps), self.assertRaises(OverflowError):
                 self.stream.enqueue_batch("invalid", timestamps, [1.0, 2.0])
         for timestamp in (2**63, -(2**63) - 1):
-            with self.assertRaises(ValueError):
+            with self.assertRaises(OverflowError):
                 self.stream.enqueue("invalid", timestamp, 1.0)
         self.stream.enqueue("valid", -1, 42.0)
         self.assertEqual(set(self.records()), {"valid"})
 
     def test_invalid_batch_never_writes_partial_points(self):
         cases = {
-            "overflow": ([0, 2**64], [1.0, 2.0], ValueError),
+            "overflow": ([0, 2**64], [1.0, 2.0], OverflowError),
             "length": (np.array([0, 1], dtype="uint64"), np.array([1.0]), ValueError),
             "empty": (np.array([], dtype="uint64"), np.array([], dtype="float64"), ValueError),
             "bad_last_value": ([0, 1], [1.0, object()], TypeError),
