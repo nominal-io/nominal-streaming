@@ -48,9 +48,9 @@ use crate::consumer::WriteRequestConsumer;
 use crate::listener::LoggingListener;
 use crate::types::validate_points;
 use crate::types::ChannelDescriptor;
+use crate::types::EnqueueError;
 use crate::types::IntoPoints;
 use crate::types::IntoTimestamp;
-use crate::types::TimestampError;
 
 /// Configuration for a [`NominalDatasetStream`].
 ///
@@ -507,7 +507,7 @@ impl NominalDatasetStream {
         &self,
         channel_descriptor: &ChannelDescriptor,
         new_points: impl IntoPoints,
-    ) -> Result<(), TimestampError> {
+    ) -> Result<(), EnqueueError> {
         let new_points = new_points.into_points();
         validate_points(&new_points)?;
         let new_count = points_len(&new_points);
@@ -533,7 +533,7 @@ impl NominalDatasetStream {
     pub fn enqueue_many(
         &self,
         entries: Vec<(ChannelDescriptor, PointsType)>,
-    ) -> Result<(), TimestampError> {
+    ) -> Result<(), EnqueueError> {
         for (_, points) in &entries {
             validate_points(points)?;
         }
@@ -676,11 +676,7 @@ pub struct NominalDoubleWriter<'ds> {
 }
 
 impl NominalDoubleWriter<'_> {
-    pub fn push(
-        &mut self,
-        timestamp: impl IntoTimestamp,
-        value: f64,
-    ) -> Result<(), TimestampError> {
+    pub fn push(&mut self, timestamp: impl IntoTimestamp, value: f64) -> Result<(), EnqueueError> {
         self.writer.push_point(DoublePoint {
             timestamp: Some(timestamp.try_into_timestamp()?),
             value,
@@ -694,11 +690,7 @@ pub struct NominalIntegerWriter<'ds> {
 }
 
 impl NominalIntegerWriter<'_> {
-    pub fn push(
-        &mut self,
-        timestamp: impl IntoTimestamp,
-        value: i64,
-    ) -> Result<(), TimestampError> {
+    pub fn push(&mut self, timestamp: impl IntoTimestamp, value: i64) -> Result<(), EnqueueError> {
         self.writer.push_point(IntegerPoint {
             timestamp: Some(timestamp.try_into_timestamp()?),
             value,
@@ -712,11 +704,7 @@ pub struct NominalUint64Writer<'ds> {
 }
 
 impl NominalUint64Writer<'_> {
-    pub fn push(
-        &mut self,
-        timestamp: impl IntoTimestamp,
-        value: u64,
-    ) -> Result<(), TimestampError> {
+    pub fn push(&mut self, timestamp: impl IntoTimestamp, value: u64) -> Result<(), EnqueueError> {
         self.writer.push_point(Uint64Point {
             timestamp: Some(timestamp.try_into_timestamp()?),
             value,
@@ -734,7 +722,7 @@ impl NominalStringWriter<'_> {
         &mut self,
         timestamp: impl IntoTimestamp,
         value: impl Into<String>,
-    ) -> Result<(), TimestampError> {
+    ) -> Result<(), EnqueueError> {
         self.writer.push_point(StringPoint {
             timestamp: Some(timestamp.try_into_timestamp()?),
             value: value.into(),
@@ -752,7 +740,7 @@ impl NominalStructWriter<'_> {
         &mut self,
         timestamp: impl IntoTimestamp,
         value: impl Into<String>,
-    ) -> Result<(), TimestampError> {
+    ) -> Result<(), EnqueueError> {
         self.writer.push_point(StructPoint {
             timestamp: Some(timestamp.try_into_timestamp()?),
             json_string: value.into(),
@@ -770,7 +758,7 @@ impl NominalDoubleArrayWriter<'_> {
         &mut self,
         timestamp: impl IntoTimestamp,
         value: Vec<f64>,
-    ) -> Result<(), TimestampError> {
+    ) -> Result<(), EnqueueError> {
         self.writer.push_point(DoubleArrayPoint {
             timestamp: Some(timestamp.try_into_timestamp()?),
             value,
@@ -788,7 +776,7 @@ impl NominalStringArrayWriter<'_> {
         &mut self,
         timestamp: impl IntoTimestamp,
         value: impl IntoIterator<Item = impl Into<String>>,
-    ) -> Result<(), TimestampError> {
+    ) -> Result<(), EnqueueError> {
         self.writer.push_point(StringArrayPoint {
             timestamp: Some(timestamp.try_into_timestamp()?),
             value: value.into_iter().map(Into::into).collect(),

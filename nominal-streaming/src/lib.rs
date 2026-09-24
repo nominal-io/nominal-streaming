@@ -19,7 +19,7 @@ This library is still under active development and may make breaking changes.
 Timestamps must fit in signed 64-bit nanoseconds since the Unix epoch. Negative
 values are supported, including the full `i64` range when writing Avro files.
 `enqueue`, `enqueue_many`, and typed writer `push` methods return
-`Result<(), TimestampError>`; handle the result with `?` or explicitly check it.
+`Result<(), EnqueueError>`; handle the result with `?` or explicitly check it.
 Invalid timestamps reject the whole submitted batch before any points are buffered.
 Raw protobuf timestamps must be present and have nanos in `0..1_000_000_000`.
 The backend can still reject data after enqueue succeeds; this validates client input,
@@ -232,6 +232,7 @@ pub mod prelude {
     pub use crate::stream::NominalStreamOpts;
     pub use crate::types::AuthProvider;
     pub use crate::types::ChannelDescriptor;
+    pub use crate::types::EnqueueError;
     pub use crate::types::IntoTimestamp;
     pub use crate::types::TimestampError;
 }

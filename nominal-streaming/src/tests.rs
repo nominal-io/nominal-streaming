@@ -790,7 +790,7 @@ fn invalid_timestamps_reject_batches_before_buffering() {
     };
     assert_eq!(
         stream.enqueue(&channel, vec![point(None)]),
-        Err(TimestampError::Missing)
+        Err(EnqueueError::InvalidTimestamp(TimestampError::Missing))
     );
     assert_eq!(
         stream.enqueue_many(vec![
@@ -800,16 +800,19 @@ fn invalid_timestamps_reject_batches_before_buffering() {
             ),
             (channel.clone(), vec![point(None)].into_points()),
         ]),
-        Err(TimestampError::Missing)
+        Err(EnqueueError::InvalidTimestamp(TimestampError::Missing))
     );
     {
         let mut writer = stream.integer_writer(channel.clone());
         assert_eq!(
             writer.push(Duration::from_secs(u64::MAX), 1),
-            Err(TimestampError::OutOfRange)
+            Err(EnqueueError::InvalidTimestamp(TimestampError::OutOfRange))
         );
         let too_late = chrono::DateTime::from_timestamp(10_000_000_000, 0).unwrap();
-        assert_eq!(writer.push(too_late, 1), Err(TimestampError::OutOfRange));
+        assert_eq!(
+            writer.push(too_late, 1),
+            Err(EnqueueError::InvalidTimestamp(TimestampError::OutOfRange))
+        );
         writer.push(-1_i64, 42).unwrap();
     }
     drop(stream);

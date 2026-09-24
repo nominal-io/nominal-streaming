@@ -135,7 +135,15 @@ impl IntoPoints for Vec<StringArrayPoint> {
     }
 }
 
-/// A timestamp that cannot be queued or represented as signed nanoseconds.
+/// A submission rejected before any of its points were buffered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum EnqueueError {
+    #[error("invalid timestamp: {0}")]
+    InvalidTimestamp(#[from] TimestampError),
+}
+
+/// A timestamp that cannot be represented as canonical signed nanoseconds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum TimestampError {
     #[error("missing timestamp")]
