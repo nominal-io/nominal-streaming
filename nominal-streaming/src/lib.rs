@@ -14,6 +14,17 @@ It also provides configuration to manage the tradeoff between above listed conce
 This library is still under active development and may make breaking changes.
 </div>
 
+## Timestamps and rejected input
+
+Timestamps must fit in signed 64-bit nanoseconds since the Unix epoch. Negative
+values are supported, including the full `i64` range when writing Avro files.
+`enqueue`, `enqueue_many`, and typed writer `push` methods return
+`Result<(), EnqueueError>`; handle the result with `?` or explicitly check it.
+Invalid timestamps reject the whole submitted batch before any points are buffered.
+Raw protobuf timestamps must be present and have nanos in `0..1_000_000_000`.
+The backend can still reject data after enqueue succeeds; this validates client input,
+not delivery. Python accepts signed nanoseconds and raises `OverflowError` outside that range.
+
 ## Conceptual overview
 
 Data is sent to a [Stream](https://docs.rs/nominal-streaming/latest/nominal_streaming/stream/struct.NominalDatasetStream.html) via a Writer.
@@ -61,7 +72,7 @@ let mut writer = stream.double_writer(channel_descriptor);
 // Stream single data point
 let start_time = UNIX_EPOCH.elapsed().unwrap();
 let value: f64 = 123;
-writer.push(start_time, value);
+writer.push(start_time, value).unwrap();
 ```
 
 Here, we are enqueuing data onto Channel 1, with tags "name" and "batch".
@@ -121,7 +132,7 @@ async fn async_main() {
     for i in 0..100_000 {
         let start_time = UNIX_EPOCH.elapsed().unwrap();
         let value = i % 50;
-        writer.push(start_time, value as f64);
+        writer.push(start_time, value as f64).unwrap();
     }
 }
 ```
@@ -221,7 +232,9 @@ pub mod prelude {
     pub use crate::stream::NominalStreamOpts;
     pub use crate::types::AuthProvider;
     pub use crate::types::ChannelDescriptor;
+    pub use crate::types::EnqueueError;
     pub use crate::types::IntoTimestamp;
+    pub use crate::types::TimestampError;
 }
 
 #[cfg(test)]
