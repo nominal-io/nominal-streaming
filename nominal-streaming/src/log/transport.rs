@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
 use bytes::Bytes;
-use conjure_http::client::ConjureRuntime;
 use conjure_object::BearerToken;
 use conjure_object::ResourceIdentifier;
 use nominal_api::tonic::nominal::direct_channel_writer::v2 as wire;
@@ -10,7 +9,6 @@ use prost::Message;
 use super::LogStreamError;
 use super::NominalLogStreamOpts;
 use crate::client::NominalApiClients;
-use crate::client::WriteRequest;
 use crate::client::{self};
 
 type TokenProvider = Arc<dyn Fn() -> Option<BearerToken> + Send + Sync>;
@@ -51,15 +49,8 @@ impl HttpTransport {
         {
             return Err(LogStreamError::Invalid("base_api_url must use HTTPS (HTTP permitted on loopback only), without credentials, query or fragment".into()));
         }
-        let streaming = client::async_conjure_streaming_client(endpoint.clone())
+        let client = NominalApiClients::try_from_url(endpoint)
             .map_err(|e| LogStreamError::Invalid(crate::consumer::describe_request_error(&e)))?;
-        let services = client::async_conjure_client("upload-ingest", endpoint)
-            .map_err(|e| LogStreamError::Invalid(crate::consumer::describe_request_error(&e)))?;
-        let client = NominalApiClients::from_conjure_clients(
-            streaming,
-            services,
-            &Arc::new(ConjureRuntime::default()),
-        );
         Ok(Self {
             client,
             auth,
@@ -68,29 +59,13 @@ impl HttpTransport {
     }
 }
 
-fn request(body: Bytes, token: &BearerToken) -> WriteRequest<'static> {
-    let mut request = client::compressed_protobuf_request(body, token);
-    *request.uri_mut() = "/storage/writer/v1/nominal-columnar".parse().unwrap();
-    request
-        .extensions_mut()
-        .insert(conjure_http::client::Endpoint::new(
-            "NominalChannelWriterService",
-            None,
-            "writeNominalColumnarBatches",
-            "/storage/writer/v1/nominal-columnar",
-        ));
-    request
-}
-
 impl LogTransport for HttpTransport {
     fn send(&self, body: &Bytes) -> Result<(), String> {
         let token = (self.auth)().ok_or("missing auth token")?;
         let started = std::time::Instant::now();
         let result = self
-            .handle
-            .block_on(self.client.send(request(body.clone(), &token)))
-            .map(|_| ())
-            .map_err(|e| crate::consumer::describe_request_error(&e));
+            .client
+            .send_blocking(&self.handle, client::columnar_request(body.clone(), &token));
         tracing::debug!(
             elapsed_micros = started.elapsed().as_micros() as u64,
             wire_bytes = body.len(),
@@ -137,40 +112,6 @@ pub(super) struct CoreTarget {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn columnar_request_uses_shared_compression_and_auth() {
-        let token = BearerToken::new("test-token").unwrap();
-        let body = client::compress(b"protobuf payload").unwrap();
-        let rid = ResourceIdentifier::new("ri.catalog.main.dataset.test").unwrap();
-        let timeseries = client::encode_request(b"protobuf payload", &token, &rid).unwrap();
-        assert_eq!(
-            timeseries.uri(),
-            "/storage/writer/v1/nominal/ri.catalog.main.dataset.test"
-        );
-        let request = request(body.clone(), &token);
-        assert_eq!(request.headers(), timeseries.headers());
-        let conjure_http::client::AsyncRequestBody::Fixed(encoded) = timeseries.into_body() else {
-            panic!("time-series request must be replayable");
-        };
-        assert_eq!(
-            zstd::decode_all(encoded.as_ref()).unwrap(),
-            b"protobuf payload"
-        );
-        assert_eq!(request.method(), "POST");
-        assert_eq!(request.uri(), "/storage/writer/v1/nominal-columnar");
-        assert_eq!(request.headers()["content-type"], "application/x-protobuf");
-        assert_eq!(request.headers()["content-encoding"], "zstd");
-        assert_eq!(request.headers()["authorization"], "Bearer test-token");
-        let conjure_http::client::AsyncRequestBody::Fixed(encoded) = request.into_body() else {
-            panic!("request must be replayable");
-        };
-        assert_eq!(encoded, body);
-        assert_eq!(
-            zstd::decode_all(encoded.as_ref()).unwrap(),
-            b"protobuf payload"
-        );
-    }
 
     #[test]
     fn rejects_current_thread_runtime_that_cannot_drive_worker_io() {
