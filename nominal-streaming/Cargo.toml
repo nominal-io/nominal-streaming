@@ -15,6 +15,7 @@ logging = ["tracing-subscriber"]
 instrument = []
 
 [dependencies]
+ahash = "0.8"
 apache-avro = { workspace = true }
 async-channel = { workspace = true }
 chrono = { workspace = true }
