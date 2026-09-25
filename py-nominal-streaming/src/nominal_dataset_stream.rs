@@ -178,21 +178,23 @@ impl PyNominalDatasetStream {
         Ok(slf)
     }
 
-    #[pyo3(text_signature = "(self, path)")]
+    #[pyo3(signature = (path, *, overwrite=true))]
     pub fn to_file<'py>(
         mut slf: PyRefMut<'py, Self>,
         path: PathBuf,
+        overwrite: bool,
     ) -> PyResult<PyRefMut<'py, Self>> {
-        slf.builder.targets.file_target = Some(FileTarget { path });
+        slf.builder.targets.file_target = Some(FileTarget { path, overwrite });
         Ok(slf)
     }
 
-    #[pyo3(text_signature = "(self, path)")]
+    #[pyo3(signature = (path, *, overwrite=true))]
     pub fn with_file_fallback<'py>(
         mut slf: PyRefMut<'py, Self>,
         path: PathBuf,
+        overwrite: bool,
     ) -> PyResult<PyRefMut<'py, Self>> {
-        slf.builder.targets.file_fallback = Some(path);
+        slf.builder.targets.file_fallback = Some(FileTarget { path, overwrite });
         Ok(slf)
     }
 
@@ -202,9 +204,10 @@ impl PyNominalDatasetStream {
             return Ok(());
         }
 
-        self.builder
-            .validate()
-            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        self.builder.validate().map_err(|e| {
+            self.is_open.store(false, Ordering::SeqCst);
+            PyRuntimeError::new_err(e.to_string())
+        })?;
 
         let (runtime_task, runtime) = match spawn_runtime_worker(self.builder.clone()) {
             Ok(parts) => parts,

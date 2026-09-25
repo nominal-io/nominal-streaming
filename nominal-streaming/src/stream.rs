@@ -40,6 +40,8 @@ use tracing::error;
 use crate::client::NominalApiClients;
 use crate::client::PRODUCTION_API_URL;
 use crate::consumer::AvroFileConsumer;
+use crate::consumer::ConsumerError;
+use crate::consumer::ConsumerResult;
 use crate::consumer::DualWriteRequestConsumer;
 use crate::consumer::ListeningWriteRequestConsumer;
 use crate::consumer::NominalCoreConsumer;
@@ -131,11 +133,17 @@ impl NominalStreamOpts {
     }
 }
 
+#[derive(Debug)]
+struct FileDestination {
+    path: PathBuf,
+    overwrite: bool,
+}
+
 #[derive(Default)]
 pub struct NominalDatasetStreamBuilder {
     stream_to_core: Option<(BearerToken, ResourceIdentifier, tokio::runtime::Handle)>,
-    stream_to_file: Option<PathBuf>,
-    file_fallback: Option<PathBuf>,
+    stream_to_file: Option<FileDestination>,
+    file_fallback: Option<FileDestination>,
     listeners: Vec<Arc<dyn crate::listener::NominalStreamListener>>,
     opts: NominalStreamOpts,
 }
@@ -173,13 +181,41 @@ impl NominalDatasetStreamBuilder {
         }
     }
 
-    pub fn stream_to_file(mut self, file_path: impl Into<PathBuf>) -> Self {
-        self.stream_to_file = Some(file_path.into());
+    /// Write to a file, replacing any existing contents.
+    pub fn stream_to_file(self, file_path: impl Into<PathBuf>) -> Self {
+        self.stream_to_file_overwrite(file_path, true)
+    }
+
+    /// Write to a file with an explicit overwrite policy.
+    /// When `overwrite` is false, an existing path causes a startup error without changing it.
+    pub fn stream_to_file_overwrite(
+        mut self,
+        file_path: impl Into<PathBuf>,
+        overwrite: bool,
+    ) -> Self {
+        self.stream_to_file = Some(FileDestination {
+            path: file_path.into(),
+            overwrite,
+        });
         self
     }
 
-    pub fn with_file_fallback(mut self, file_path: impl Into<PathBuf>) -> Self {
-        self.file_fallback = Some(file_path.into());
+    /// Preserve failed requests in a file, replacing any existing contents at startup.
+    pub fn with_file_fallback(self, file_path: impl Into<PathBuf>) -> Self {
+        self.with_file_fallback_overwrite(file_path, true)
+    }
+
+    /// Configure a fallback file with an explicit overwrite policy.
+    /// When `overwrite` is false, an existing path causes a startup error without changing it.
+    pub fn with_file_fallback_overwrite(
+        mut self,
+        file_path: impl Into<PathBuf>,
+        overwrite: bool,
+    ) -> Self {
+        self.file_fallback = Some(FileDestination {
+            path: file_path.into(),
+            overwrite,
+        });
         self
     }
 
@@ -243,37 +279,58 @@ impl NominalDatasetStreamBuilder {
         self.init_logging(Some(log_directive))
     }
 
+    /// Builds a stream, panicking on invalid configuration or an inaccessible destination.
+    /// Prefer [`Self::try_build`] to handle initialization failures.
     pub fn build(self) -> NominalDatasetStream {
-        let core_consumer = self.core_consumer();
-        let file_consumer = self.file_consumer();
-        let fallback_consumer = self.fallback_consumer();
+        self.try_build().expect("failed to build stream")
+    }
 
-        match (core_consumer, file_consumer, fallback_consumer) {
-            (None, None, _) => panic!("nominal dataset stream must either stream to file or core"),
-            (Some(_), Some(_), Some(_)) => {
-                panic!("must choose one of stream_to_file and file_fallback when streaming to core")
-            }
+    /// Opens destinations before starting workers and returns initialization errors.
+    /// Each file destination uses its configured overwrite policy (true by default).
+    /// File output and file fallback are mutually exclusive.
+    pub fn try_build(self) -> ConsumerResult<NominalDatasetStream> {
+        if self.stream_to_core.is_none() && self.stream_to_file.is_none() {
+            return Err(ConsumerError::Configuration(
+                "a Core or file destination is required".into(),
+            ));
+        }
+        if self.stream_to_file.is_some() && self.file_fallback.is_some() {
+            return Err(ConsumerError::Configuration(
+                "file output and file fallback cannot be combined".into(),
+            ));
+        }
+        if self.opts.max_points_per_record == 0 {
+            return Err(ConsumerError::Configuration(
+                "max_points_per_record must be greater than zero".into(),
+            ));
+        }
+        let core_consumer = self.core_consumer()?;
+        let file_consumer = self.file_consumer()?;
+        let fallback_consumer = self.fallback_consumer()?;
+
+        Ok(match (core_consumer, file_consumer, fallback_consumer) {
             (Some(core), None, None) => self.into_stream(core),
             (Some(core), None, Some(fallback)) => {
                 self.into_stream(RequestConsumerWithFallback::new(core, fallback))
             }
             (None, Some(file), None) => self.into_stream(file),
-            (None, Some(file), Some(fallback)) => {
-                // todo: should this even be supported?
-                self.into_stream(RequestConsumerWithFallback::new(file, fallback))
-            }
             (Some(core), Some(file), None) => {
                 self.into_stream(DualWriteRequestConsumer::new(core, file))
             }
-        }
+            _ => unreachable!("destinations validated above"),
+        })
     }
 
-    fn core_consumer(&self) -> Option<NominalCoreConsumer<BearerToken>> {
+    fn core_consumer(&self) -> ConsumerResult<Option<NominalCoreConsumer<BearerToken>>> {
         self.stream_to_core
             .as_ref()
             .map(|(auth_provider, dataset, handle)| {
-                NominalCoreConsumer::new(
-                    NominalApiClients::from_uri(self.opts.base_api_url.as_str()),
+                let clients = NominalApiClients::try_from_uri(self.opts.base_api_url.as_str())
+                    .map_err(|error| {
+                        ConsumerError::Configuration(format!("Core client: {}", error.cause()))
+                    })?;
+                Ok(NominalCoreConsumer::new(
+                    clients,
                     handle.clone(),
                     auth_provider.clone(),
                     dataset.clone(),
@@ -281,24 +338,41 @@ impl NominalDatasetStreamBuilder {
                 .with_track_metrics(self.opts.track_metrics)
                 .with_additional_metric_channels(
                     self.opts.additional_metric_channels.iter().cloned(),
-                )
+                ))
             })
+            .transpose()
     }
 
     fn dataset_rid(&self) -> Option<ResourceIdentifier> {
         self.stream_to_core.as_ref().map(|(_, rid, _)| rid.clone())
     }
 
-    fn file_consumer(&self) -> Option<AvroFileConsumer> {
-        self.stream_to_file.as_ref().map(|path| {
-            AvroFileConsumer::new_with_full_path(path, true, self.dataset_rid()).unwrap()
-        })
+    fn file_consumer(&self) -> ConsumerResult<Option<AvroFileConsumer>> {
+        self.stream_to_file
+            .as_ref()
+            .map(|file| {
+                AvroFileConsumer::new_with_full_path(&file.path, file.overwrite, self.dataset_rid())
+                    .map_err(|source| ConsumerError::FileError {
+                        path: file.path.clone(),
+                        operation: "open",
+                        source,
+                    })
+            })
+            .transpose()
     }
 
-    fn fallback_consumer(&self) -> Option<AvroFileConsumer> {
-        self.file_fallback.as_ref().map(|path| {
-            AvroFileConsumer::new_with_full_path(path, true, self.dataset_rid()).unwrap()
-        })
+    fn fallback_consumer(&self) -> ConsumerResult<Option<AvroFileConsumer>> {
+        self.file_fallback
+            .as_ref()
+            .map(|file| {
+                AvroFileConsumer::new_with_full_path(&file.path, file.overwrite, self.dataset_rid())
+                    .map_err(|source| ConsumerError::FileError {
+                        path: file.path.clone(),
+                        operation: "open fallback",
+                        source,
+                    })
+            })
+            .transpose()
     }
 
     fn into_stream<C: WriteRequestConsumer + 'static>(self, consumer: C) -> NominalDatasetStream {

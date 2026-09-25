@@ -171,8 +171,12 @@ class NominalDatasetStream:
         self._impl = self._impl.with_core_consumer(dataset_rid, self._auth_header)
         return self
 
-    def to_file(self, path: pathlib.Path) -> Self:
+    def to_file(self, path: pathlib.Path, *, overwrite: bool = True) -> Self:
         """Target streaming towards a local `.avro` file
+
+        Args:
+            path: Destination file path.
+            overwrite: Replace existing contents; False refuses an existing path at open().
 
         The written file will contain snappy-compressed avro data. This can be read as follows:
 
@@ -187,11 +191,20 @@ class NominalDatasetStream:
                     values = record["values"]
             ```
         """
-        self._impl = self._impl.to_file(path)
+        self._impl = self._impl.to_file(path, overwrite=overwrite)
         return self
 
-    def with_file_fallback(self, path: pathlib.Path) -> Self:
-        """Setup file fallback for streaming to core
+    def with_file_fallback(self, path: pathlib.Path, *, overwrite: bool = True) -> Self:
+        """Save requests that the Core destination cannot consume.
+
+        Requires ``with_core_consumer`` and cannot be combined with ``to_file``.
+
+        Existing files are overwritten by default. Set ``overwrite=False`` to fail
+        at startup without modifying an existing file.
+
+        Args:
+            path: Fallback file path.
+            overwrite: Replace existing contents; False refuses an existing path at open().
 
         The written file will contain snappy-compressed avro data for any batches of data that were unable to make
         it to the backend successfully. This can be read as follows:
@@ -207,7 +220,7 @@ class NominalDatasetStream:
                     values = record["values"]
             ```
         """
-        self._impl = self._impl.with_file_fallback(path)
+        self._impl = self._impl.with_file_fallback(path, overwrite=overwrite)
         return self
 
     def open(self) -> Self:
