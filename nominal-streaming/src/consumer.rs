@@ -38,6 +38,8 @@ use crate::types::AuthProvider;
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum ConsumerError {
+    #[error("consumer panicked: {0}")]
+    Panic(String),
     #[error("failed to {operation} file {path:?}: {source}")]
     FileError {
         path: PathBuf,
@@ -57,6 +59,20 @@ pub enum ConsumerError {
 }
 
 pub type ConsumerResult<T> = Result<T, ConsumerError>;
+
+/// Isolate each destination so a panic cannot skip fallback or another finalizer.
+pub(crate) fn checked_consumer_call(
+    action: impl FnOnce() -> ConsumerResult<()>,
+) -> ConsumerResult<()> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(action)).unwrap_or_else(|payload| {
+        let message = payload
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| payload.downcast_ref::<&str>().copied())
+            .unwrap_or("unknown panic");
+        Err(ConsumerError::Panic(message.to_owned()))
+    })
+}
 
 /// Compact, single-line summary of a failed request: the conjure error kind, the
 /// HTTP status when the failure came from a response, and the cause chain's
@@ -86,6 +102,11 @@ fn describe_request_error(e: &conjure_error::Error) -> String {
 
 pub trait WriteRequestConsumer: Send + Sync + Debug {
     fn consume(&self, request: &WriteRequestNominal) -> ConsumerResult<()>;
+
+    /// Finalize buffered output after all requests have completed.
+    fn finish(&self) -> ConsumerResult<()> {
+        Ok(())
+    }
 }
 
 #[derive(Clone)]
@@ -481,6 +502,20 @@ fn convert_timestamp_to_nanoseconds(timestamp: Timestamp) -> Value {
 }
 
 impl WriteRequestConsumer for AvroFileConsumer {
+    fn finish(&self) -> ConsumerResult<()> {
+        let writer = self.writer.lock().take().ok_or_else(|| {
+            self.file_error(
+                "finalize",
+                std::io::Error::other("Avro writer is no longer available"),
+            )
+        })?;
+        writer
+            .into_inner()
+            .map_err(avro_error)
+            .and_then(|file| file.0.sync_all())
+            .map_err(|error| self.file_error("finalize", error))
+    }
+
     fn consume(&self, request: &WriteRequestNominal) -> ConsumerResult<()> {
         self.append_series(&request.series)?;
         Ok(())
@@ -545,9 +580,15 @@ where
     P: WriteRequestConsumer + Send + Sync,
     S: WriteRequestConsumer + Send + Sync,
 {
+    fn finish(&self) -> ConsumerResult<()> {
+        let primary = checked_consumer_call(|| self.primary.finish());
+        let secondary = checked_consumer_call(|| self.secondary.finish());
+        primary.and(secondary)
+    }
+
     fn consume(&self, request: &WriteRequestNominal) -> ConsumerResult<()> {
-        let primary_result = self.primary.consume(request);
-        let secondary_result = self.secondary.consume(request);
+        let primary_result = checked_consumer_call(|| self.primary.consume(request));
+        let secondary_result = checked_consumer_call(|| self.secondary.consume(request));
         if let Err(e) = &primary_result {
             warn!("Sending request to primary consumer failed: {:?}", e);
         }
@@ -565,16 +606,17 @@ where
     P: WriteRequestConsumer + Send + Sync,
     F: WriteRequestConsumer + Send + Sync,
 {
+    fn finish(&self) -> ConsumerResult<()> {
+        let primary = checked_consumer_call(|| self.primary.finish());
+        let fallback = checked_consumer_call(|| self.fallback.finish());
+        primary.and(fallback)
+    }
+
     fn consume(&self, request: &WriteRequestNominal) -> ConsumerResult<()> {
-        if let Err(e) = self.primary.consume(request) {
+        if let Err(e) = checked_consumer_call(|| self.primary.consume(request)) {
             warn!("Sending request to primary consumer failed: {e}. Attempting fallback.");
-            let fallback_result = self.fallback.consume(request);
-            // we want to notify the caller about the missing token error as it is a user error
-            // todo: get rid of this once we figure out why the auth handle blocks in connect
-            if let ConsumerError::MissingTokenError = e {
-                return Err(ConsumerError::MissingTokenError);
-            }
-            return fallback_result;
+            // Preservation through fallback is success, including authentication failures.
+            return checked_consumer_call(|| self.fallback.consume(request));
         }
         Ok(())
     }
@@ -605,6 +647,10 @@ impl<C> WriteRequestConsumer for ListeningWriteRequestConsumer<C>
 where
     C: WriteRequestConsumer + Send + Sync,
 {
+    fn finish(&self) -> ConsumerResult<()> {
+        self.consumer.finish()
+    }
+
     fn consume(&self, request: &WriteRequestNominal) -> ConsumerResult<()> {
         match self.consumer.consume(request) {
             Ok(_) => {
@@ -632,6 +678,39 @@ mod tests {
     use tempfile::NamedTempFile;
 
     use super::*;
+
+    #[test]
+    fn finalization_writes_an_empty_container_and_closes_all_clones() {
+        let file = NamedTempFile::new().unwrap();
+        let consumer = AvroFileConsumer::new_with_full_path(file.path(), true, None).unwrap();
+        let clone = consumer.clone();
+        consumer.finish().unwrap();
+        assert_eq!(Reader::new(file.reopen().unwrap()).unwrap().count(), 0);
+        assert!(clone.consume(&WriteRequestNominal::default()).is_err());
+    }
+
+    #[test]
+    fn finalization_reports_file_errors() {
+        let file = NamedTempFile::new().unwrap();
+        let consumer = AvroFileConsumer {
+            writer: Arc::new(Mutex::new(Some(apache_avro::Writer::with_codec(
+                &CORE_AVRO_SCHEMA,
+                CompleteWrite(std::fs::File::open(file.path()).unwrap()),
+                apache_avro::Codec::Snappy,
+            )))),
+            path: file.path().to_path_buf(),
+        };
+        // Finishing an empty container must write its header, which a read-only file rejects.
+        let error = consumer.finish().unwrap_err();
+        assert!(matches!(
+            error,
+            ConsumerError::FileError {
+                operation: "finalize",
+                ..
+            }
+        ));
+        assert!(consumer.finish().is_err());
+    }
 
     #[test]
     fn short_and_interrupted_writes_produce_readable_avro() {
