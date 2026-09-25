@@ -137,13 +137,9 @@ impl<A: AuthProvider> NominalCoreConsumer<A> {
     }
 
     fn send(&self, request: WriteRequest<'static>) -> ConsumerResult<()> {
-        self.handle.block_on(async {
-            self.client
-                .send(request)
-                .await
-                .map_err(|e| ConsumerError::RequestError(describe_request_error(&e)))
-        })?;
-        Ok(())
+        self.client
+            .send_blocking(&self.handle, request)
+            .map_err(ConsumerError::RequestError)
     }
 }
 
