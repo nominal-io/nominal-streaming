@@ -981,9 +981,10 @@ impl SeriesBuffer {
 
     fn on_notify(&self, on_notify: impl FnOnce(SeriesBufferGuard)) {
         let mut points_lock = self.points.lock();
-        // concurrency bug without this - the buffer could have been emptied since we
-        // checked the count, so this will wait forever & block any new points from entering
-        if !points_lock.is_empty() {
+        // The buffer could have been emptied since we checked the count, and only a non-zero count
+        // makes the processor flush and notify, so waiting on anything else can block forever.
+        // A zero-point entry leaves the map non-empty with a count of zero.
+        if !self.is_empty() {
             self.condvar.wait(&mut points_lock);
         } else {
             debug!("buffer emptied since last check, skipping condvar wait");
