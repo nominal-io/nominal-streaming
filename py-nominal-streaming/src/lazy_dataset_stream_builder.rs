@@ -16,13 +16,14 @@ pub struct CoreTarget {
 #[derive(Clone)]
 pub struct FileTarget {
     pub path: PathBuf,
+    pub overwrite: bool,
 }
 
 #[derive(Clone, Default)]
 pub struct StreamTargets {
     pub core_target: Option<CoreTarget>,
     pub file_target: Option<FileTarget>,
-    pub file_fallback: Option<PathBuf>,
+    pub file_fallback: Option<FileTarget>,
 }
 
 /// Simple wrapper around a NominalDatasetStreamBuilder that allows for lazily configuring
@@ -40,13 +41,8 @@ impl LazyDatasetStreamBuilder {
             return Err(anyhow!(
                 "no streaming target configured; call with_core_consumer(...) or to_file(...)"
             ));
-        } else if self.targets.core_target.is_some()
-            && self.targets.file_target.is_some()
-            && self.targets.file_fallback.is_some()
-        {
-            return Err(anyhow!(
-                "Must choose one of stream_to_file and file_fallback when streaming to core"
-            ));
+        } else if self.targets.file_target.is_some() && self.targets.file_fallback.is_some() {
+            return Err(anyhow!("file output and file fallback cannot be combined"));
         } else if let Some(opts) = self.opts.clone() {
             if opts.num_runtime_workers < opts.inner.request_dispatcher_tasks {
                 return Err(
@@ -71,11 +67,13 @@ impl LazyDatasetStreamBuilder {
         }
 
         if let Some(file_target) = &self.targets.file_target {
-            builder = builder.stream_to_file(file_target.path.clone());
+            builder =
+                builder.stream_to_file_overwrite(file_target.path.clone(), file_target.overwrite);
         }
 
         if let Some(file_fallback) = &self.targets.file_fallback {
-            builder = builder.with_file_fallback(file_fallback);
+            builder =
+                builder.with_file_fallback_overwrite(&file_fallback.path, file_fallback.overwrite);
         }
 
         if let Some(ref log_level) = &self.log_level {
@@ -86,7 +84,6 @@ impl LazyDatasetStreamBuilder {
             builder = builder.with_options(opts.inner.clone());
         }
 
-        std::panic::catch_unwind(|| builder.build())
-            .map_err(|_| anyhow!("Failed to build underlying stream"))
+        builder.try_build().map_err(Into::into)
     }
 }
