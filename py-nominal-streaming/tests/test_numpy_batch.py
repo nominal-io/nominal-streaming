@@ -161,20 +161,30 @@ class BatchTests(unittest.TestCase):
         self.assertEqual(records["floating"]["values"][1], float("inf"))
         self.assertEqual(math.copysign(1, records["floating"]["values"][2]), -1)
 
-    def test_unsigned_timestamp_range_is_not_narrowed(self):
-        # Avro uses signed nanoseconds, so check extraction on an unopened stream:
-        # accepted timestamps reach the lifecycle check instead of overflowing.
-        unopened = NominalDatasetStream()
-        for timestamps in (
-            np.array([0, 2**63, 2**64 - 1], dtype="uint64"),
-            [0, 2**63, 2**64 - 1],
-        ):
-            with self.subTest(timestamps=timestamps), self.assertRaisesRegex(RuntimeError, "stream"):
-                unopened.enqueue_batch("range", timestamps, [1.0, 2.0, 3.0])
+    def test_negative_timestamps_and_signed_boundaries(self):
+        timestamps = [-(2**63), -1_000_000_001, -1, 0, 2**63 - 1]
+        for name, values in (("list", timestamps), ("numpy", np.array(timestamps, dtype="int64"))):
+            self.stream.enqueue_batch(name, values, [1.0] * len(timestamps))
+        self.stream.enqueue("negative_scalar", -1, 42.0)
+        self.stream.enqueue_from_dict(-1, {"negative_dict": 42.0})
+        records = self.records()
+        for name in ("list", "numpy"):
+            self.assertEqual(records[name]["timestamps"], timestamps)
+        for name in ("negative_scalar", "negative_dict"):
+            self.assertEqual(records[name]["timestamps"], [-1])
+
+    def test_out_of_range_timestamps_are_rejected(self):
+        for timestamps in (np.array([0, 2**63], dtype="uint64"), [0, 2**63], [0, -(2**63) - 1]):
+            with self.subTest(timestamps=timestamps), self.assertRaises(OverflowError):
+                self.stream.enqueue_batch("invalid", timestamps, [1.0, 2.0])
+        for timestamp in (2**63, -(2**63) - 1):
+            with self.assertRaises(OverflowError):
+                self.stream.enqueue("invalid", timestamp, 1.0)
+        self.stream.enqueue("valid", -1, 42.0)
+        self.assertEqual(set(self.records()), {"valid"})
 
     def test_invalid_batch_never_writes_partial_points(self):
         cases = {
-            "negative": (np.array([0, -1], dtype="int64"), [1.0, 2.0], OverflowError),
             "overflow": ([0, 2**64], [1.0, 2.0], OverflowError),
             "length": (np.array([0, 1], dtype="uint64"), np.array([1.0]), ValueError),
             "empty": (np.array([], dtype="uint64"), np.array([], dtype="float64"), ValueError),
