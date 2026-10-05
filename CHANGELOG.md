@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.3](https://github.com/nominal-io/nominal-streaming/compare/v0.10.2...v0.10.3) - 2026-10-05
+
+### Fixed
+
+- read running flag before unflushed count so the last dispatcher cannot exit early ([#393](https://github.com/nominal-io/nominal-streaming/pull/393))
+- read running flag before buffer count so the processor cannot exit with points buffered ([#392](https://github.com/nominal-io/nominal-streaming/pull/392))
+
 ## [0.10.2](https://github.com/nominal-io/nominal-streaming/compare/v0.10.1...v0.10.2) - 2026-09-23
 
 ### Fixed
