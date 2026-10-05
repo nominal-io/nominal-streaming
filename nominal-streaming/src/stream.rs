@@ -1008,8 +1008,11 @@ fn batch_processor(
 ) {
     loop {
         debug!("starting processor loop");
+        // Read the flag before the count: once `running` is false no more points arrive, so an
+        // empty buffer observed afterwards stays empty.
+        let still_running = running.load(Ordering::Acquire);
         if points_buffer.is_empty() {
-            if !running.load(Ordering::Acquire) {
+            if !still_running {
                 debug!("batch processor thread exiting due to running flag");
                 drop(request_chan);
                 break;
