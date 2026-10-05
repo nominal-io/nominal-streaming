@@ -1108,8 +1108,8 @@ fn request_dispatcher<C: WriteRequestConsumer + 'static>(
 
                 // Read the flag before the count, as in `batch_processor`: a count of zero read
                 // before `running` could miss points enqueued just before the stream was dropped.
-                let still_running = running.load(Ordering::Acquire);
-                if !still_running && unflushed_points.load(Ordering::Acquire) == 0 {
+                if !running.load(Ordering::Acquire) && unflushed_points.load(Ordering::Acquire) == 0
+                {
                     debug!("all points flushed, closing dispatcher thread");
                     // notify the processor thread that all points have been flushed
                     drop(request_rx);
