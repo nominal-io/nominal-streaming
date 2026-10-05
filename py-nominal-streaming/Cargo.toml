@@ -34,3 +34,6 @@ nominal-streaming = { workspace = true, features = ["logging"] }
 
 anyhow = "1"
 crossbeam-channel = "0.5"
+
+[dev-dependencies]
+tempfile = { workspace = true }
