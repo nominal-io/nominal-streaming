@@ -150,6 +150,51 @@ fn assert_record_limit(requests: &[WriteRequestNominal], cap: usize) -> usize {
         .sum()
 }
 
+#[test_log::test]
+fn enqueue_many_merges_equal_descriptors_and_preserves_tags() {
+    let (test_consumer, stream) = create_test_stream();
+    let a = ChannelDescriptor::with_tags("value", [("source", "a"), ("unit", "v")]);
+    let equal_a = ChannelDescriptor::with_tags("value", [("unit", "v"), ("source", "a")]);
+    let b = ChannelDescriptor::with_tags("value", [("source", "b"), ("unit", "v")]);
+    let point = |seconds| DoublePoint {
+        timestamp: Some(Duration::from_secs(seconds).into_timestamp()),
+        value: seconds as f64,
+    };
+    stream.enqueue_many(
+        [(a, 1), (equal_a, 2), (b, 3)]
+            .into_iter()
+            .map(|(descriptor, seconds)| (descriptor, vec![point(seconds)].into_points()))
+            .collect(),
+    );
+    drop(stream);
+
+    let requests = test_consumer.requests.lock().unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].series.len(), 2);
+    let actual: std::collections::BTreeMap<_, _> = requests[0]
+        .series
+        .iter()
+        .map(|series| {
+            assert_eq!(series.channel.as_ref().unwrap().name, "value");
+            assert_eq!(series.tags.len(), 2);
+            assert_eq!(series.tags["unit"], "v");
+            let Some(PointsType::DoublePoints(points)) =
+                &series.points.as_ref().unwrap().points_type
+            else {
+                panic!("wrong point type")
+            };
+            (series.tags["source"].clone(), points.points.clone())
+        })
+        .collect();
+    assert_eq!(
+        actual,
+        std::collections::BTreeMap::from([
+            ("a".to_string(), vec![point(1), point(2)]),
+            ("b".to_string(), vec![point(3)]),
+        ])
+    );
+}
+
 #[test]
 #[should_panic(expected = "max_points_per_record must be greater than zero")]
 fn zero_record_limit_is_rejected() {
