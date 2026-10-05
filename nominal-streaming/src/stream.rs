@@ -1106,7 +1106,9 @@ fn request_dispatcher<C: WriteRequestConsumer + 'static>(
                 disp_ns.fetch_add(req_start.elapsed().as_nanos() as u64, Ordering::Relaxed);
                 unflushed_points.fetch_sub(point_count, Ordering::Release);
 
-                if unflushed_points.load(Ordering::Acquire) == 0 && !running.load(Ordering::Acquire)
+                // Read the flag before the count, as in `batch_processor`: a count of zero read
+                // before `running` could miss points enqueued just before the stream was dropped.
+                if !running.load(Ordering::Acquire) && unflushed_points.load(Ordering::Acquire) == 0
                 {
                     debug!("all points flushed, closing dispatcher thread");
                     // notify the processor thread that all points have been flushed
