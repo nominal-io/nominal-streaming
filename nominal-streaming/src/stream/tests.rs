@@ -31,14 +31,15 @@ fn test_mismatched_array_types_panics() {
 }
 
 #[test]
-fn on_notify_does_not_wait_on_buffer_with_only_empty_entries() {
-    // An entry with no points makes the map non-empty without raising the count. The processor
-    // only flushes, and so only notifies, when the count is non-zero, so waiting here would never
-    // be woken.
+fn empty_batches_do_not_block_waiting_producers() {
+    // A zero-point batch must not leave an entry in the buffer: the processor only flushes, and so
+    // only notifies waiting producers, when the count is non-zero, so a producer waiting on a
+    // buffer holding only empty entries would never be woken.
     let buffer = Arc::new(SeriesBuffer::new(100));
     buffer
         .lock()
         .extend(&ChannelDescriptor::new("empty"), Vec::<DoublePoint>::new());
+    assert!(buffer.points.lock().is_empty());
     assert!(buffer.is_empty());
 
     let (done_tx, done_rx) = std::sync::mpsc::channel();

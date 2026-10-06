@@ -771,6 +771,12 @@ impl SeriesBufferGuard<'_> {
         let points = points.into_points();
         let new_point_count = points_len(&points);
 
+        // An entry without points would make the map non-empty while the count stays zero, and
+        // `count` is what decides whether the buffer is flushed.
+        if new_point_count == 0 {
+            return;
+        }
+
         if let Some(existing) = self.sb.get_mut(channel_descriptor) {
             match (existing, points) {
                 (PointsType::DoublePoints(existing), PointsType::DoublePoints(new)) => {

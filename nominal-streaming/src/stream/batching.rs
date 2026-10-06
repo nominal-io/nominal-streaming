@@ -178,6 +178,8 @@ mod tests {
             assert!(count <= 3);
             buffer.lock().extend(&channel, chunk);
         });
-        assert_eq!(buffer.lock().sb.get(&channel), Some(&points));
+        // The buffer drops zero-point batches, so empty input leaves no entry.
+        let expected = (count > 0).then_some(&points);
+        assert_eq!(buffer.lock().sb.get(&channel), expected);
     }
 }
