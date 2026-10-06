@@ -938,37 +938,19 @@ impl SeriesBuffer {
         }
     }
 
-    fn take(&self) -> (usize, Vec<Series>) {
+    /// Swaps the buffered points into `detached`, which must be empty, and returns their count.
+    ///
+    /// Only the swap happens under the lock. The buffer keeps `detached`'s allocation, so passing
+    /// the same map back on every flush reuses both maps' capacity.
+    fn take(&self, detached: &mut HashMap<ChannelDescriptor, PointsType>) -> usize {
+        debug_assert!(detached.is_empty());
         let mut points = self.lock();
         self.flush_time.store(
             UNIX_EPOCH.elapsed().unwrap().as_nanos() as u64,
             Ordering::Release,
         );
-        let result = points
-            .sb
-            .drain()
-            .map(|(ChannelDescriptor { name, tags }, points)| {
-                let channel = Channel { name };
-                let points_obj = Points {
-                    points_type: Some(points),
-                };
-                Series {
-                    channel: Some(channel),
-                    // the protobuf `Series` owns its tags, so the shared map is copied out here --
-                    // once per channel per flush, rather than once per channel per write
-                    tags: tags
-                        .map(|tags| {
-                            tags.iter()
-                                .map(|(key, value)| (key.clone(), value.clone()))
-                                .collect()
-                        })
-                        .unwrap_or_default(),
-                    points: Some(points_obj),
-                }
-            })
-            .collect();
-        let result_count = points.count.swap(0, Ordering::AcqRel);
-        (result_count, result)
+        std::mem::swap(&mut *points.sb, detached);
+        points.count.swap(0, Ordering::AcqRel)
     }
 
     fn is_empty(&self) -> bool {
@@ -999,6 +981,32 @@ impl SeriesBuffer {
     }
 }
 
+/// Converts taken points into protobuf series, leaving `points` empty with its capacity intact.
+fn into_series(points: &mut HashMap<ChannelDescriptor, PointsType>) -> Vec<Series> {
+    points
+        .drain()
+        .map(|(ChannelDescriptor { name, tags }, points)| {
+            let channel = Channel { name };
+            let points_obj = Points {
+                points_type: Some(points),
+            };
+            Series {
+                channel: Some(channel),
+                // the protobuf `Series` owns its tags, so the shared map is copied out here --
+                // once per channel per flush, rather than once per channel per write
+                tags: tags
+                    .map(|tags| {
+                        tags.iter()
+                            .map(|(key, value)| (key.clone(), value.clone()))
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+                points: Some(points_obj),
+            }
+        })
+        .collect()
+}
+
 fn batch_processor(
     running: Arc<AtomicBool>,
     points_buffer: Arc<SeriesBuffer>,
@@ -1006,6 +1014,7 @@ fn batch_processor(
     max_request_delay: Duration,
     #[cfg(feature = "instrument")] bp_ns: Arc<AtomicU64>,
 ) {
+    let mut detached = HashMap::new();
     loop {
         debug!("starting processor loop");
         // Read the flag before the count: once `running` is false no more points arrive, so an
@@ -1026,11 +1035,13 @@ fn batch_processor(
         #[cfg(feature = "instrument")]
         let t = Instant::now();
 
-        let (point_count, series) = points_buffer.take();
+        let point_count = points_buffer.take(&mut detached);
 
         if points_buffer.notify() {
             debug!("notified one waiting thread after clearing points buffer");
         }
+
+        let series = into_series(&mut detached);
 
         for_each_record(
             series,

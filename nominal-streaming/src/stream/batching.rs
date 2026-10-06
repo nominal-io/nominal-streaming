@@ -100,6 +100,9 @@ pub(super) fn points_len(points_type: &PointsType) -> usize {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
+    use super::super::into_series;
     use super::super::ChannelDescriptor;
     use super::super::DoublePoint;
     use super::super::IntoTimestamp;
@@ -135,7 +138,9 @@ mod tests {
                 .collect::<Vec<_>>(),
         );
         let expected = input.lock().sb.clone();
-        let (total, series) = input.take();
+        let mut detached = HashMap::new();
+        let total = input.take(&mut detached);
+        let series = into_series(&mut detached);
         let output = SeriesBuffer::new(usize::MAX);
         let mut emitted = 0;
         for_each_record(series, total, cap, |record, count| {
