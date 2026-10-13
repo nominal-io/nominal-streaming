@@ -1,4 +1,4 @@
-"""Batch conversion contracts, tested against both installed ABI wheels."""
+"""Batch conversion contracts, tested against the installed wheel."""
 
 import datetime
 import importlib
@@ -9,7 +9,6 @@ import sys
 import tempfile
 import textwrap
 import unittest
-import warnings
 from unittest import mock
 
 import numpy as np
@@ -227,31 +226,6 @@ class BatchTests(unittest.TestCase):
             with self.assertRaisesRegex(TypeError, "values|Values"):
                 self.stream.enqueue_batch("bad", np.array([0, 1], dtype="uint64"), [1.0, object()])
         self.assertEqual(self.records(), {})
-
-    def test_optional_acceleration_warning_is_once_and_only_for_arrays(self):
-        with (
-            mock.patch.object(wrapper, "_BUFFER_FAST_PATH", False),
-            mock.patch.object(wrapper, "_warned_slow_batch", False),
-            warnings.catch_warnings(record=True) as captured,
-        ):
-            warnings.simplefilter("always")
-            self.stream.enqueue_batch("list", [0], [1.0])
-            self.assertEqual(len(captured), 0)
-            self.stream.enqueue_batch("array", np.array([0]), np.array([1.0]))
-            self.stream.enqueue_batch("again", np.array([0]), np.array([1.0]))
-            self.assertEqual(len(captured), 1)
-            self.assertIn("3.11", str(captured[0].message))
-            self.assertIs(captured[0].category, RuntimeWarning)
-
-    def test_accelerated_build_does_not_warn(self):
-        with (
-            mock.patch.object(wrapper, "_BUFFER_FAST_PATH", True),
-            mock.patch.object(wrapper, "_warned_slow_batch", False),
-            warnings.catch_warnings(record=True) as captured,
-        ):
-            warnings.simplefilter("always")
-            self.stream.enqueue_batch("array", np.array([0]), np.array([1.0]))
-            self.assertEqual(len(captured), 0)
 
 
 if __name__ == "__main__":

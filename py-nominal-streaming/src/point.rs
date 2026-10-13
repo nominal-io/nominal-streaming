@@ -254,7 +254,6 @@ pub fn extract_series_points(
     }
     let first = values.get_item(0)?;
     if first.extract::<f64>().is_ok() {
-        #[cfg(Py_3_11)]
         if let Some(values) = crate::numeric_buffer::floats(values)? {
             return series_doubles(timestamps, values);
         }
@@ -276,7 +275,6 @@ pub fn extract_vec_ts(timestamps: Vec<u64>) -> Vec<Timestamp> {
 
 /// Distinguish timestamp extraction failures from value errors in the Python wrapper.
 pub fn extract_timestamp_input(values: &Bound<'_, PyAny>) -> PyResult<Vec<u64>> {
-    #[cfg(Py_3_11)]
     if let Some(timestamps) = crate::numeric_buffer::timestamps(values)? {
         return Ok(timestamps);
     }

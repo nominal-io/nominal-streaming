@@ -32,11 +32,11 @@ check-types:
 # Validate typehints of all python code across all supported python versions
 check-types-all:
     @echo "Running 'check-types-all' for Python code"
+    uv run mypy --python-version 3.15
     uv run mypy --python-version 3.14
     uv run mypy --python-version 3.13
     uv run mypy --python-version 3.12
     uv run mypy --python-version 3.11
-    uv run mypy --python-version 3.10
 
 # Validate formatting of all python code
 check-format:
@@ -46,7 +46,7 @@ check-format:
 # Validate formatting of all python imports
 check-imports:
     @echo "Running 'check-imports' for Python code"
-    uv run ruff check
+    uv run --only-group dev --locked ruff check
 
 # Validate formatting and typehints of all python code
 check: check-format check-types check-imports

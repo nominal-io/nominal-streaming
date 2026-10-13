@@ -3,6 +3,8 @@
 `nominal-streaming` is a thin python wrapper around the existing [nominal-streaming rust crate](https://crates.io/crates/nominal-streaming).
 Usage semantics remain largely the same, but with some slight alterations to allow for a more pythonic interface.
 
+Requires Python 3.11 or newer.
+
 The library aims to balance three concerns:
 
 1. Data should exist in-memory only for a limited, configurable amount of time before it's sent to Core.
@@ -75,7 +77,7 @@ values = np.array([1.25, 2.5], dtype="float64")
 stream.enqueue_batch("temperature", timestamps, values)
 ```
 
-Python 3.11+ wheels copy native-endian, aligned, one-dimensional NumPy arrays into
+Native-endian, aligned, one-dimensional NumPy arrays are copied into
 Rust-owned memory without creating a Python object for every element. The fast path
 supports `int64`/`uint64` timestamps and `float32`/`float64`/`int64`/`uint64` values,
 including strided, reversed, and read-only views. Integer values retain the API's
@@ -85,32 +87,22 @@ Other dtypes, unaligned or non-native-endian arrays, and ndarray subclasses use 
 existing element-wise conversion. Masked values and datetime/timedelta values still
 require explicit conversion. Lists and tuples continue to work without NumPy.
 
-Python 3.10 wheels retain the element-wise path and emit one `RuntimeWarning` per
-process on the first array batch. On that build, `.tolist()` can be faster; on an
-accelerated build, pass supported arrays directly. Python 3.11+ installers prefer
-the accelerated wheel when both variants are available.
+### Building and testing wheels
 
-### Building and testing the two wheels
-
-Both variants use the same sources and public API. Build them separately:
+All builds use the Python 3.11 stable ABI (`cp311-abi3`) with native NumPy buffer
+support. Build a wheel with the standard workspace command:
 
 ```sh
-maturin build --release -m py-nominal-streaming/Cargo.toml --no-default-features --features python310
-maturin build --release -m py-nominal-streaming/Cargo.toml --no-default-features --features python311
+uv build --package nominal-streaming
 ```
 
-The output tags are `cp310-abi3` and `cp311-abi3`, respectively. The default source
-build targets Python 3.10. Cargo features are additive: enabling both selects the
-older ABI and disables buffer acceleration, so use `--no-default-features` for the
-Python 3.11 variant. NumPy is never needed to import the library or use lists.
-
-CI installs each built wheel in a clean environment, checks its compiled
-capability, exercises lists without NumPy, and runs the batch regression tests with
-NumPy on the minimum and newer Python runtimes. To run tests locally after installing
-a wheel and the `test` dependency group:
+NumPy is never needed to import the library or use lists. CI shares one wheel
+across parallel Python 3.11 through 3.15 jobs. Each job exercises lists without
+NumPy, then runs the batch regression tests and type checks with the locked test
+dependencies. To run tests locally with the `test` dependency group:
 
 ```sh
-python -m unittest discover -s py-nominal-streaming/tests -v
+uv run --group test python -m unittest discover -s py-nominal-streaming/tests -v
 ```
 
 ### Measuring enqueue performance

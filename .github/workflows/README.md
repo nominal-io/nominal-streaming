@@ -11,8 +11,9 @@
 PR metadata validation is separate from code validation so title and description
 edits do not rerun builds or wheel tests. Code validation jobs run independently.
 Rust dependency usage has its own job, separate from Clippy. Rust builds and
-tests share a job; Python linting and type checks share a job.
-Python formatting runs without building the Rust bindings. Jobs use Depot runners.
+tests share a job. Python formatting and linting run without building the Rust
+bindings; type checks run alongside installed-wheel tests in the Python version
+matrix. Jobs use Depot runners.
 
 ## Naming
 
@@ -22,7 +23,7 @@ Use explicit, unique job IDs such as `validate-pr-title`, `rust-format`,
 context.
 
 Matrix jobs use the job ID plus identifying dimensions, such as
-`python-wheel-test (abi3 3.10)`. Avoid runner labels, environment variables, and
+`publish-wheel (linux-x86_64)`. Avoid runner labels, environment variables, and
 whole matrix objects in check names. IDs and expanded names must be unique
 across workflows.
 
@@ -43,8 +44,12 @@ Use these exact GitHub Actions contexts for PR validation:
 - `toml-format`
 - `python-format`
 - `python-lint`
-- `python-wheel-test (abi3 3.10)`
-- `python-wheel-test (abi3 3.11)`
+- `python-wheel-build`
+- `python-wheel-test (3.11)`
+- `python-wheel-test (3.12)`
+- `python-wheel-test (3.13)`
+- `python-wheel-test (3.14)`
+- `python-wheel-test (3.15)`
 
 For example, require `rust-format`, not `Code validation / rust-format`.
 Semgrep reports its own `semgrep-cloud-platform/scan` check outside these workflows.
@@ -54,6 +59,18 @@ Update required-check contexts when renaming jobs, and external links or dispatc
 callers when renaming workflow files.
 The crates.io trusted publisher for `nominal-streaming` is registered to
 `release-plz.yml`; changing this filename also requires updating that publisher.
+
+## Python wheels
+
+All builds use the Python 3.11 stable ABI (`cp311-abi3`) with native NumPy buffer
+support. Code validation builds one wheel and shares it with five parallel jobs
+for Python 3.11 through 3.15. Each job checks imports and list writes without
+NumPy, installs the locked `test` and `typing` groups, and runs tests and type
+checks. Release builds produce one wheel for each platform in `wheels.yml`.
+
+When adopting the Python 3.11 minimum, remove the obsolete
+`python-wheel-test (abi3 3.10)` and `python-wheel-test (abi3 3.11)` contexts from
+GitHub rulesets and require `python-wheel-build` plus all five runtime checks.
 
 ## TOML formatting
 
