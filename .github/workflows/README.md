@@ -57,7 +57,7 @@ The crates.io trusted publisher for `nominal-streaming` is registered to
 ## Python wheels
 
 All builds use the Python 3.11 stable ABI (`cp311-abi3`) with native NumPy buffer
-support. Code validation builds one wheel and tests it on Python 3.11 and 3.14,
+support. Code validation builds one wheel and tests it on Python 3.11, 3.14, and 3.15,
 first without NumPy and then with the batch regression dependencies. Release
 builds produce one wheel for each platform in `wheels.yml`.
 

@@ -97,7 +97,7 @@ uv build --package nominal-streaming
 ```
 
 NumPy is never needed to import the library or use lists. CI installs the wheel
-in clean Python 3.11 and 3.14 environments, exercises lists without NumPy, and runs
+in clean Python 3.11, 3.14, and 3.15 environments, exercises lists without NumPy, and runs
 the batch regression tests with NumPy. To run tests locally with the `test`
 dependency group:
 

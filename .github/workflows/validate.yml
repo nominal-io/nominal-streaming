@@ -109,7 +109,7 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
         with:
-          version: "0.8.x"
+          version: "0.13.x"
           enable-cache: true
           cache-dependency-glob: "uv.lock"
           python-version: "3.14"
@@ -126,7 +126,7 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
         with:
-          version: "0.8.x"
+          version: "0.13.x"
           enable-cache: true
           cache-dependency-glob: "uv.lock"
           python-version: "3.14"
@@ -157,7 +157,7 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
         with:
-          version: "0.8.x"
+          version: "0.13.x"
           enable-cache: true
           cache-dependency-glob: "uv.lock"
           python-version: "3.11"
@@ -170,14 +170,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          uv python install 3.11 3.14
+          uv python install 3.11 3.14 3.15
           uvx --from 'maturin>=1.6,<2.0' maturin build --release --out "$RUNNER_TEMP/wheels" --manifest-path py-nominal-streaming/Cargo.toml -i "$(uv python find 3.11)"
           uv export --locked --only-group test --format requirements-txt --output-file "$RUNNER_TEMP/test-requirements.txt"
-      - name: Test wheel on minimum and current Python
+      - name: Test wheel on minimum and recent Python versions
         shell: bash
         run: |
           set -euo pipefail
-          for runtime in 3.11 3.14; do
+          for runtime in 3.11 3.14 3.15; do
             echo "::group::Test wheel on Python $runtime"
             venv="$RUNNER_TEMP/wheel-$runtime"
             uv venv "$venv" --python "$runtime"

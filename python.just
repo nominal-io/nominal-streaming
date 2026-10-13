@@ -32,6 +32,7 @@ check-types:
 # Validate typehints of all python code across all supported python versions
 check-types-all:
     @echo "Running 'check-types-all' for Python code"
+    uv run mypy --python-version 3.15
     uv run mypy --python-version 3.14
     uv run mypy --python-version 3.13
     uv run mypy --python-version 3.12
