@@ -22,7 +22,7 @@ Use explicit, unique job IDs such as `validate-pr-title`, `rust-format`,
 context.
 
 Matrix jobs use the job ID plus identifying dimensions, such as
-`python-wheel-test (abi3 3.10)`. Avoid runner labels, environment variables, and
+`publish-wheel (linux-x86_64)`. Avoid runner labels, environment variables, and
 whole matrix objects in check names. IDs and expanded names must be unique
 across workflows.
 
@@ -43,7 +43,6 @@ Use these exact GitHub Actions contexts for PR validation:
 - `toml-format`
 - `python-format`
 - `python-lint`
-- `python-wheel-test (abi3 3.10)`
 - `python-wheel-test (abi3 3.11)`
 
 For example, require `rust-format`, not `Code validation / rust-format`.
@@ -54,6 +53,17 @@ Update required-check contexts when renaming jobs, and external links or dispatc
 callers when renaming workflow files.
 The crates.io trusted publisher for `nominal-streaming` is registered to
 `release-plz.yml`; changing this filename also requires updating that publisher.
+
+## Python wheels
+
+All builds use the Python 3.11 stable ABI (`cp311-abi3`) with native NumPy buffer
+support. Code validation builds one wheel and tests it on Python 3.11 and 3.14,
+first without NumPy and then with the batch regression dependencies. Release
+builds produce one wheel for each platform in `wheels.yml`.
+
+When adopting the Python 3.11 minimum, remove the obsolete
+`python-wheel-test (abi3 3.10)` context from GitHub rulesets. The existing
+`python-wheel-test (abi3 3.11)` context remains unchanged.
 
 ## TOML formatting
 

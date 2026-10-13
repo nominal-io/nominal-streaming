@@ -149,17 +149,8 @@ jobs:
           uv run --group test mypy --strict py-nominal-streaming/tests/typing/batch_inputs.py
 
   python-wheel-test:
-    name: python-wheel-test (abi3 ${{ matrix.floor }})
+    name: python-wheel-test (abi3 3.11)
     runs-on: depot-ubuntu-24.04-4
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { feature: python310, floor: "3.10" }
-          - { feature: python311, floor: "3.11" }
-    env:
-      ABI_FEATURE: ${{ matrix.feature }}
-      PYTHON_FLOOR: ${{ matrix.floor }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -169,7 +160,7 @@ jobs:
           version: "0.8.x"
           enable-cache: true
           cache-dependency-glob: "uv.lock"
-          python-version: ${{ matrix.floor }}
+          python-version: "3.11"
       - name: Install Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
         with:
@@ -179,19 +170,19 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          uv python install "$PYTHON_FLOOR" 3.14
-          uvx --from 'maturin>=1.6,<2.0' maturin build --release --out "$RUNNER_TEMP/wheels" --manifest-path py-nominal-streaming/Cargo.toml --no-default-features --features "$ABI_FEATURE" -i "$(uv python find "$PYTHON_FLOOR")"
+          uv python install 3.11 3.14
+          uvx --from 'maturin>=1.6,<2.0' maturin build --release --out "$RUNNER_TEMP/wheels" --manifest-path py-nominal-streaming/Cargo.toml -i "$(uv python find 3.11)"
           uv export --locked --only-group test --format requirements-txt --output-file "$RUNNER_TEMP/test-requirements.txt"
       - name: Test wheel on minimum and current Python
         shell: bash
         run: |
           set -euo pipefail
-          for runtime in "$PYTHON_FLOOR" 3.14; do
-            echo "::group::Test $ABI_FEATURE on Python $runtime"
+          for runtime in 3.11 3.14; do
+            echo "::group::Test wheel on Python $runtime"
             venv="$RUNNER_TEMP/wheel-$runtime"
             uv venv "$venv" --python "$runtime"
             uv pip install --python "$venv/bin/python" "$RUNNER_TEMP/wheels"/*.whl
-            "$venv/bin/python" -I py-nominal-streaming/tests/check_wheel.py "$ABI_FEATURE"
+            "$venv/bin/python" -I py-nominal-streaming/tests/check_wheel.py
             uv pip install --python "$venv/bin/python" --requirements "$RUNNER_TEMP/test-requirements.txt"
             "$venv/bin/python" -I -m unittest discover -s py-nominal-streaming/tests -v
             echo "::endgroup::"

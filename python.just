@@ -36,7 +36,6 @@ check-types-all:
     uv run mypy --python-version 3.13
     uv run mypy --python-version 3.12
     uv run mypy --python-version 3.11
-    uv run mypy --python-version 3.10
 
 # Validate formatting of all python code
 check-format:

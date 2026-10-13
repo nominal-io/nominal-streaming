@@ -11,18 +11,12 @@ from __future__ import annotations
 
 import pathlib
 from types import TracebackType
-from typing import Any, Mapping, Sequence, Type
+from typing import Any, Mapping, Self, Sequence, Type
 
 import numpy as np
 from numpy.typing import NDArray
-from typing_extensions import Self
 
 from nominal_streaming.nominal_dataset_stream import DataType
-
-# Private build capability read by the Python wrapper, not a runtime switch.
-# True for the Python 3.11+ ABI build; false for the Python 3.10 ABI build,
-# even when that fallback wheel is loaded on a newer interpreter.
-_BUFFER_FAST_PATH: bool
 
 class _TimestampTypeError(TypeError):
     """Private signal for the wrapper to normalize batch timestamps and retry.
@@ -390,12 +384,12 @@ class PyNominalDatasetStream:
         accepted, and large integers can lose precision when converted to doubles.
         Strings must not be mixed with numeric values.
 
-        The Python 3.11+ ABI wheel copies eligible exact NumPy arrays through the
+        Eligible exact NumPy arrays are copied through the
         buffer protocol: int64/uint64 timestamps and float32/float64/int64/uint64
         values with native byte order and aligned storage. Strided, reversed,
         and read-only arrays are supported. Other supported dtypes, layouts,
-        and subclasses use element-by-element conversion, as does the Python
-        3.10 ABI wheel. NumPy is optional for list and tuple inputs.
+        and subclasses use element-by-element conversion. NumPy is optional
+        for list and tuple inputs.
 
         Inputs are converted to owned storage before enqueueing; callers may
         mutate or release them after this call returns. Conversion failures
