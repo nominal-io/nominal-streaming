@@ -46,7 +46,7 @@ check-format:
 # Validate formatting of all python imports
 check-imports:
     @echo "Running 'check-imports' for Python code"
-    uv run ruff check
+    uv run --only-group dev --locked ruff check
 
 # Validate formatting and typehints of all python code
 check: check-format check-types check-imports

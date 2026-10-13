@@ -11,8 +11,9 @@
 PR metadata validation is separate from code validation so title and description
 edits do not rerun builds or wheel tests. Code validation jobs run independently.
 Rust dependency usage has its own job, separate from Clippy. Rust builds and
-tests share a job; Python linting and type checks share a job.
-Python formatting runs without building the Rust bindings. Jobs use Depot runners.
+tests share a job. Python formatting and linting run without building the Rust
+bindings; type checks run alongside installed-wheel tests in the Python version
+matrix. Jobs use Depot runners.
 
 ## Naming
 
@@ -43,7 +44,12 @@ Use these exact GitHub Actions contexts for PR validation:
 - `toml-format`
 - `python-format`
 - `python-lint`
-- `python-wheel-test (abi3 3.11)`
+- `python-wheel-build`
+- `python-wheel-test (3.11)`
+- `python-wheel-test (3.12)`
+- `python-wheel-test (3.13)`
+- `python-wheel-test (3.14)`
+- `python-wheel-test (3.15)`
 
 For example, require `rust-format`, not `Code validation / rust-format`.
 Semgrep reports its own `semgrep-cloud-platform/scan` check outside these workflows.
@@ -57,13 +63,14 @@ The crates.io trusted publisher for `nominal-streaming` is registered to
 ## Python wheels
 
 All builds use the Python 3.11 stable ABI (`cp311-abi3`) with native NumPy buffer
-support. Code validation builds one wheel and tests it on Python 3.11, 3.14, and 3.15,
-first without NumPy and then with the batch regression dependencies. Release
-builds produce one wheel for each platform in `wheels.yml`.
+support. Code validation builds one wheel and shares it with five parallel jobs
+for Python 3.11 through 3.15. Each job checks imports and list writes without
+NumPy, installs the locked `test` and `typing` groups, and runs tests and type
+checks. Release builds produce one wheel for each platform in `wheels.yml`.
 
 When adopting the Python 3.11 minimum, remove the obsolete
-`python-wheel-test (abi3 3.10)` context from GitHub rulesets. The existing
-`python-wheel-test (abi3 3.11)` context remains unchanged.
+`python-wheel-test (abi3 3.10)` and `python-wheel-test (abi3 3.11)` contexts from
+GitHub rulesets and require `python-wheel-build` plus all five runtime checks.
 
 ## TOML formatting
 

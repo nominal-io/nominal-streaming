@@ -26,6 +26,10 @@ test = [
     { name = "fastavro" },
     { name = "numpy", specifier = ">=1.24" },
 ]
+typing = [
+    { name = "mypy", specifier = ">=2.4.0" },
+    { name = "types-python-dateutil", specifier = ">=2.9.0.20250822" },
+]
 
 [[package]]
 name = "appnope"

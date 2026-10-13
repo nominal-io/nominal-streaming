@@ -96,10 +96,10 @@ support. Build a wheel with the standard workspace command:
 uv build --package nominal-streaming
 ```
 
-NumPy is never needed to import the library or use lists. CI installs the wheel
-in clean Python 3.11, 3.14, and 3.15 environments, exercises lists without NumPy, and runs
-the batch regression tests with NumPy. To run tests locally with the `test`
-dependency group:
+NumPy is never needed to import the library or use lists. CI shares one wheel
+across parallel Python 3.11 through 3.15 jobs. Each job exercises lists without
+NumPy, then runs the batch regression tests and type checks with the locked test
+dependencies. To run tests locally with the `test` dependency group:
 
 ```sh
 uv run --group test python -m unittest discover -s py-nominal-streaming/tests -v
