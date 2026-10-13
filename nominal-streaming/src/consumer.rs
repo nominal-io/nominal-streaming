@@ -36,6 +36,15 @@ use crate::types::AuthProvider;
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum ConsumerError {
+    #[error("invalid stream configuration: {0}")]
+    Configuration(String),
+    #[error("Avro {operation} failed at {path}: {source}")]
+    FileError {
+        path: PathBuf,
+        operation: &'static str,
+        #[source]
+        source: std::io::Error,
+    },
     #[error("io error: {0}")]
     IoError(#[from] std::io::Error),
     #[error("avro error: {0}")]

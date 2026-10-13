@@ -299,29 +299,31 @@ class PyNominalDatasetStream:
             RuntimeError: If the token is missing or the token or dataset identifier is invalid.
         """
 
-    def to_file(self, path: pathlib.Path) -> Self:
+    def to_file(self, path: pathlib.Path, *, overwrite: bool = True) -> Self:
         """Write points to a local Avro file.
 
         Configure before `open()`. Can be combined with `with_core_consumer`
-        to write to both destinations, but not with both a core consumer and
-        `with_file_fallback`. Invalid target combinations fail at `open()`.
+        to write to both destinations. Cannot be combined with `with_file_fallback`.
+        Invalid target combinations fail at `open()` before opening files.
 
         Args:
             path: Destination file path.
+            overwrite: Replace existing contents; False refuses an existing path at open().
 
         Returns:
             The updated instance for fluent chaining.
         """
 
-    def with_file_fallback(self, path: pathlib.Path) -> Self:
+    def with_file_fallback(self, path: pathlib.Path, *, overwrite: bool = True) -> Self:
         """If sending to core fails, fall back to writing to `path`.
 
-        Configure before `open()`, normally alongside `with_core_consumer`.
-        Failed requests are written as Avro records. Configuring all three of
-        core, file, and fallback destinations fails at `open()`.
+        Configure before `open()`, alongside `with_core_consumer`.
+        Failed requests are written as Avro records. Cannot be combined with
+        `to_file`; invalid combinations fail before opening files.
 
         Args:
             path: Fallback file path.
+            overwrite: Replace existing contents; False refuses an existing path at open().
 
         Returns:
             The updated instance for fluent chaining.
