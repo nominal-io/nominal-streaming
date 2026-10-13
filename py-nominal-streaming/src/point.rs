@@ -19,13 +19,6 @@ use pyo3::types::PyTuple;
 
 pyo3::create_exception!(_nominal_streaming, _TimestampTypeError, PyTypeError);
 
-/// Convert a integral nanosecond timestamp into google.protobuf.Timestamp.
-pub fn parse_timestamp(timestamp: u64) -> Timestamp {
-    let seconds = timestamp.div_euclid(1_000_000_000) as i64;
-    let nanos = timestamp.rem_euclid(1_000_000_000) as i32;
-    Timestamp { seconds, nanos }
-}
-
 /// Convert python tags into the descriptor's tag representation.
 ///
 /// Absent and empty tags both become `None` so that the same channel written with `tags=None` and
@@ -270,12 +263,15 @@ pub fn extract_series_points(
     }
 }
 
-pub fn extract_vec_ts(timestamps: Vec<u64>) -> Vec<Timestamp> {
-    timestamps.into_iter().map(parse_timestamp).collect()
+pub fn extract_vec_ts(timestamps: Vec<i64>) -> Vec<Timestamp> {
+    timestamps
+        .into_iter()
+        .map(IntoTimestamp::into_timestamp)
+        .collect()
 }
 
 /// Distinguish timestamp extraction failures from value errors in the Python wrapper.
-pub fn extract_timestamp_input(values: &Bound<'_, PyAny>) -> PyResult<Vec<u64>> {
+pub fn extract_timestamp_input(values: &Bound<'_, PyAny>) -> PyResult<Vec<i64>> {
     #[cfg(Py_3_11)]
     if let Some(timestamps) = crate::numeric_buffer::timestamps(values)? {
         return Ok(timestamps);

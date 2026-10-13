@@ -52,21 +52,23 @@ fn copy_as<T: Element>(buffer: &PyUntypedBuffer, py: Python<'_>) -> PyResult<Opt
         .transpose()
 }
 
-pub fn timestamps(values: &Bound<'_, PyAny>) -> PyResult<Option<Vec<u64>>> {
+pub fn timestamps(values: &Bound<'_, PyAny>) -> PyResult<Option<Vec<i64>>> {
     let Some(buffer) = array_buffer(values)? else {
         return Ok(None);
     };
     match ElementType::from_format(buffer.format()) {
-        ElementType::UnsignedInteger { bytes: 8 } => copy_as::<u64>(&buffer, values.py()),
-        ElementType::SignedInteger { bytes: 8 } => {
-            let Some(timestamps) = copy_as::<i64>(&buffer, values.py())? else {
+        ElementType::SignedInteger { bytes: 8 } => copy_as::<i64>(&buffer, values.py()),
+        ElementType::UnsignedInteger { bytes: 8 } => {
+            let Some(timestamps) = copy_as::<u64>(&buffer, values.py())? else {
                 return Ok(None);
             };
             timestamps
                 .into_iter()
                 .map(|v| {
-                    u64::try_from(v).map_err(|_| {
-                        PyOverflowError::new_err("can't convert negative int to unsigned")
+                    i64::try_from(v).map_err(|_| {
+                        PyOverflowError::new_err(
+                            "timestamp exceeds the signed 64-bit nanosecond range",
+                        )
                     })
                 })
                 .collect::<PyResult<Vec<_>>>()

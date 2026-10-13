@@ -46,7 +46,9 @@ use crate::consumer::NominalCoreConsumer;
 use crate::consumer::RequestConsumerWithFallback;
 use crate::consumer::WriteRequestConsumer;
 use crate::listener::LoggingListener;
+use crate::types::validate_points;
 use crate::types::ChannelDescriptor;
+use crate::types::EnqueueError;
 use crate::types::IntoPoints;
 use crate::types::IntoTimestamp;
 
@@ -500,13 +502,20 @@ impl NominalDatasetStream {
         }
     }
 
-    pub fn enqueue(&self, channel_descriptor: &ChannelDescriptor, new_points: impl IntoPoints) {
+    /// Rejects invalid timestamps before buffering any points.
+    pub fn enqueue(
+        &self,
+        channel_descriptor: &ChannelDescriptor,
+        new_points: impl IntoPoints,
+    ) -> Result<(), EnqueueError> {
         let new_points = new_points.into_points();
+        validate_points(&new_points)?;
         let new_count = points_len(&new_points);
 
         self.when_capacity(new_count, |mut sb| {
             sb.extend(channel_descriptor, new_points)
         });
+        Ok(())
     }
 
     /// Enqueues points for many channels, blocking while both buffers are full.
@@ -520,12 +529,19 @@ impl NominalDatasetStream {
     /// An individual oversized entry is admitted whole; the background processor splits output
     /// requests to the configured limit. Fitting buffered records are sent unchanged. Concurrent
     /// producers can overfill a buffer, in which case even a fitting batch may span requests.
-    pub fn enqueue_many(&self, entries: Vec<(ChannelDescriptor, PointsType)>) {
+    /// Invalid timestamps reject the entire submitted batch before any entry is buffered.
+    pub fn enqueue_many(
+        &self,
+        entries: Vec<(ChannelDescriptor, PointsType)>,
+    ) -> Result<(), EnqueueError> {
+        for (_, points) in &entries {
+            validate_points(points)?;
+        }
         let total: usize = entries.iter().map(|(_, points)| points_len(points)).sum();
 
         if total <= self.opts.max_points_per_record {
             self.enqueue_chunk(entries, total);
-            return;
+            return Ok(());
         }
 
         let mut chunk: Vec<(ChannelDescriptor, PointsType)> = Vec::new();
@@ -548,6 +564,7 @@ impl NominalDatasetStream {
         if !chunk.is_empty() {
             self.enqueue_chunk(chunk, chunk_count);
         }
+        Ok(())
     }
 
     fn enqueue_chunk(&self, entries: Vec<(ChannelDescriptor, PointsType)>, new_count: usize) {
@@ -659,11 +676,12 @@ pub struct NominalDoubleWriter<'ds> {
 }
 
 impl NominalDoubleWriter<'_> {
-    pub fn push(&mut self, timestamp: impl IntoTimestamp, value: f64) {
+    pub fn push(&mut self, timestamp: impl IntoTimestamp, value: f64) -> Result<(), EnqueueError> {
         self.writer.push_point(DoublePoint {
-            timestamp: Some(timestamp.into_timestamp()),
+            timestamp: Some(timestamp.try_into_timestamp()?),
             value,
         });
+        Ok(())
     }
 }
 
@@ -672,11 +690,12 @@ pub struct NominalIntegerWriter<'ds> {
 }
 
 impl NominalIntegerWriter<'_> {
-    pub fn push(&mut self, timestamp: impl IntoTimestamp, value: i64) {
+    pub fn push(&mut self, timestamp: impl IntoTimestamp, value: i64) -> Result<(), EnqueueError> {
         self.writer.push_point(IntegerPoint {
-            timestamp: Some(timestamp.into_timestamp()),
+            timestamp: Some(timestamp.try_into_timestamp()?),
             value,
         });
+        Ok(())
     }
 }
 
@@ -685,11 +704,12 @@ pub struct NominalUint64Writer<'ds> {
 }
 
 impl NominalUint64Writer<'_> {
-    pub fn push(&mut self, timestamp: impl IntoTimestamp, value: u64) {
+    pub fn push(&mut self, timestamp: impl IntoTimestamp, value: u64) -> Result<(), EnqueueError> {
         self.writer.push_point(Uint64Point {
-            timestamp: Some(timestamp.into_timestamp()),
+            timestamp: Some(timestamp.try_into_timestamp()?),
             value,
         });
+        Ok(())
     }
 }
 
@@ -698,11 +718,16 @@ pub struct NominalStringWriter<'ds> {
 }
 
 impl NominalStringWriter<'_> {
-    pub fn push(&mut self, timestamp: impl IntoTimestamp, value: impl Into<String>) {
+    pub fn push(
+        &mut self,
+        timestamp: impl IntoTimestamp,
+        value: impl Into<String>,
+    ) -> Result<(), EnqueueError> {
         self.writer.push_point(StringPoint {
-            timestamp: Some(timestamp.into_timestamp()),
+            timestamp: Some(timestamp.try_into_timestamp()?),
             value: value.into(),
         });
+        Ok(())
     }
 }
 
@@ -711,11 +736,16 @@ pub struct NominalStructWriter<'ds> {
 }
 
 impl NominalStructWriter<'_> {
-    pub fn push(&mut self, timestamp: impl IntoTimestamp, value: impl Into<String>) {
+    pub fn push(
+        &mut self,
+        timestamp: impl IntoTimestamp,
+        value: impl Into<String>,
+    ) -> Result<(), EnqueueError> {
         self.writer.push_point(StructPoint {
-            timestamp: Some(timestamp.into_timestamp()),
+            timestamp: Some(timestamp.try_into_timestamp()?),
             json_string: value.into(),
         });
+        Ok(())
     }
 }
 
@@ -724,11 +754,16 @@ pub struct NominalDoubleArrayWriter<'ds> {
 }
 
 impl NominalDoubleArrayWriter<'_> {
-    pub fn push(&mut self, timestamp: impl IntoTimestamp, value: Vec<f64>) {
+    pub fn push(
+        &mut self,
+        timestamp: impl IntoTimestamp,
+        value: Vec<f64>,
+    ) -> Result<(), EnqueueError> {
         self.writer.push_point(DoubleArrayPoint {
-            timestamp: Some(timestamp.into_timestamp()),
+            timestamp: Some(timestamp.try_into_timestamp()?),
             value,
         });
+        Ok(())
     }
 }
 
@@ -741,11 +776,12 @@ impl NominalStringArrayWriter<'_> {
         &mut self,
         timestamp: impl IntoTimestamp,
         value: impl IntoIterator<Item = impl Into<String>>,
-    ) {
+    ) -> Result<(), EnqueueError> {
         self.writer.push_point(StringArrayPoint {
-            timestamp: Some(timestamp.into_timestamp()),
+            timestamp: Some(timestamp.try_into_timestamp()?),
             value: value.into_iter().map(Into::into).collect(),
         });
+        Ok(())
     }
 }
 

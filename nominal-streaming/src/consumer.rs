@@ -302,6 +302,14 @@ impl AvroFileConsumer {
     fn append_series(&self, series: &[Series]) -> ConsumerResult<()> {
         let mut records: Vec<Record> = Vec::new();
         for series in series {
+            if let Some(points) = series
+                .points
+                .as_ref()
+                .and_then(|points| points.points_type.as_ref())
+            {
+                crate::types::validate_points(points)
+                    .map_err(|error| ConsumerError::RequestError(error.to_string()))?;
+            }
             let (timestamps, values) = points_to_avro(series.points.as_ref());
 
             let mut record = Record::new(&CORE_AVRO_SCHEMA).expect("Failed to create Avro record");
@@ -426,7 +434,10 @@ fn points_to_avro(points: Option<&Points>) -> (Vec<Value>, Vec<Value>) {
 }
 
 fn convert_timestamp_to_nanoseconds(timestamp: Timestamp) -> Value {
-    Value::Long(timestamp.seconds * 1_000_000_000 + timestamp.nanos as i64)
+    // append_series validates the full timestamp before this private conversion.
+    Value::Long(
+        (i128::from(timestamp.seconds) * 1_000_000_000 + i128::from(timestamp.nanos)) as i64,
+    )
 }
 
 impl WriteRequestConsumer for AvroFileConsumer {
@@ -600,6 +611,76 @@ mod tests {
     use tempfile::NamedTempFile;
 
     use super::*;
+
+    #[test]
+    fn malformed_request_does_not_append_earlier_series() {
+        let file = NamedTempFile::new().unwrap();
+        let consumer = AvroFileConsumer::new_with_full_path(file.path(), true, None).unwrap();
+        let series = |timestamp| {
+            make_series(
+                "ch",
+                Points {
+                    points_type: Some(PointsType::IntegerPoints(IntegerPoints {
+                        points: vec![
+                            nominal_api::tonic::io::nominal::scout::api::proto::IntegerPoint {
+                                timestamp,
+                                value: 42,
+                            },
+                        ],
+                    })),
+                },
+            )
+        };
+        consumer
+            .append_series(&[series(make_timestamp(0, 0))])
+            .unwrap();
+        for timestamp in [
+            None,
+            make_timestamp(0, -1),
+            make_timestamp(0, 1_000_000_000),
+            make_timestamp(i64::MAX, 0),
+        ] {
+            let error = consumer
+                .append_series(&[series(make_timestamp(1, 0)), series(timestamp)])
+                .unwrap_err();
+            assert!(matches!(error, ConsumerError::RequestError(_)));
+        }
+        drop(consumer);
+        assert_eq!(read_integer_point_count(&file.path().to_path_buf()), 1);
+    }
+
+    #[test]
+    fn timestamp_boundaries_roundtrip() {
+        let file = NamedTempFile::new().unwrap();
+        let consumer = AvroFileConsumer::new_with_full_path(file.path(), true, None).unwrap();
+        let expected = [i64::MIN, -1, 0, i64::MAX];
+        let stream = crate::stream::NominalDatasetStream::new_with_consumer(
+            consumer,
+            crate::stream::NominalStreamOpts::default(),
+        );
+        {
+            let mut writer = stream.integer_writer(crate::types::ChannelDescriptor::new("ch"));
+            for timestamp in expected {
+                writer.push(timestamp, 42).unwrap();
+            }
+        }
+        drop(stream);
+        let records = Reader::new(std::fs::File::open(file.path()).unwrap())
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        let Value::Record(fields) = &records[0] else {
+            panic!("record")
+        };
+        assert_eq!(
+            fields
+                .iter()
+                .find(|(name, _)| name == "timestamps")
+                .unwrap()
+                .1,
+            Value::Array(expected.map(Value::Long).to_vec())
+        );
+    }
 
     #[test]
     fn describe_request_error_is_compact_and_names_the_cause() {
