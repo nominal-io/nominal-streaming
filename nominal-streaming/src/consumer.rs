@@ -57,7 +57,7 @@ pub type ConsumerResult<T> = Result<T, ConsumerError>;
 /// Deliberately NOT the conjure `Error`'s Debug form, which embeds captured
 /// backtraces and parameter maps — several KB per line in the per-request warn
 /// logs that high-volume callers (e.g. Lambda ingest) run with.
-fn describe_request_error(e: &conjure_error::Error) -> String {
+pub(crate) fn describe_request_error(e: &conjure_error::Error) -> String {
     let mut out = match e.kind() {
         conjure_error::ErrorKind::Service(s) => format!("service error {}", s.error_code()),
         conjure_error::ErrorKind::Throttle(_) => "throttled (429)".to_owned(),

@@ -69,3 +69,7 @@ fix: fix-format fix-imports
 clean:
     @echo "Running 'clean' for Python code"
     uv cache clean
+
+# Run Python tests against installed native bindings
+test:
+    uv run --group test python -m unittest discover -s py-nominal-streaming/tests -v
