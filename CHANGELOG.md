@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.4](https://github.com/nominal-io/nominal-streaming/compare/v0.10.3...v0.10.4) - 2026-10-14
+
+### Fixed
+
+- skip zero-point batches so a waiting producer is always woken ([#394](https://github.com/nominal-io/nominal-streaming/pull/394))
+
+### Other
+
+- build requests from flushed points outside the buffer lock ([#396](https://github.com/nominal-io/nominal-streaming/pull/396))
+
 ## [0.10.3](https://github.com/nominal-io/nominal-streaming/compare/v0.10.2...v0.10.3) - 2026-10-13
 
 ### Fixed
