@@ -938,19 +938,15 @@ impl SeriesBuffer {
         }
     }
 
-    /// Swaps the buffered points into `detached`, which must be empty, and returns their count.
-    ///
-    /// Only the swap happens under the lock. The buffer keeps `detached`'s allocation, so passing
-    /// the same map back on every flush reuses both maps' capacity.
-    fn take(&self, detached: &mut HashMap<ChannelDescriptor, PointsType>) -> usize {
-        debug_assert!(detached.is_empty());
+    /// Takes the buffered points and their count, leaving an empty map in the buffer.
+    fn take(&self) -> (usize, HashMap<ChannelDescriptor, PointsType>) {
         let mut points = self.lock();
         self.flush_time.store(
             UNIX_EPOCH.elapsed().unwrap().as_nanos() as u64,
             Ordering::Release,
         );
-        std::mem::swap(&mut *points.sb, detached);
-        points.count.swap(0, Ordering::AcqRel)
+        let taken = std::mem::take(&mut *points.sb);
+        (points.count.swap(0, Ordering::AcqRel), taken)
     }
 
     fn is_empty(&self) -> bool {
@@ -981,10 +977,10 @@ impl SeriesBuffer {
     }
 }
 
-/// Converts taken points into protobuf series, leaving `points` empty with its capacity intact.
-fn into_series(points: &mut HashMap<ChannelDescriptor, PointsType>) -> Vec<Series> {
+/// Converts taken points into protobuf series.
+fn into_series(points: HashMap<ChannelDescriptor, PointsType>) -> Vec<Series> {
     points
-        .drain()
+        .into_iter()
         .map(|(ChannelDescriptor { name, tags }, points)| {
             let channel = Channel { name };
             let points_obj = Points {
@@ -1014,7 +1010,6 @@ fn batch_processor(
     max_request_delay: Duration,
     #[cfg(feature = "instrument")] bp_ns: Arc<AtomicU64>,
 ) {
-    let mut detached = HashMap::new();
     loop {
         debug!("starting processor loop");
         // Read the flag before the count: once `running` is false no more points arrive, so an
@@ -1035,13 +1030,13 @@ fn batch_processor(
         #[cfg(feature = "instrument")]
         let t = Instant::now();
 
-        let point_count = points_buffer.take(&mut detached);
+        let (point_count, points) = points_buffer.take();
 
         if points_buffer.notify() {
             debug!("notified one waiting thread after clearing points buffer");
         }
 
-        let series = into_series(&mut detached);
+        let series = into_series(points);
 
         for_each_record(
             series,
