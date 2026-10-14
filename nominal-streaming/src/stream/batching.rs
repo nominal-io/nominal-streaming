@@ -100,6 +100,7 @@ pub(super) fn points_len(points_type: &PointsType) -> usize {
 
 #[cfg(test)]
 mod tests {
+    use super::super::into_series;
     use super::super::ChannelDescriptor;
     use super::super::DoublePoint;
     use super::super::IntoTimestamp;
@@ -135,7 +136,8 @@ mod tests {
                 .collect::<Vec<_>>(),
         );
         let expected = input.lock().sb.clone();
-        let (total, series) = input.take();
+        let (total, points) = input.take();
+        let series = into_series(points);
         let output = SeriesBuffer::new(usize::MAX);
         let mut emitted = 0;
         for_each_record(series, total, cap, |record, count| {

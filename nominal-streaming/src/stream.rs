@@ -938,37 +938,15 @@ impl SeriesBuffer {
         }
     }
 
-    fn take(&self) -> (usize, Vec<Series>) {
+    /// Takes the buffered points and their count, leaving an empty map in the buffer.
+    fn take(&self) -> (usize, HashMap<ChannelDescriptor, PointsType>) {
         let mut points = self.lock();
         self.flush_time.store(
             UNIX_EPOCH.elapsed().unwrap().as_nanos() as u64,
             Ordering::Release,
         );
-        let result = points
-            .sb
-            .drain()
-            .map(|(ChannelDescriptor { name, tags }, points)| {
-                let channel = Channel { name };
-                let points_obj = Points {
-                    points_type: Some(points),
-                };
-                Series {
-                    channel: Some(channel),
-                    // the protobuf `Series` owns its tags, so the shared map is copied out here --
-                    // once per channel per flush, rather than once per channel per write
-                    tags: tags
-                        .map(|tags| {
-                            tags.iter()
-                                .map(|(key, value)| (key.clone(), value.clone()))
-                                .collect()
-                        })
-                        .unwrap_or_default(),
-                    points: Some(points_obj),
-                }
-            })
-            .collect();
-        let result_count = points.count.swap(0, Ordering::AcqRel);
-        (result_count, result)
+        let taken = std::mem::take(&mut *points.sb);
+        (points.count.swap(0, Ordering::AcqRel), taken)
     }
 
     fn is_empty(&self) -> bool {
@@ -999,6 +977,32 @@ impl SeriesBuffer {
     }
 }
 
+/// Converts taken points into protobuf series.
+fn into_series(points: HashMap<ChannelDescriptor, PointsType>) -> Vec<Series> {
+    points
+        .into_iter()
+        .map(|(ChannelDescriptor { name, tags }, points)| {
+            let channel = Channel { name };
+            let points_obj = Points {
+                points_type: Some(points),
+            };
+            Series {
+                channel: Some(channel),
+                // the protobuf `Series` owns its tags, so the shared map is copied out here --
+                // once per channel per flush, rather than once per channel per write
+                tags: tags
+                    .map(|tags| {
+                        tags.iter()
+                            .map(|(key, value)| (key.clone(), value.clone()))
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+                points: Some(points_obj),
+            }
+        })
+        .collect()
+}
+
 fn batch_processor(
     running: Arc<AtomicBool>,
     points_buffer: Arc<SeriesBuffer>,
@@ -1026,11 +1030,13 @@ fn batch_processor(
         #[cfg(feature = "instrument")]
         let t = Instant::now();
 
-        let (point_count, series) = points_buffer.take();
+        let (point_count, points) = points_buffer.take();
 
         if points_buffer.notify() {
             debug!("notified one waiting thread after clearing points buffer");
         }
+
+        let series = into_series(points);
 
         for_each_record(
             series,
