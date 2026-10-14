@@ -3,7 +3,7 @@ name = "py-nominal-streaming"
 description = "Python bindings for the nominal-streaming Rust library"
 edition = "2021"
 license = "MIT"
-version = "0.10.2"
+version = "0.10.3"
 repository = "https://github.com/nominal-io/nominal-streaming"
 
 [lib]
@@ -11,17 +11,12 @@ repository = "https://github.com/nominal-io/nominal-streaming"
 name = "_nominal_streaming"
 crate-type = ["cdylib"]
 
-[features]
-default = ["python310"]
-python310 = ["pyo3/abi3-py310"]
-python311 = ["pyo3/abi3-py311"]
-
-[build-dependencies]
-pyo3-build-config = "0.29"
-
 [dependencies]
-# Select the stable ABI floor through the python310 or python311 feature.
-pyo3 = { version = "0.29", features = ["extension-module", "time"] }
+pyo3 = { version = "0.29", features = [
+  "abi3-py311",
+  "extension-module",
+  "time",
+] }
 
 nominal-api = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "time"] }

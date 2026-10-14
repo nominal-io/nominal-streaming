@@ -18,9 +18,9 @@ install: install-machete
 install-machete:
     cargo install cargo-machete --version {{machete-version}} --locked
 
-# Lint all targets with core features and the Python 3.11 buffer path enabled.
+# Lint all targets with all workspace features enabled.
 lint:
-    cargo clippy --workspace --all-targets --no-default-features --features nominal-streaming/logging,nominal-streaming/instrument,py-nominal-streaming/python311 --locked -- -D warnings
+    cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 
 # Reject unused Rust dependencies.
 check-dependencies:

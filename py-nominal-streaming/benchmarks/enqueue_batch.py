@@ -12,7 +12,6 @@ from pathlib import Path
 import numpy as np
 from fastavro import reader
 from nominal_streaming import NominalDatasetStream, PyNominalStreamOpts
-from nominal_streaming._nominal_streaming import _BUFFER_FAST_PATH
 
 
 def measure(size: int, kind: str, total_points: int) -> float:
@@ -81,7 +80,6 @@ def main() -> None:
                 "python": platform.python_version(),
                 "platform": platform.platform(),
                 "numpy": np.__version__,
-                "buffer_fast_path": _BUFFER_FAST_PATH,
                 "results": [
                     {"points": size, "input": kind, "median_us": statistics.median(times), "samples_us": times}
                     for (size, kind), times in samples.items()

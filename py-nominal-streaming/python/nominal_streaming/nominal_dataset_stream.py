@@ -40,15 +40,12 @@ import operator
 import pathlib
 import signal
 import threading
-import warnings
 from types import TracebackType
-from typing import TYPE_CHECKING, Any, Mapping, Sequence, SupportsIndex, Type
+from typing import TYPE_CHECKING, Any, Mapping, Self, Sequence, SupportsIndex, Type
 
 import dateutil
-from typing_extensions import Self
 
 from nominal_streaming._nominal_streaming import (
-    _BUFFER_FAST_PATH,
     PyNominalDatasetStream,
     PyNominalStreamOpts,
     _TimestampTypeError,
@@ -59,7 +56,6 @@ if TYPE_CHECKING:
     from numpy.typing import NDArray
 
 logger = logging.getLogger(__name__)
-_warned_slow_batch = False
 
 TimestampLike = str | int | datetime.datetime
 DataType = int | float | str
@@ -327,9 +323,8 @@ class NominalDatasetStream:
         NOTE: assumes that all values have the same type as the first value in the batch--
               ensure that any provided value arrays are homogenously typed
 
-        Lists, tuples and numpy arrays are accepted. Python 3.11+ wheels copy supported numeric
-        arrays directly into Rust-owned memory; pass arrays directly rather than using `.tolist()`.
-        Python 3.10 wheels use element-wise conversion and warn once when an array batch is used.
+        Lists, tuples and numpy arrays are accepted. Supported numeric arrays are copied
+        directly into Rust-owned memory; pass arrays directly rather than using `.tolist()`.
 
         Numpy arrays whose elements would be silently reinterpreted are rejected rather than
         written: `datetime64`/`timedelta64` values (which would become raw epoch counts) and
@@ -342,19 +337,6 @@ class NominalDatasetStream:
             values: Values to write to the specified channel.
             tags: Key-value tags associated with the data being uploaded.
         """
-        global _warned_slow_batch
-        if (
-            not _BUFFER_FAST_PATH
-            and not _warned_slow_batch
-            and (hasattr(timestamps, "dtype") or hasattr(values, "dtype"))
-        ):
-            _warned_slow_batch = True
-            warnings.warn(
-                "Numeric array acceleration is unavailable in this build. Use Python 3.11+ "
-                "with an accelerated wheel for faster enqueue_batch calls.",
-                RuntimeWarning,
-                stacklevel=2,
-            )
         normalized_tags = {**tags} if tags else None
         try:
             self._impl.enqueue_batch(channel_name, timestamps, values, normalized_tags)  # type: ignore[arg-type]

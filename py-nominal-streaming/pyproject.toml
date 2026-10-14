@@ -1,7 +1,7 @@
 [project]
 name = "nominal-streaming"
 description = "Python bindings for the Nominal Rust streaming client"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 classifiers = [
   "Programming Language :: Python :: 3",
   "Programming Language :: Rust",
@@ -13,7 +13,6 @@ classifiers = [
 dynamic = ["readme", "urls", "authors", "license", "version"]
 
 dependencies = [
-  "typing-extensions>=4,<5",
   # Any version is okay for these dependencies
   "python-dateutil>=0.0.0",
 ]
@@ -28,7 +27,7 @@ build-backend = "maturin"
 [tool.maturin]
 # Put the compiled extension *inside* the top-level `nominal_streaming` folder
 module-name = "nominal_streaming._nominal_streaming"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 profile = "release"
 strip = true
 manifest-path = "./Cargo.toml"
