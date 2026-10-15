@@ -2,6 +2,8 @@ use std::error::Error;
 use std::fmt::Debug;
 use std::fmt::Formatter;
 use std::fmt::Write as _;
+use std::io::Write;
+use std::io::{self};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::LazyLock;
@@ -36,6 +38,12 @@ use crate::types::AuthProvider;
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum ConsumerError {
+    #[error("failed to {operation} file {path:?}: {source}")]
+    FileError {
+        path: PathBuf,
+        operation: &'static str,
+        source: std::io::Error,
+    },
     #[error("io error: {0}")]
     IoError(#[from] std::io::Error),
     #[error("avro error: {0}")]
@@ -217,9 +225,32 @@ pub static CORE_AVRO_SCHEMA: LazyLock<apache_avro::Schema> = LazyLock::new(|| {
     apache_avro::Schema::parse(&json).expect("Failed to parse Avro schema")
 });
 
+// apache-avro 0.17 uses Write::write for container framing and block payloads,
+// and assumes it writes every byte. Complete each write, including EINTR retries.
+struct CompleteWrite<W>(W);
+
+impl<W: Write> Write for CompleteWrite<W> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.0.write_all(bytes)?;
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.0.flush()
+    }
+}
+
+// Preserve the actual I/O cause: apache-avro's display text omits it.
+fn avro_error(error: apache_avro::Error) -> io::Error {
+    match error {
+        apache_avro::Error::WriteBytes(source) | apache_avro::Error::WriteMarker(source) => source,
+        other => io::Error::other(other),
+    }
+}
+
 #[derive(Clone)]
 pub struct AvroFileConsumer {
-    writer: Arc<Mutex<apache_avro::Writer<'static, std::fs::File>>>,
+    writer: Arc<Mutex<Option<apache_avro::Writer<'static, CompleteWrite<std::fs::File>>>>>,
     path: PathBuf,
 }
 
@@ -281,7 +312,7 @@ impl AvroFileConsumer {
 
         let mut writer = apache_avro::Writer::builder()
             .schema(&CORE_AVRO_SCHEMA)
-            .writer(file)
+            .writer(CompleteWrite(file))
             .codec(apache_avro::Codec::Snappy)
             .build();
 
@@ -294,7 +325,7 @@ impl AvroFileConsumer {
         }
 
         Ok(Self {
-            writer: Arc::new(Mutex::new(writer)),
+            writer: Arc::new(Mutex::new(Some(writer))),
             path,
         })
     }
@@ -321,12 +352,32 @@ impl AvroFileConsumer {
             records.push(record);
         }
 
-        self.writer
-            .lock()
+        let mut writer = self.writer.lock();
+        let result = writer
+            .as_mut()
+            .ok_or_else(|| {
+                self.file_error(
+                    "append",
+                    io::Error::other("Avro writer is no longer available"),
+                )
+            })?
             .extend(records)
-            .map_err(|e| ConsumerError::AvroError(Box::new(e)))?;
+            .map(|_| ())
+            .map_err(|error| self.file_error("append", avro_error(error)));
+        if let Err(error) = &result {
+            // A partial write leaves a compressed block that cannot safely be retried.
+            *writer = None;
+            tracing::error!("{error}; disabling further writes to this Avro file");
+        }
+        result
+    }
 
-        Ok(())
+    fn file_error(&self, operation: &'static str, source: std::io::Error) -> ConsumerError {
+        ConsumerError::FileError {
+            path: self.path.clone(),
+            operation,
+            source,
+        }
     }
 }
 
@@ -433,25 +484,6 @@ impl WriteRequestConsumer for AvroFileConsumer {
     fn consume(&self, request: &WriteRequestNominal) -> ConsumerResult<()> {
         self.append_series(&request.series)?;
         Ok(())
-    }
-}
-
-impl Drop for AvroFileConsumer {
-    /// Defensive flush-on-drop. In normal operation, records reach disk via
-    /// `append_series` → `apache_avro::Writer::extend`, which flushes at the
-    /// end of every call. But `apache_avro::Writer` itself does not flush on
-    /// drop, so any code path that bypasses `extend` (e.g. a direct
-    /// `Writer::append`, or a future writer call that forgets to flush) would
-    /// silently lose buffered records when the consumer goes out of scope.
-    /// This impl makes that failure mode impossible regardless of how the
-    /// inner writer is driven.
-    fn drop(&mut self) {
-        if let Err(e) = self.writer.lock().flush() {
-            warn!(
-                "failed to flush avro writer for {:?} on drop: {e:?}",
-                self.path
-            );
-        }
     }
 }
 
@@ -600,6 +632,79 @@ mod tests {
     use tempfile::NamedTempFile;
 
     use super::*;
+
+    #[test]
+    fn short_and_interrupted_writes_produce_readable_avro() {
+        #[derive(Default)]
+        struct ShortWriter(Vec<u8>, bool);
+        impl Write for ShortWriter {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                if !self.1 {
+                    self.1 = true;
+                    return Err(io::ErrorKind::Interrupted.into());
+                }
+                let len = bytes.len().min(3);
+                self.0.extend_from_slice(&bytes[..len]);
+                Ok(len)
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        for interrupted in [true, false] {
+            let mut writer = apache_avro::Writer::with_codec(
+                &apache_avro::Schema::Long,
+                CompleteWrite(ShortWriter(Vec::new(), interrupted)),
+                apache_avro::Codec::Snappy,
+            );
+            writer.extend([Value::Long(42)]).unwrap();
+            let bytes = writer.into_inner().unwrap().0 .0;
+            let values = Reader::new(bytes.as_slice())
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+            assert_eq!(values, vec![Value::Long(42)]);
+        }
+    }
+
+    #[test]
+    fn failed_file_does_not_prevent_later_live_delivery() {
+        let file = NamedTempFile::new().unwrap();
+        let fallback = AvroFileConsumer {
+            writer: Arc::new(Mutex::new(Some(apache_avro::Writer::new(
+                &CORE_AVRO_SCHEMA,
+                CompleteWrite(std::fs::File::open(file.path()).unwrap()),
+            )))),
+            path: file.path().to_path_buf(),
+        };
+        #[derive(Debug)]
+        struct RecoveringPrimary(std::sync::atomic::AtomicBool);
+        impl WriteRequestConsumer for RecoveringPrimary {
+            fn consume(&self, _: &WriteRequestNominal) -> ConsumerResult<()> {
+                if self.0.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                    Ok(())
+                } else {
+                    Err(ConsumerError::RequestError("offline".into()))
+                }
+            }
+        }
+        let consumer = RequestConsumerWithFallback::new(
+            RecoveringPrimary(std::sync::atomic::AtomicBool::new(false)),
+            fallback.clone(),
+        );
+        let request = WriteRequestNominal {
+            series: vec![Series::default()],
+            ..Default::default()
+        };
+        let error = consumer.consume(&request).unwrap_err();
+        assert!(matches!(error, ConsumerError::FileError { .. }));
+        assert!(error
+            .to_string()
+            .contains(&file.path().display().to_string()));
+        assert!(fallback.writer.lock().is_none());
+        assert!(fallback.consume(&request).is_err());
+        consumer.consume(&request).unwrap();
+    }
 
     #[test]
     fn describe_request_error_is_compact_and_names_the_cause() {
@@ -1008,37 +1113,6 @@ mod tests {
         assert!(
             second_size < first_size,
             "second write should shrink the file (first: {first_size} bytes, second: {second_size} bytes)"
-        );
-    }
-
-    #[test]
-    fn dropping_consumer_flushes_buffered_records() {
-        // Defensive test against future misuse of avro api (writing without flushing).
-        // Current stream implementation uses .extend(), which flushes internally.
-        let tmp_file = NamedTempFile::new().unwrap();
-        let path: PathBuf = tmp_file.path().to_path_buf();
-
-        {
-            let consumer = AvroFileConsumer::new_with_full_path(&path, true, None).unwrap();
-
-            let mut record = Record::new(&CORE_AVRO_SCHEMA).expect("Failed to create Avro record");
-            record.put("channel", "ch".to_string());
-            record.put("timestamps", Value::Array(vec![Value::Long(0)]));
-            record.put(
-                "values",
-                Value::Array(vec![Value::Union(2, Box::new(Value::Long(42)))]),
-            );
-            record.put("tags", HashMap::<String, String>::new());
-
-            consumer.writer.lock().append(record).unwrap();
-            // consumer drops here — the only thing that can land the buffered
-            // record on disk is a flush from the Drop impl.
-        }
-
-        assert_eq!(
-            read_integer_point_count(&path),
-            1,
-            "expected the buffered point to land on disk after the consumer dropped"
         );
     }
 
