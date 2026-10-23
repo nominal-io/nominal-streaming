@@ -46,6 +46,14 @@ pub enum ConsumerError {
     RequestError(String),
     #[error("consumer error occurred: {0}")]
     GenericConsumerError(#[from] Box<dyn Error + Send + Sync>),
+    /// The Avro file stores uint64 values as signed longs, so points above
+    /// `i64::MAX` cannot be written. They are dropped, the rest of the
+    /// request is still written, and this error lists each affected channel
+    /// with its dropped point count.
+    #[error(
+        "dropped uint64 points above i64::MAX because an Avro long cannot hold them, as (channel, dropped points): {0:?}"
+    )]
+    Uint64OutOfRange(Vec<(String, usize)>),
 }
 
 pub type ConsumerResult<T> = Result<T, ConsumerError>;
@@ -301,19 +309,24 @@ impl AvroFileConsumer {
 
     fn append_series(&self, series: &[Series]) -> ConsumerResult<()> {
         let mut records: Vec<Record> = Vec::new();
+        let mut out_of_range_uint64_series: Vec<(String, usize)> = Vec::new();
         for series in series {
             let (timestamps, values) = points_to_avro(series.points.as_ref());
 
             let mut record = Record::new(&CORE_AVRO_SCHEMA).expect("Failed to create Avro record");
 
-            record.put(
-                "channel",
-                series
-                    .channel
-                    .as_ref()
-                    .map(|c| c.name.clone())
-                    .unwrap_or("values".to_string()),
-            );
+            let channel = series
+                .channel
+                .as_ref()
+                .map(|c| c.name.clone())
+                .unwrap_or("values".to_string());
+            let out_of_range_uint64_points =
+                count_uint64_points_above_long_range(series.points.as_ref());
+            if out_of_range_uint64_points > 0 {
+                out_of_range_uint64_series.push((channel.clone(), out_of_range_uint64_points));
+            }
+
+            record.put("channel", channel);
             record.put("timestamps", Value::Array(timestamps));
             record.put("values", Value::Array(values));
             record.put("tags", series.tags.clone());
@@ -326,7 +339,23 @@ impl AvroFileConsumer {
             .extend(records)
             .map_err(|e| ConsumerError::AvroError(Box::new(e)))?;
 
-        Ok(())
+        if out_of_range_uint64_series.is_empty() {
+            Ok(())
+        } else {
+            Err(ConsumerError::Uint64OutOfRange(out_of_range_uint64_series))
+        }
+    }
+}
+
+fn count_uint64_points_above_long_range(points: Option<&Points>) -> usize {
+    match points {
+        Some(Points {
+            points_type: Some(PointsType::Uint64Points(Uint64Points { points })),
+        }) => points
+            .iter()
+            .filter(|point| i64::try_from(point.value).is_err())
+            .count(),
+        _ => 0,
     }
 }
 
@@ -415,11 +444,12 @@ fn points_to_avro(points: Option<&Points>) -> (Vec<Value>, Vec<Value>) {
             .collect(),
         PointsType::Uint64Points(Uint64Points { points }) => points
             .iter()
-            .map(|point| {
-                (
+            .filter_map(|point| {
+                let value = i64::try_from(point.value).ok()?;
+                Some((
                     convert_timestamp_to_nanoseconds(point.timestamp.unwrap()),
-                    Value::Union(2, Box::new(Value::Long(point.value as i64))),
-                )
+                    Value::Union(2, Box::new(Value::Long(value))),
+                ))
             })
             .collect(),
     }
@@ -772,11 +802,11 @@ mod tests {
                         points: vec![
                             nominal_api::tonic::io::nominal::scout::api::proto::Uint64Point {
                                 timestamp: make_timestamp(1000, 0),
-                                value: u64::MAX,
+                                value: i64::MAX as u64,
                             },
                             nominal_api::tonic::io::nominal::scout::api::proto::Uint64Point {
                                 timestamp: make_timestamp(1001, 0),
-                                value: 12345678901234567890,
+                                value: 7,
                             },
                         ],
                     })),
@@ -965,24 +995,116 @@ mod tests {
                             );
                         }
                         "uint64s" => {
-                            // u64::MAX as i64 is -1, 12345678901234567890u64 as i64 is negative
-                            assert_eq!(
-                                values[0],
-                                Value::Union(2, Box::new(Value::Long(u64::MAX as i64)))
-                            );
-                            assert_eq!(
-                                values[1],
-                                Value::Union(
-                                    2,
-                                    Box::new(Value::Long(12345678901234567890u64 as i64))
-                                )
-                            );
+                            assert_eq!(values[0], Value::Union(2, Box::new(Value::Long(i64::MAX))));
+                            assert_eq!(values[1], Value::Union(2, Box::new(Value::Long(7))));
                         }
                         _ => panic!("Unexpected channel: {}", channel),
                     }
                 }
             }
         }
+    }
+
+    #[test]
+    fn uint64_above_i64_max_is_dropped_and_reported_while_the_rest_is_written() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let path: PathBuf = tmp_file.path().to_path_buf();
+        let consumer = AvroFileConsumer::new_with_full_path(&path, true, None).unwrap();
+
+        let uint64_point =
+            |secs, value| nominal_api::tonic::io::nominal::scout::api::proto::Uint64Point {
+                timestamp: make_timestamp(secs, 0),
+                value,
+            };
+        let request = WriteRequestNominal {
+            series: vec![
+                make_series(
+                    "uint64s",
+                    Points {
+                        points_type: Some(PointsType::Uint64Points(Uint64Points {
+                            points: vec![
+                                uint64_point(1000, 7),
+                                uint64_point(1001, i64::MAX as u64 + 1),
+                                uint64_point(1002, u64::MAX),
+                                uint64_point(1003, 9),
+                            ],
+                        })),
+                    },
+                ),
+                make_series(
+                    "longs",
+                    Points {
+                        points_type: Some(PointsType::IntegerPoints(IntegerPoints {
+                            points: vec![
+                                nominal_api::tonic::io::nominal::scout::api::proto::IntegerPoint {
+                                    timestamp: make_timestamp(1000, 0),
+                                    value: -3,
+                                },
+                            ],
+                        })),
+                    },
+                ),
+            ],
+            session_name: None,
+        };
+
+        let result = consumer.consume(&request);
+        drop(consumer);
+
+        match result {
+            Err(ConsumerError::Uint64OutOfRange(dropped)) => {
+                assert_eq!(dropped, vec![("uint64s".to_string(), 2)]);
+            }
+            other => panic!("expected Uint64OutOfRange, got {other:?}"),
+        }
+
+        let records: Vec<Value> = Reader::new(std::fs::File::open(&path).unwrap())
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        let field = |record: &Value, field: &str| -> Value {
+            let Value::Record(fields) = record else {
+                panic!("expected a record, got {record:?}");
+            };
+            fields
+                .iter()
+                .find(|(name, _)| name == field)
+                .map(|(_, value)| value.clone())
+                .unwrap()
+        };
+        let columns: HashMap<String, (Value, Value)> = records
+            .iter()
+            .map(|record| {
+                let Value::String(channel) = field(record, "channel") else {
+                    panic!("channel is not a string");
+                };
+                (
+                    channel,
+                    (field(record, "timestamps"), field(record, "values")),
+                )
+            })
+            .collect();
+
+        assert_eq!(
+            columns["uint64s"],
+            (
+                Value::Array(vec![
+                    Value::Long(1_000_000_000_000),
+                    Value::Long(1_003_000_000_000),
+                ]),
+                Value::Array(vec![
+                    Value::Union(2, Box::new(Value::Long(7))),
+                    Value::Union(2, Box::new(Value::Long(9))),
+                ]),
+            )
+        );
+        assert_eq!(
+            columns["longs"],
+            (
+                Value::Array(vec![Value::Long(1_000_000_000_000)]),
+                Value::Array(vec![Value::Union(2, Box::new(Value::Long(-3)))]),
+            )
+        );
     }
 
     #[test]
