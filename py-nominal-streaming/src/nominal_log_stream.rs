@@ -24,7 +24,7 @@ pub struct PyLogStreamStats {
     acknowledged_records: u64,
     backed_up_records: u64,
     failed_records: u64,
-    /// Logical upload requests, counting transport retries within the same request.
+    /// Logical upload requests; retries inside the HTTP client are not counted separately.
     requests: u64,
     buffered_bytes: usize,
     last_error: Option<String>,
@@ -183,12 +183,6 @@ impl PyNominalLogStream {
     fn stats(&self) -> PyResult<PyLogStreamStats> {
         Ok(self.stream()?.stream.stats().into())
     }
-    fn save_failed(&self, py: Python<'_>, directory: PathBuf) -> PyResult<PyLogStreamStats> {
-        let owned = self.stream()?;
-        py.detach(|| owned.stream.save_failed(directory))
-            .map(Into::into)
-            .map_err(error)
-    }
     fn flush(&self, py: Python<'_>) -> PyResult<PyLogStreamStats> {
         let owned = self.stream()?;
         py.detach(|| owned.stream.flush())
@@ -200,7 +194,6 @@ impl PyNominalLogStream {
         let Some(owned) = &self.owned else {
             return Ok(None);
         };
-        owned.stream.stop_accepting_writes();
         if wait {
             py.detach(|| owned.close())
                 .map(|s| Some(s.into()))

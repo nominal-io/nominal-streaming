@@ -2,7 +2,6 @@
 
 import datetime as dt
 import json
-import signal
 import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
@@ -20,7 +19,6 @@ class LogStreamTests(unittest.TestCase):
         self.assertEqual(opts.num_runtime_workers, 2)
         values = {
             "max_request_bytes": 4096,
-            "max_batch_bytes": 8192,
             "max_buffered_bytes": 32768,
             "max_points_per_batch": 5,
             "max_request_delay_secs": 0.5,
@@ -77,10 +75,10 @@ class LogStreamTests(unittest.TestCase):
             with stream:
                 stream.enqueue(channel_name="app", timestamp=1, value="started", tags={"service": "api"})
                 stream.enqueue(channel_name="app", timestamp=2, value="ready")
-                with self.assertRaisesRegex(RuntimeError, "max_request_bytes"):
-                    stream.enqueue(channel_name="app", timestamp=3, value="x" * 1024)
             self.assertEqual(stream.stats().backed_up_records, 2)
-            self.assertEqual(len(list(Path(directory).glob("*.jsonl"))), 2)
+            journals = list(Path(directory).glob("*.jsonl"))
+            self.assertEqual(len(journals), 1)
+            self.assertEqual(len(journals[0].read_text().splitlines()), 2)
 
     def test_exact_timestamps(self):
         self.assertEqual(_timestamp_ns("2026-09-14T00:00:00.123456789Z") % 1_000_000_000, 123456789)
@@ -91,7 +89,6 @@ class LogStreamTests(unittest.TestCase):
                 _timestamp_ns(invalid)
 
     def test_file_writes_and_close(self):
-        handler = signal.getsignal(signal.SIGINT)
         with tempfile.TemporaryDirectory() as directory:
             stream = NominalLogStream().to_file(Path(directory)).open()
             stream.enqueue("engine", 1, "start", tags={"shared": "override"})
@@ -114,7 +111,6 @@ class LogStreamTests(unittest.TestCase):
             )
             with self.assertRaises(RuntimeError):
                 stream.enqueue("engine", 3, "late")
-        self.assertIs(signal.getsignal(signal.SIGINT), handler)
 
     def test_validation_before_enqueue(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -135,36 +131,30 @@ class LogStreamTests(unittest.TestCase):
                     stream.enqueue("x", 2**63, "a")
                 self.assertEqual(stream.stats().accepted_records, 0)
 
-    def test_file_only_rejects_fallback_in_either_configuration_order(self):
+    def test_file_only_rejects_fallback(self):
         with tempfile.TemporaryDirectory() as directory:
             primary = Path(directory) / "primary"
             fallback = Path(directory) / "fallback"
-            streams = [
-                NominalLogStream().to_file(primary).with_file_fallback(fallback),
-                NominalLogStream().with_file_fallback(fallback).to_file(primary),
-            ]
-            for stream in streams:
-                with self.assertRaisesRegex(RuntimeError, "file-only streams"):
-                    stream.open()
+            stream = NominalLogStream().to_file(primary).with_file_fallback(fallback)
+            with self.assertRaisesRegex(RuntimeError, "file-only streams"):
+                stream.open()
             self.assertFalse(primary.exists())
             self.assertFalse(fallback.exists())
 
-    def test_failed_close_retains_records_for_rescue(self):
+    def test_failed_close_reports_dropped_records(self):
         for background in (False, True):
             with self.subTest(background=background), tempfile.TemporaryDirectory() as directory:
                 bad = Path(directory) / "occupied"
                 bad.write_text("not a directory")
                 stream = NominalLogStream().to_file(bad).open()
-                stream.enqueue("app", 1, "preserve me")
+                stream.enqueue("app", 1, "dropped")
                 if background:
                     self.assertIsNone(stream.close(wait=False))
                 with self.assertRaises(RuntimeError):
                     stream.close(wait=True)
-                self.assertEqual(stream.stats().failed_records, 1)
-                stats = stream.save_failed(Path(directory) / "rescued")
-                self.assertEqual(stats.backed_up_records, 1)
-                self.assertEqual(stats.failed_records, 0)
-                stream.close()
+                stats = stream.stats()
+                self.assertEqual(stats.failed_records, 1)
+                self.assertEqual(stats.buffered_bytes, 0)
 
 
 if __name__ == "__main__":

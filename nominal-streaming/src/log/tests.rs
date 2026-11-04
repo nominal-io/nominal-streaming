@@ -8,7 +8,7 @@ use std::time::Duration;
 use nominal_api::tonic::nominal::direct_channel_writer::v2 as wire;
 use prost::Message;
 
-use super::transport::LogTransport;
+use super::consumer::LogTransport;
 use super::*;
 
 struct ScriptedTransport {
@@ -18,11 +18,8 @@ struct ScriptedTransport {
 }
 
 impl LogTransport for ScriptedTransport {
-    fn send(&self, body: &bytes::Bytes) -> Result<(), String> {
-        let request =
-            wire::WriteBatchesRequest::decode(zstd::decode_all(body.as_ref()).unwrap().as_slice())
-                .unwrap();
-        self.requests.lock().unwrap().push(request);
+    fn send(&self, request: &wire::WriteBatchesRequest) -> Result<(), String> {
+        self.requests.lock().unwrap().push(request.clone());
         if self.attempts.fetch_add(1, Ordering::Relaxed) < self.failures {
             Err("scripted delivery error".into())
         } else {
@@ -43,6 +40,67 @@ fn record(message: &str) -> LogRecord {
     LogRecord::new(1_789_392_441_123_456_789, message, HashMap::new())
 }
 
+fn journal_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    std::fs::read_dir(dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.extension().is_some_and(|e| e == "jsonl"))
+        .collect()
+}
+
+fn journal_rows(dir: &std::path::Path) -> Vec<serde_json::Value> {
+    journal_files(dir)
+        .into_iter()
+        .flat_map(|path| {
+            std::fs::read_to_string(path)
+                .unwrap()
+                .lines()
+                .map(|line| serde_json::from_str(line).unwrap())
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+/// Holds the first upload until `release` receives, and records every request's size.
+struct HeldFirstUpload {
+    started: crossbeam_channel::Sender<()>,
+    release: crossbeam_channel::Receiver<()>,
+    calls: AtomicUsize,
+    sizes: Mutex<Vec<usize>>,
+}
+
+impl LogTransport for HeldFirstUpload {
+    fn send(&self, request: &wire::WriteBatchesRequest) -> Result<(), String> {
+        let records = request
+            .batches
+            .iter()
+            .map(|b| b.points.as_ref().unwrap().timestamps.len())
+            .sum();
+        self.sizes.lock().unwrap().push(records);
+        if self.calls.fetch_add(1, Ordering::Relaxed) == 0 {
+            self.started.send(()).unwrap();
+            self.release.recv().unwrap();
+        }
+        Ok(())
+    }
+}
+
+fn held_first_upload() -> (
+    Arc<HeldFirstUpload>,
+    crossbeam_channel::Receiver<()>,
+    crossbeam_channel::Sender<()>,
+) {
+    let (started_tx, started_rx) = crossbeam_channel::bounded(1);
+    let (release_tx, release_rx) = crossbeam_channel::bounded(1);
+    let target = Arc::new(HeldFirstUpload {
+        started: started_tx,
+        release: release_rx,
+        calls: AtomicUsize::new(0),
+        sizes: Mutex::new(Vec::new()),
+    });
+    (target, started_rx, release_tx)
+}
+
 #[test]
 fn file_only_flush_preserves_nanoseconds_and_message() {
     let dir = tempfile::tempdir().unwrap();
@@ -55,16 +113,8 @@ fn file_only_flush_preserves_nanoseconds_and_message() {
     assert_eq!(stats.accepted_records, 1);
     assert_eq!(stats.backed_up_records, 1);
     assert_eq!(stats.acknowledged_records, 0);
-    let files = std::fs::read_dir(dir.path())
-        .unwrap()
-        .map(|p| p.unwrap().path())
-        .collect::<Vec<_>>();
-    let jsonl = files
-        .iter()
-        .find(|p| p.extension().is_some_and(|e| e == "jsonl"))
-        .unwrap();
-    let line: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(jsonl).unwrap()).unwrap();
+    let rows = journal_rows(dir.path());
+    let line = &rows[0];
     assert_eq!(line["__REALTIME_TIMESTAMP"], "1789392441123456789");
     assert_eq!(line["MESSAGE"], "café 🚀\nnext line");
     stream.close().unwrap();
@@ -78,7 +128,7 @@ fn file_only_flush_preserves_nanoseconds_and_message() {
 fn invalid_options_and_reserved_keys_fail_before_acceptance() {
     let dir = tempfile::tempdir().unwrap();
     let opts = NominalLogStreamOpts {
-        max_batch_bytes: 0,
+        max_request_bytes: 0,
         ..Default::default()
     };
     assert!(NominalLogStream::builder()
@@ -101,7 +151,7 @@ fn invalid_options_and_reserved_keys_fail_before_acceptance() {
 }
 
 #[test]
-fn byte_and_record_limits_rotate_batches_and_timer_flushes() {
+fn record_limit_rotates_batches_into_one_journal_per_channel() {
     let dir = tempfile::tempdir().unwrap();
     let opts = NominalLogStreamOpts {
         max_records_per_batch: 2,
@@ -122,17 +172,9 @@ fn byte_and_record_limits_rotate_batches_and_timer_flushes() {
     }
     assert_eq!(stream.stats().backed_up_records, 3);
     stream.close().unwrap();
-    let count = std::fs::read_dir(dir.path())
-        .unwrap()
-        .filter(|p| {
-            p.as_ref()
-                .unwrap()
-                .path()
-                .extension()
-                .is_some_and(|e| e == "jsonl")
-        })
-        .count();
-    assert_eq!(count, 2);
+    // Two batches for one channel append to a single journal file.
+    assert_eq!(journal_files(dir.path()).len(), 1);
+    assert_eq!(journal_rows(dir.path()).len(), 3);
 }
 
 #[test]
@@ -249,49 +291,37 @@ fn mixed_delivery_backs_up_only_the_unconfirmed_batch() {
     assert_eq!(stats.acknowledged_records, 1);
     assert_eq!(stats.backed_up_records, 1);
     assert_eq!(stats.failed_records, 0);
-    let rows: Vec<serde_json::Value> = std::fs::read_dir(dir.path())
-        .unwrap()
-        .map(|entry| entry.unwrap().path())
-        .filter(|path| {
-            path.extension()
-                .is_some_and(|extension| extension == "jsonl")
-        })
-        .flat_map(|path| {
-            std::fs::read_to_string(path)
-                .unwrap()
-                .lines()
-                .map(|line| serde_json::from_str(line).unwrap())
-                .collect::<Vec<serde_json::Value>>()
-        })
-        .collect();
+    let rows = journal_rows(dir.path());
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["MESSAGE"], "unconfirmed");
 }
 
 #[test]
-fn disk_failure_is_observable_and_retained_records_can_be_rescued() {
+fn disk_failure_is_reported_and_stream_keeps_running() {
     let unusable = tempfile::NamedTempFile::new().unwrap();
     let stream = NominalLogStream::builder()
         .stream_to_file(unusable.path())
         .build()
         .unwrap();
-    stream.enqueue("a", record("must survive")).unwrap();
-    assert!(stream.close().is_err());
-    assert_eq!(stream.stats().failed_records, 1);
-    assert!(stream.stats().buffered_bytes > 0);
-    let rescue = tempfile::tempdir().unwrap();
-    let stats = stream.save_failed(rescue.path()).unwrap();
-    assert_eq!(stats.failed_records, 0);
-    assert_eq!(stats.backed_up_records, 1);
+    stream.enqueue("a", record("dropped")).unwrap();
+    assert!(stream.flush().is_err());
+    let stats = stream.stats();
+    assert_eq!(stats.failed_records, 1);
     assert_eq!(stats.buffered_bytes, 0);
-    assert!(stream.close().is_ok());
+    assert!(stats.last_error.is_some());
+    // The failure was reported, and the stream still accepts writes.
+    assert!(stream.flush().is_ok());
+    stream.enqueue("a", record("also dropped")).unwrap();
+    assert!(stream.close().is_err());
+    assert_eq!(stream.stats().failed_records, 2);
+    assert!(stream.close().is_err());
 }
 
 #[test]
 fn oversized_record_and_batch_are_rejected_atomically() {
     let dir = tempfile::tempdir().unwrap();
     let options = NominalLogStreamOpts {
-        max_batch_bytes: 512,
+        max_request_bytes: 512,
         max_buffered_bytes: 512,
         ..Default::default()
     };
@@ -302,51 +332,38 @@ fn oversized_record_and_batch_are_rejected_atomically() {
         .unwrap();
     assert!(stream.enqueue("a", record(&"x".repeat(513))).is_err());
     assert!(stream
-        .enqueue_batch("a", vec![record("one"), record("two")])
+        .enqueue_batch(
+            "a",
+            vec![record(&"x".repeat(300)), record(&"y".repeat(300))]
+        )
+        .is_err());
+    // One oversized record rejects the whole input.
+    assert!(stream
+        .enqueue_batch("a", vec![record("small"), record(&"x".repeat(512))])
         .is_err());
     assert_eq!(stream.close().unwrap().accepted_records, 0);
 }
 
 #[test]
 fn backpressure_counts_inflight_bytes_and_close_wakes_blocked_producer() {
-    struct Blocked {
-        started: crossbeam_channel::Sender<()>,
-        finish: crossbeam_channel::Receiver<()>,
-    }
-    impl LogTransport for Blocked {
-        fn send(&self, _body: &bytes::Bytes) -> Result<(), String> {
-            self.started.send(()).unwrap();
-            self.finish.recv().unwrap();
-            Ok(())
-        }
-    }
-    let (started_tx, started_rx) = crossbeam_channel::bounded(1);
-    let (finish_tx, finish_rx) = crossbeam_channel::bounded(1);
+    let (target, started_rx, release_tx) = held_first_upload();
     let options = NominalLogStreamOpts {
-        max_batch_bytes: 512,
+        max_request_bytes: 512,
         max_buffered_bytes: 512,
         max_records_per_batch: 1,
         num_upload_workers: 1,
         ..NominalLogStreamOpts::default()
     };
-    let stream = NominalLogStream::start(
-        options,
-        Some(Arc::new(Blocked {
-            started: started_tx,
-            finish: finish_rx,
-        })),
-        "dataset".into(),
-        None,
-    )
-    .unwrap();
-    stream.enqueue("a", record("one")).unwrap();
+    let stream = NominalLogStream::start(options, Some(target), "dataset".into(), None).unwrap();
+    // Each record is about 300 encoded bytes, so the second waits for the first upload.
+    stream.enqueue("a", record(&"x".repeat(300))).unwrap();
     started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
     std::thread::scope(|scope| {
         let (done_tx, done_rx) = crossbeam_channel::bounded(1);
         let stream_ref = &stream;
         scope.spawn(move || {
             done_tx
-                .send(stream_ref.enqueue("a", record("two")))
+                .send(stream_ref.enqueue("a", record(&"y".repeat(300))))
                 .unwrap();
         });
         assert!(done_rx.recv_timeout(Duration::from_millis(20)).is_err());
@@ -356,33 +373,93 @@ fn backpressure_counts_inflight_bytes_and_close_wakes_blocked_producer() {
             done_rx.recv_timeout(Duration::from_secs(2)).unwrap(),
             Err(LogStreamError::Closed)
         ));
-        finish_tx.send(()).unwrap();
+        release_tx.send(()).unwrap();
     });
     assert_eq!(stream.close().unwrap().acknowledged_records, 1);
 }
 
 #[test]
-fn partial_rescue_keeps_accounting_and_never_overwrites_reserved_arguments() {
-    let options = NominalLogStreamOpts {
-        max_records_per_batch: 1,
+fn backpressure_waits_for_inflight_capacity_before_splitting_partial_batch() {
+    let input = LogRecord::new(0, "x".repeat(200), HashMap::new());
+    let charge = super::batch::LogRecordSize::new(&input).record_len();
+    let (target, started_rx, release_tx) = held_first_upload();
+    let opts = NominalLogStreamOpts {
+        max_request_bytes: charge * 3,
+        max_buffered_bytes: charge * 3,
+        max_records_per_batch: 2,
+        max_request_delay: Duration::from_secs(60),
         num_upload_workers: 1,
-        ..NominalLogStreamOpts::default()
+        ..Default::default()
     };
     let stream =
-        NominalLogStream::start(options, Some(target(usize::MAX)), "dataset".into(), None).unwrap();
-    let mut collision = record("real message");
-    collision
-        .args
-        .insert("MESSAGE".into(), "user argument".into());
+        NominalLogStream::start(opts, Some(target.clone()), "fixture".into(), None).unwrap();
     stream
-        .enqueue_batch("a", vec![collision, record("rescuable")])
+        .enqueue_batch("a", vec![input.clone(), input.clone()])
         .unwrap();
-    assert!(stream.close().is_err());
+    started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    stream.enqueue("a", input.clone()).unwrap();
+    std::thread::scope(|scope| {
+        let (done_tx, done_rx) = crossbeam_channel::bounded(1);
+        let stream_ref = &stream;
+        scope.spawn(move || done_tx.send(stream_ref.enqueue("a", input)).unwrap());
+        // The buffer is full and the first upload is held, so the producer must wait.
+        assert!(done_rx.recv_timeout(Duration::from_millis(50)).is_err());
+        release_tx.send(()).unwrap();
+        done_rx
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap()
+            .unwrap();
+    });
+    let stats = stream.close().unwrap();
+    assert_eq!(stats.acknowledged_records, 4);
+    assert_eq!(target.sizes.lock().unwrap().as_slice(), &[2, 2]);
+}
+
+#[test]
+fn panicking_transport_falls_back_to_journal() {
+    struct PanickingTransport;
+    impl LogTransport for PanickingTransport {
+        fn send(&self, _request: &wire::WriteBatchesRequest) -> Result<(), String> {
+            panic!("auth provider failed");
+        }
+    }
     let dir = tempfile::tempdir().unwrap();
-    assert!(stream.save_failed(dir.path()).is_err());
-    assert_eq!(stream.stats().backed_up_records, 1);
-    assert_eq!(stream.stats().failed_records, 1);
-    assert!(stream.stats().buffered_bytes > 0);
+    let stream = NominalLogStream::start(
+        NominalLogStreamOpts::default(),
+        Some(Arc::new(PanickingTransport)),
+        "fixture".into(),
+        Some(dir.path().into()),
+    )
+    .unwrap();
+    stream.enqueue("a", record("kept")).unwrap();
+    let stats = stream.close().unwrap();
+    assert_eq!(stats.backed_up_records, 1);
+    assert_eq!(stats.last_error.as_deref(), Some("log transport panicked"));
+    assert_eq!(journal_rows(dir.path())[0]["MESSAGE"], "kept");
+}
+
+#[test]
+fn core_only_failure_drops_batch_and_keeps_accepting() {
+    let stream = NominalLogStream::start(
+        NominalLogStreamOpts::default(),
+        Some(target(usize::MAX)),
+        "dataset".into(),
+        None,
+    )
+    .unwrap();
+    let mut reserved = record("real message");
+    reserved
+        .args
+        .insert("MESSAGE".into(), "allowed without a journal".into());
+    stream.enqueue("a", reserved).unwrap();
+    let error = stream.flush().unwrap_err();
+    assert!(error.to_string().contains("scripted delivery error"));
+    stream.enqueue("a", record("later")).unwrap();
+    assert!(stream.close().is_err());
+    let stats = stream.stats();
+    assert_eq!(stats.accepted_records, 2);
+    assert_eq!(stats.failed_records, 2);
+    assert_eq!(stats.buffered_bytes, 0);
 }
 
 #[test]
@@ -425,39 +502,6 @@ fn serialized_limit_splits_unicode_and_arguments_independently_of_memory_budget(
 }
 
 #[test]
-fn serialized_oversized_singleton_rejects_entire_input() {
-    let transport = target(0);
-    let opts = NominalLogStreamOpts {
-        max_request_bytes: 512,
-        ..NominalLogStreamOpts::default()
-    };
-    let stream =
-        NominalLogStream::start(opts, Some(transport.clone()), "fixture".into(), None).unwrap();
-    assert!(stream
-        .enqueue_batch("channel", vec![record("small"), record(&"x".repeat(512))])
-        .is_err());
-    assert_eq!(stream.close().unwrap().accepted_records, 0);
-    assert!(transport.requests.lock().unwrap().is_empty());
-}
-
-#[test]
-fn admission_reserves_encoding_capacity_before_accepting() {
-    let input = record(&"x".repeat(2048));
-    let record_only = input.accounted_bytes("a");
-    let transport = target(0);
-    let opts = NominalLogStreamOpts {
-        max_batch_bytes: record_only,
-        max_buffered_bytes: record_only,
-        ..NominalLogStreamOpts::default()
-    };
-    let stream =
-        NominalLogStream::start(opts, Some(transport.clone()), "fixture".into(), None).unwrap();
-    assert!(stream.enqueue("a", input).is_err());
-    assert_eq!(stream.close().unwrap().accepted_records, 0);
-    assert!(transport.requests.lock().unwrap().is_empty());
-}
-
-#[test]
 fn request_limit_includes_multiple_channels_and_dataset_envelope() {
     let transport = target(0);
     let opts = NominalLogStreamOpts {
@@ -480,18 +524,16 @@ fn request_limit_includes_multiple_channels_and_dataset_envelope() {
 }
 
 #[test]
-fn encoder_rejects_oversize_before_encoding_and_preserves_roundtrip() {
-    let mut batch = super::batch::Batch::default();
+fn encoder_roundtrips_request() {
+    let mut batch = super::batch::LogBatch::default();
     let record = record(&"abcdef".repeat(200));
-    let size = super::batch::RecordSize::new(&record);
+    let size = super::batch::LogRecordSize::new(&record);
     batch.push("channel", record, size, 0);
     let request = batch.into_request("fixture");
-    let limit = request.encoded_len();
-    assert!(transport::encode(&request, limit - 1).is_err());
-    let body = transport::encode(&request, limit).unwrap();
+    let body = consumer::encode(&request).unwrap();
     assert_eq!(
         request,
-        wire::WriteBatchesRequest::decode(zstd::decode_all(body.as_ref()).unwrap().as_slice())
+        wire::WriteBatchesRequest::decode(zstd::decode_all(body.as_slice()).unwrap().as_slice())
             .unwrap()
     );
 }
@@ -499,7 +541,7 @@ fn encoder_rejects_oversize_before_encoding_and_preserves_roundtrip() {
 #[test]
 fn exactly_full_serialized_batch_dispatches_without_waiting_for_timer() {
     let input = record(&"x".repeat(600));
-    let limit = super::batch::RecordSize::new(&input).singleton_len("channel", "fixture");
+    let limit = super::batch::LogRecordSize::new(&input).singleton_len("channel", "fixture");
     let transport = target(0);
     let opts = NominalLogStreamOpts {
         max_request_bytes: limit,
@@ -521,10 +563,10 @@ fn exactly_full_serialized_batch_dispatches_without_waiting_for_timer() {
 }
 
 #[test]
-fn panicking_delivery_retains_records_and_flush_returns_error() {
+fn panicking_delivery_drops_batch_and_flush_returns_error() {
     struct PanickingTransport;
     impl LogTransport for PanickingTransport {
-        fn send(&self, _body: &bytes::Bytes) -> Result<(), String> {
+        fn send(&self, _request: &wire::WriteBatchesRequest) -> Result<(), String> {
             panic!("auth provider failed");
         }
     }
@@ -538,7 +580,7 @@ fn panicking_delivery_retains_records_and_flush_returns_error() {
         )
         .unwrap(),
     );
-    stream.enqueue("app", record("preserve me")).unwrap();
+    stream.enqueue("app", record("dropped")).unwrap();
     let (done_tx, done_rx) = std::sync::mpsc::channel();
     let flushing = stream.clone();
     let thread = std::thread::spawn(move || done_tx.send(flushing.flush()).unwrap());
@@ -547,19 +589,12 @@ fn panicking_delivery_retains_records_and_flush_returns_error() {
         .unwrap()
         .is_err());
     thread.join().unwrap();
-    assert!(stream.enqueue("app", record("late")).is_err());
-    let stats = stream.stats();
-    assert_eq!(stats.failed_records, 1);
-    assert_eq!(stats.acknowledged_records, 0);
-    assert!(stats.buffered_bytes > 0);
+    stream.enqueue("app", record("late")).unwrap();
     assert!(stream.close().is_err());
-
-    let directory = tempfile::tempdir().unwrap();
-    let stats = stream.save_failed(directory.path()).unwrap();
-    assert_eq!(stats.backed_up_records, 1);
-    assert_eq!(stats.failed_records, 0);
+    let stats = stream.stats();
+    assert_eq!(stats.failed_records, 2);
+    assert_eq!(stats.acknowledged_records, 0);
     assert_eq!(stats.buffered_bytes, 0);
-    stream.close().unwrap();
 }
 
 #[test]
@@ -608,20 +643,14 @@ fn channel_writer_merges_common_arguments_with_record_overrides() {
 }
 
 #[test]
-fn file_only_target_rejects_fallback_in_either_configuration_order() {
+fn file_only_target_rejects_fallback() {
     let directory = tempfile::tempdir().unwrap();
     let file = directory.path().join("file");
     let fallback = directory.path().join("fallback");
-    for builder in [
-        NominalLogStream::builder()
-            .stream_to_file(&file)
-            .with_file_fallback(&fallback),
-        NominalLogStream::builder()
-            .with_file_fallback(&fallback)
-            .stream_to_file(&file),
-    ] {
-        assert!(matches!(builder.build(), Err(LogStreamError::Invalid(_))));
-    }
+    let builder = NominalLogStream::builder()
+        .stream_to_file(&file)
+        .with_file_fallback(&fallback);
+    assert!(matches!(builder.build(), Err(LogStreamError::Invalid(_))));
     assert!(!file.exists());
     assert!(!fallback.exists());
 }
@@ -650,22 +679,16 @@ fn public_builder_and_writer_accept_timeseries_timestamp_inputs() {
         .is_err());
     assert!(writer.push(Duration::MAX, "overflow duration").is_err());
     assert_eq!(stream.close().unwrap().accepted_records, 3);
-    let mut timestamps = Vec::new();
-    for entry in std::fs::read_dir(directory.path()).unwrap() {
-        let path = entry.unwrap().path();
-        if path.extension().is_some_and(|ext| ext == "jsonl") {
-            for line in std::fs::read_to_string(path).unwrap().lines() {
-                let row: serde_json::Value = serde_json::from_str(line).unwrap();
-                timestamps.push(
-                    row["__REALTIME_TIMESTAMP"]
-                        .as_str()
-                        .unwrap()
-                        .parse::<i64>()
-                        .unwrap(),
-                );
-            }
-        }
-    }
+    let mut timestamps: Vec<i64> = journal_rows(directory.path())
+        .iter()
+        .map(|row| {
+            row["__REALTIME_TIMESTAMP"]
+                .as_str()
+                .unwrap()
+                .parse()
+                .unwrap()
+        })
+        .collect();
     timestamps.sort();
     assert_eq!(timestamps, vec![-1, 1, 1_000_000_002]);
 }

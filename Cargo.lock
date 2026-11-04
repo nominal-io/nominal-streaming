@@ -1600,7 +1600,6 @@ version = "0.10.5"
 dependencies = [
  "apache-avro",
  "async-channel",
- "bytes",
  "chrono",
  "conjure-error",
  "conjure-http",

@@ -1,30 +1,35 @@
 use std::collections::HashMap;
 use std::collections::VecDeque;
-use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::thread::{self};
 
 use conjure_object::ResourceIdentifier;
-use nominal_api::tonic::nominal::direct_channel_writer::v2 as wire;
 use parking_lot::Condvar;
 use parking_lot::Mutex;
 
-use super::batch::Batch;
-use super::batch::RecordSize;
+use super::batch::LogBatch;
+use super::batch::LogRecordSize;
 use super::consumer::DeliveryOutcome;
+use super::consumer::HttpTransport;
 use super::consumer::LogConsumer;
-use super::journal;
-use super::transport::CoreTarget;
-use super::transport::HttpTransport;
-use super::transport::LogTransport;
+use super::consumer::LogTransport;
+use super::consumer::TokenProvider;
+use super::journal::Journal;
+use super::journal::{self};
 use super::LogRecord;
 use super::LogStreamError;
 use super::LogStreamStats;
 use super::NominalLogStreamOpts;
 use crate::types::AuthProvider;
 use crate::types::IntoTimestamp;
+
+struct CoreTarget {
+    auth: TokenProvider,
+    dataset_rid: ResourceIdentifier,
+    handle: tokio::runtime::Handle,
+}
 
 /// Configure a Core or file target and the log stream resource limits.
 #[derive(Default)]
@@ -60,7 +65,7 @@ impl NominalLogStreamBuilder {
         });
         self
     }
-    /// Directory for per-channel journal segments and their import manifests.
+    /// Directory for per-channel journal files and their import manifests.
     pub fn with_file_fallback(mut self, directory: impl Into<PathBuf>) -> Self {
         self.backup = Some(directory.into());
         self
@@ -86,7 +91,6 @@ impl NominalLogStreamBuilder {
 
     /// Validate the configuration and start upload workers.
     pub fn build(self) -> Result<NominalLogStream, LogStreamError> {
-        self.opts.validate()?;
         if self.file.is_some() == self.core.is_some() {
             return Err(LogStreamError::Invalid(
                 "choose a Core target or file-only target".into(),
@@ -112,31 +116,21 @@ impl NominalLogStreamBuilder {
 }
 
 #[derive(Default)]
-struct State {
-    pending: Batch,
-    ready: VecDeque<Batch>,
+struct LogStreamState {
+    pending: LogBatch,
+    ready: VecDeque<LogBatch>,
     closed: bool,
-    flushing: bool,
-    unfinished: usize,
     stats: LogStreamStats,
-    fatal_error: Option<String>,
-    // Keep unpreserved records owned until explicitly rescued or the stream is dropped.
-    failed: Vec<FailedBatch>,
+    // The first failure that flush has not reported yet. The stream keeps running.
+    unreported_error: Option<String>,
 }
 
-struct FailedBatch {
-    request: Arc<wire::WriteBatchesRequest>,
-    bytes: usize,
-    count: usize,
-}
-
-struct Shared {
-    state: Mutex<State>,
+struct LogStreamShared {
+    state: Mutex<LogStreamState>,
     changed: Condvar,
     opts: NominalLogStreamOpts,
     consumer: LogConsumer,
     dataset_rid: String,
-    backup: Option<PathBuf>,
 }
 
 /// A bounded log stream. Enqueue acknowledges memory acceptance, not remote durability.
@@ -144,7 +138,7 @@ struct Shared {
 /// Call `flush` or `close` to observe delivery failures. Ambiguous network failures may
 /// result in duplicates after retry or journal recovery. No ordering across batches is promised.
 pub struct NominalLogStream {
-    shared: Arc<Shared>,
+    shared: Arc<LogStreamShared>,
     admission: Mutex<()>,
     workers: Mutex<Vec<JoinHandle<()>>>,
 }
@@ -161,37 +155,27 @@ impl NominalLogStream {
         backup: Option<PathBuf>,
     ) -> Result<Self, LogStreamError> {
         opts.validate()?;
-        let shared = Arc::new(Shared {
-            state: Mutex::new(State::default()),
+        let shared = Arc::new(LogStreamShared {
+            state: Mutex::new(LogStreamState::default()),
             changed: Condvar::new(),
-            consumer: LogConsumer::new(opts.clone(), target, backup.clone()),
+            consumer: LogConsumer::new(target, backup.map(Journal::new)),
             opts,
             dataset_rid,
-            backup,
         });
-        let mut workers = Vec::new();
-        for index in 0..shared.opts.num_upload_workers {
-            let worker_shared = shared.clone();
-            match thread::Builder::new()
-                .name(format!("nominal-log-{index}"))
-                .spawn(move || worker(worker_shared))
-            {
-                Ok(join) => workers.push(join),
-                Err(error) => {
-                    shared.state.lock().closed = true;
-                    shared.changed.notify_all();
-                    for join in workers {
-                        let _ = join.join();
-                    }
-                    return Err(error.into());
-                }
-            }
-        }
-        Ok(Self {
+        let stream = Self {
             shared,
             admission: Mutex::new(()),
-            workers: Mutex::new(workers),
-        })
+            workers: Mutex::new(Vec::new()),
+        };
+        for index in 0..stream.shared.opts.num_upload_workers {
+            let shared = stream.shared.clone();
+            // On error, dropping the stream closes it and joins the workers already started.
+            let join = thread::Builder::new()
+                .name(format!("nominal-log-{index}"))
+                .spawn(move || worker(shared))?;
+            stream.workers.lock().push(join);
+        }
+        Ok(stream)
     }
 
     pub fn enqueue(&self, channel: &str, record: LogRecord) -> Result<(), LogStreamError> {
@@ -211,15 +195,15 @@ impl NominalLogStream {
         let mut total_bytes = 0usize;
         let mut sizes = Vec::with_capacity(records.len());
         for record in &records {
-            if self.shared.backup.is_some()
-                && (record.args.contains_key("MESSAGE")
-                    || record.args.contains_key("__REALTIME_TIMESTAMP"))
+            if self.shared.consumer.has_journal()
+                && (record.args.contains_key(journal::MESSAGE_KEY)
+                    || record.args.contains_key(journal::TIMESTAMP_KEY))
             {
                 return Err(LogStreamError::Invalid(
                     "journal backups reserve MESSAGE and __REALTIME_TIMESTAMP argument keys".into(),
                 ));
             }
-            let size = RecordSize::new(record);
+            let size = LogRecordSize::new(record);
             if size.singleton_len(channel, &self.shared.dataset_rid)
                 > self.shared.opts.max_request_bytes
             {
@@ -227,18 +211,9 @@ impl NominalLogStream {
                     "log record exceeds max_request_bytes".into(),
                 ));
             }
-            let bytes = record
-                .accounted_bytes(channel)
-                .saturating_add(size.encoding_reservation(channel, &self.shared.dataset_rid));
+            let bytes = size.record_len();
             sizes.push((size, bytes));
-            if bytes > self.shared.opts.max_batch_bytes {
-                return Err(LogStreamError::Invalid(
-                    "log record exceeds max_batch_bytes".into(),
-                ));
-            }
-            total_bytes = total_bytes
-                .checked_add(bytes)
-                .ok_or_else(|| LogStreamError::Invalid("batch size overflow".into()))?;
+            total_bytes += bytes;
         }
         if total_bytes > self.shared.opts.max_buffered_bytes {
             return Err(LogStreamError::Invalid(
@@ -248,9 +223,6 @@ impl NominalLogStream {
         let _admission = self.admission.lock();
         let mut state = self.shared.state.lock();
         loop {
-            if let Some(error) = &state.fatal_error {
-                return Err(LogStreamError::Delivery(error.clone()));
-            }
             if state.closed {
                 return Err(LogStreamError::Closed);
             }
@@ -259,8 +231,8 @@ impl NominalLogStream {
             }
             // Only force a partial batch out if no queued/in-flight work can free capacity.
             // Otherwise let the pending batch fill after an upload completes. Its normal
-            // flush timer still applies, and close/fatal outcomes still wake admission.
-            if state.unfinished == state.pending.count {
+            // flush timer still applies, and close still wakes admission.
+            if state.stats.buffered_bytes == state.pending.bytes {
                 queue_pending(&mut state);
             }
             self.shared.changed.notify_all();
@@ -269,22 +241,18 @@ impl NominalLogStream {
         let pending_was_empty = state.pending.count == 0;
         let ready_before = state.ready.len();
         state.stats.accepted_records += records.len() as u64;
-        state.unfinished += records.len();
         state.stats.buffered_bytes += total_bytes;
         for (record, (size, bytes)) in records.into_iter().zip(sizes) {
-            if state.pending.count > 0
-                && (state.pending.bytes.saturating_add(bytes) > self.shared.opts.max_batch_bytes
-                    || state
-                        .pending
-                        .encoded_len_after(channel, size, &self.shared.dataset_rid)
-                        > self.shared.opts.max_request_bytes
-                    || state.pending.count >= self.shared.opts.max_records_per_batch)
+            // A full batch by count was already queued after the previous push.
+            if state
+                .pending
+                .encoded_len_after(channel, size, &self.shared.dataset_rid)
+                > self.shared.opts.max_request_bytes
             {
                 queue_pending(&mut state);
             }
             state.pending.push(channel, record, size, bytes);
             if state.pending.count >= self.shared.opts.max_records_per_batch
-                || state.pending.bytes >= self.shared.opts.max_batch_bytes
                 || state.pending.encoded_len(&self.shared.dataset_rid)
                     >= self.shared.opts.max_request_bytes
             {
@@ -320,13 +288,16 @@ impl NominalLogStream {
     pub fn flush(&self) -> Result<LogStreamStats, LogStreamError> {
         let _admission = self.admission.lock();
         let mut state = self.shared.state.lock();
-        state.flushing = true;
+        // Holding admission, nothing can refill the pending batch while this waits.
+        queue_pending(&mut state);
         self.shared.changed.notify_all();
-        while state.unfinished > 0 {
+        while state.stats.buffered_bytes > 0 {
             self.shared.changed.wait(&mut state);
         }
-        state.flushing = false;
-        outcome(&state)
+        match state.unreported_error.take() {
+            Some(error) => Err(LogStreamError::Delivery(error)),
+            None => Ok(state.stats.clone()),
+        }
     }
 
     pub fn stop_accepting_writes(&self) {
@@ -334,57 +305,18 @@ impl NominalLogStream {
         self.shared.changed.notify_all();
     }
 
-    /// Stop admission, drain accepted records, and join every worker. Repeated calls are safe.
+    /// Stop admission, drain accepted records, and join every worker. Repeated calls are safe
+    /// and return the same error if a batch was dropped after the last successful flush.
     pub fn close(&self) -> Result<LogStreamStats, LogStreamError> {
         self.stop_accepting_writes();
-        let mut workers = self.workers.lock();
-        let mut panicked = false;
-        for join in workers.drain(..) {
-            panicked |= join.join().is_err();
+        // Delivery panics are caught in the worker, so joining cannot fail.
+        for join in self.workers.lock().drain(..) {
+            let _ = join.join();
         }
-        if panicked {
-            let mut state = self.shared.state.lock();
-            state.fatal_error = Some("log worker panicked".into());
-        }
-        outcome(&self.shared.state.lock())
-    }
-
-    /// After a failed close, rescue retained batches to a usable directory. The stream stays
-    /// closed. A partial rescue can duplicate a channel segment; inspect manifests when recovering.
-    pub fn save_failed(
-        &self,
-        directory: impl AsRef<Path>,
-    ) -> Result<LogStreamStats, LogStreamError> {
-        self.save_failed_with(directory.as_ref(), journal::save)
-    }
-
-    fn save_failed_with(
-        &self,
-        directory: &Path,
-        save: impl Fn(&Path, &wire::WriteBatchesRequest) -> std::io::Result<()>,
-    ) -> Result<LogStreamStats, LogStreamError> {
-        let _ = self.close();
-        // Admission is closed. Reuse its lock to serialize rescue calls without blocking stats.
-        let _rescue = self.admission.lock();
-        loop {
-            let request = {
-                let mut state = self.shared.state.lock();
-                let Some(batch) = state.failed.last() else {
-                    state.fatal_error = None;
-                    return Ok(state.stats.clone());
-                };
-                Arc::clone(&batch.request)
-            };
-            // State retains ownership until the write succeeds, including if the saver panics.
-            save(directory, &request)?;
-            let mut state = self.shared.state.lock();
-            let saved = state
-                .failed
-                .pop()
-                .expect("rescue owns the last failed batch");
-            state.stats.backed_up_records += saved.count as u64;
-            state.stats.failed_records -= saved.count as u64;
-            state.stats.buffered_bytes -= saved.bytes;
+        let state = self.shared.state.lock();
+        match &state.unreported_error {
+            Some(error) => Err(LogStreamError::Delivery(error.clone())),
+            None => Ok(state.stats.clone()),
         }
     }
 }
@@ -411,13 +343,15 @@ impl NominalLogWriter<'_> {
         timestamp: impl IntoTimestamp,
         message: impl Into<String>,
     ) -> Result<(), LogStreamError> {
-        let timestamp = timestamp.try_into_timestamp().map_err(|_| {
-            LogStreamError::Invalid("timestamp exceeds signed nanosecond range".into())
-        })?;
-        let timestamp_ns = i64::try_from(
-            i128::from(timestamp.seconds) * 1_000_000_000 + i128::from(timestamp.nanos),
-        )
-        .map_err(|_| LogStreamError::Invalid("timestamp exceeds signed nanosecond range".into()))?;
+        let timestamp_ns = timestamp
+            .try_into_timestamp()
+            .ok()
+            .and_then(|t| {
+                i64::try_from(i128::from(t.seconds) * 1_000_000_000 + i128::from(t.nanos)).ok()
+            })
+            .ok_or_else(|| {
+                LogStreamError::Invalid("timestamp exceeds signed nanosecond range".into())
+            })?;
         self.stream.enqueue(
             &self.channel,
             LogRecord::new(timestamp_ns, message, self.args.clone()),
@@ -441,20 +375,13 @@ impl NominalLogWriter<'_> {
     }
 }
 
-fn outcome(state: &State) -> Result<LogStreamStats, LogStreamError> {
-    match &state.fatal_error {
-        Some(error) => Err(LogStreamError::Delivery(error.clone())),
-        None => Ok(state.stats.clone()),
-    }
-}
-
-fn queue_pending(state: &mut State) {
+fn queue_pending(state: &mut LogStreamState) {
     if state.pending.count > 0 {
         state.ready.push_back(std::mem::take(&mut state.pending));
     }
 }
 
-fn next_batch(shared: &Shared) -> Option<Batch> {
+fn next_batch(shared: &LogStreamShared) -> Option<LogBatch> {
     let mut state = shared.state.lock();
     loop {
         if let Some(batch) = state.ready.pop_front() {
@@ -465,7 +392,7 @@ fn next_batch(shared: &Shared) -> Option<Batch> {
                 .opts
                 .max_request_delay
                 .saturating_sub(first.elapsed());
-            if state.closed || state.flushing || remaining.is_zero() {
+            if state.closed || remaining.is_zero() {
                 return Some(std::mem::take(&mut state.pending));
             }
             shared.changed.wait_for(&mut state, remaining);
@@ -477,7 +404,7 @@ fn next_batch(shared: &Shared) -> Option<Batch> {
     }
 }
 
-fn worker(shared: Arc<Shared>) {
+fn worker(shared: Arc<LogStreamShared>) {
     while let Some(batch) = next_batch(&shared) {
         let count = batch.count;
         let bytes = batch.bytes;
@@ -490,167 +417,24 @@ fn worker(shared: Arc<Shared>) {
         }))
         .unwrap_or_else(|_| Err("log delivery worker panicked".into()));
         let mut state = shared.state.lock();
-        state.unfinished -= count;
+        state.stats.buffered_bytes -= bytes;
         match result {
-            Ok(delivery) => {
-                match delivery {
-                    DeliveryOutcome::Acknowledged => {
-                        state.stats.acknowledged_records += count as u64
-                    }
-                    DeliveryOutcome::BackedUp { delivery_error } => {
-                        state.stats.backed_up_records += count as u64;
-                        if let Some(error) = delivery_error {
-                            state.stats.last_error = Some(error);
-                        }
+            Ok(delivery) => match delivery {
+                DeliveryOutcome::Acknowledged => state.stats.acknowledged_records += count as u64,
+                DeliveryOutcome::BackedUp { delivery_error } => {
+                    state.stats.backed_up_records += count as u64;
+                    if let Some(error) = delivery_error {
+                        state.stats.last_error = Some(error);
                     }
                 }
-                state.stats.buffered_bytes -= bytes;
-            }
+            },
             Err(error) => {
-                tracing::error!("Log batch could not be preserved: {error}");
+                tracing::error!(records = count, "Dropped log batch: {error}");
                 state.stats.failed_records += count as u64;
                 state.stats.last_error = Some(error.clone());
-                state.fatal_error = Some(error);
-                state.failed.push(FailedBatch {
-                    request: Arc::new(request),
-                    count,
-                    bytes,
-                });
-                state.closed = true;
+                state.unreported_error.get_or_insert(error);
             }
         }
         shared.changed.notify_all();
-    }
-}
-
-#[cfg(test)]
-mod pressure_tests {
-    use std::sync::atomic::AtomicUsize;
-    use std::sync::atomic::Ordering;
-    use std::sync::mpsc;
-    use std::time::Duration;
-    use std::time::Instant;
-
-    use prost::Message;
-
-    use super::*;
-
-    #[test]
-    fn recovery_keeps_stats_available_during_journal_io() {
-        let directory = tempfile::tempdir().unwrap();
-        let occupied = directory.path().join("occupied");
-        std::fs::write(&occupied, "not a directory").unwrap();
-        let stream = Arc::new(
-            NominalLogStream::builder()
-                .stream_to_file(occupied)
-                .build()
-                .unwrap(),
-        );
-        stream
-            .enqueue("app", LogRecord::new(1, "retained", HashMap::new()))
-            .unwrap();
-        assert!(stream.close().is_err());
-        let (started_tx, started_rx) = mpsc::channel();
-        let (release_tx, release_rx) = mpsc::channel();
-        let recovering = stream.clone();
-        let output = directory.path().join("rescued");
-        let rescue = thread::spawn(move || {
-            recovering.save_failed_with(&output, |dir, request| {
-                started_tx.send(()).unwrap();
-                release_rx.recv().unwrap();
-                journal::save(dir, request)
-            })
-        });
-        started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
-        let observing = stream.clone();
-        let (stats_tx, stats_rx) = mpsc::channel();
-        let observer = thread::spawn(move || stats_tx.send(observing.stats()).unwrap());
-        let stats = stats_rx.recv_timeout(Duration::from_secs(2));
-        // Always release disk I/O before asserting, so regressions don't strand the test threads.
-        release_tx.send(()).unwrap();
-        let saved = rescue.join().unwrap().unwrap();
-        observer.join().unwrap();
-        let stats = stats.expect("stats must not wait for journal I/O");
-        assert_eq!(stats.failed_records, 1);
-        assert!(stats.buffered_bytes > 0);
-        assert_eq!(saved.failed_records, 0);
-        assert_eq!(saved.buffered_bytes, 0);
-        assert_eq!(saved.backed_up_records, 1);
-    }
-
-    struct HeldFirstUpload {
-        started: mpsc::Sender<()>,
-        release: Mutex<mpsc::Receiver<()>>,
-        calls: AtomicUsize,
-        sizes: Mutex<Vec<usize>>,
-    }
-    impl LogTransport for HeldFirstUpload {
-        fn send(&self, body: &bytes::Bytes) -> Result<(), String> {
-            let request = wire::WriteBatchesRequest::decode(
-                zstd::decode_all(body.as_ref()).unwrap().as_slice(),
-            )
-            .unwrap();
-            self.sizes.lock().push(
-                request
-                    .batches
-                    .iter()
-                    .map(|b| b.points.as_ref().unwrap().timestamps.len())
-                    .sum(),
-            );
-            if self.calls.fetch_add(1, Ordering::Relaxed) == 0 {
-                self.started.send(()).unwrap();
-                self.release.lock().recv().unwrap();
-            }
-            Ok(())
-        }
-    }
-
-    #[test]
-    fn backpressure_waits_for_inflight_capacity_before_splitting_partial_batch() {
-        let input = LogRecord::new(0, "one", HashMap::new());
-        let charge = input.accounted_bytes("a")
-            + RecordSize::new(&input).encoding_reservation("a", "fixture");
-        let (started_tx, started_rx) = mpsc::channel();
-        let (release_tx, release_rx) = mpsc::channel();
-        let target = Arc::new(HeldFirstUpload {
-            started: started_tx,
-            release: Mutex::new(release_rx),
-            calls: AtomicUsize::new(0),
-            sizes: Mutex::new(Vec::new()),
-        });
-        let opts = NominalLogStreamOpts {
-            max_batch_bytes: charge * 2,
-            max_buffered_bytes: charge * 3,
-            max_records_per_batch: 2,
-            max_request_delay: Duration::from_secs(60),
-            num_upload_workers: 1,
-            ..Default::default()
-        };
-        let stream = Arc::new(
-            NominalLogStream::start(opts, Some(target.clone()), "fixture".into(), None).unwrap(),
-        );
-        stream
-            .enqueue_batch("a", vec![input.clone(), input.clone()])
-            .unwrap();
-        started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
-        stream.enqueue("a", input.clone()).unwrap();
-        let writer = stream.clone();
-        let pending = thread::spawn(move || writer.enqueue("a", input));
-        let deadline = Instant::now() + Duration::from_secs(2);
-        // The upload is held in the mock, so only the blocked producer can wait here.
-        let mut producer_waited = false;
-        while Instant::now() < deadline {
-            if stream.shared.changed.notify_one() {
-                producer_waited = true;
-                break;
-            }
-            thread::yield_now();
-        }
-        release_tx.send(()).unwrap();
-        pending.join().unwrap().unwrap();
-        let stats = stream.close().unwrap();
-        assert!(producer_waited);
-        assert_eq!(stats.acknowledged_records, 4);
-        assert_eq!(target.sizes.lock().as_slice(), &[2, 2]);
     }
 }

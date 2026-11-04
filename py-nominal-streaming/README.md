@@ -119,14 +119,15 @@ point counts and value checksums. It measures the complete public enqueue call w
 buffer capacity available; startup and draining are excluded. It does **not** measure
 network throughput. Downstream serialization, compression, and upload backpressure
 can limit the overall streaming improvement.
+
 ## Log streams
 
 `NominalLogStream` sends timestamped string messages and per-record string arguments to
 an existing dataset's log channel. It uses bounded native buffering: enqueue blocks
 when the byte budget is full, while releasing the Python GIL. Individual writes are
 automatically batched into requests by Rust. Uploads use the same HTTP transport and
-retry policy as time series streaming; `stats().requests` counts logical uploads,
-including any transport retries within each upload.
+retry policy as time series streaming. `stats().requests` counts logical uploads, and
+retries inside one upload do not add to it.
 
 ```python
 import os
@@ -147,9 +148,10 @@ with (NominalLogStream(os.environ["NOMINAL_TOKEN"], opts)
 ```
 
 For local-only recording, use `with NominalLogStream().to_file(Path("logs")) as stream:`.
-The destination is a directory of per-channel JSONL journals plus manifests with explicit
-nanosecond timestamp metadata, not a telemetry Avro file. Journal field names reserved
-for timestamp and message cannot also be argument keys. File preservation increments
+The destination is a directory, not a telemetry Avro file. Each channel gets one append-only
+JSONL journal per stream, plus a manifest with its channel and nanosecond timestamp
+metadata. Journal field names reserved for timestamp and message cannot also be argument
+keys. File preservation increments
 `backed_up_records`, not `acknowledged_records`.
 
 Integer timestamps are signed Unix nanoseconds. Aware `datetime` values use exact
@@ -163,19 +165,10 @@ reports its result. `stats()` separates acceptance, acknowledgement, backup, and
 Use explicit close or a context manager to observe failures before process exit. No global
 signal handlers are installed, and streams may be used from worker threads.
 
-Run file-only native integration tests after installing the wheel:
-
-```shell
-python -m unittest discover -s py-nominal-streaming/tests -v
-```
-
-If a journal write also fails, accepted batches remain in memory while the stream
-object is alive. After fixing disk access, call `stream.save_failed(Path("recovered-logs"))`
-and then `stream.close()`. Recovery may produce duplicate segments after a partial disk
-write; inspect the manifests before importing recovered files.
-
-Log options follow `PyNominalStreamOpts`: keyword configuration, read-only properties,
-fluent `with_*` setters, and a readable `repr`. Streams copy their options when configured.
+If a batch can be neither delivered nor written to the journal, the stream drops it,
+counts it in `failed_records`, and keeps accepting writes. The next `flush()` raises once
+to report the loss, and `close()` raises if no flush reported it yet. Configure a fallback
+directory to avoid dropping logs during network failures.
 
 ```python
 opts = (

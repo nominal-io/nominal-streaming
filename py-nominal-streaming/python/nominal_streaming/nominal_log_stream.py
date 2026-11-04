@@ -6,9 +6,7 @@ import datetime as dt
 import re
 from pathlib import Path
 from types import TracebackType
-from typing import Mapping
-
-from typing_extensions import Self
+from typing import Mapping, Self
 
 from nominal_streaming._nominal_streaming import LogStreamStats, PyNominalLogStream, PyNominalLogStreamOpts
 
@@ -67,7 +65,6 @@ class NominalLogStream:
         num_runtime_workers: int = 2,
         *,
         max_request_bytes: int = 8 * 1024 * 1024,
-        max_batch_bytes: int = 16 * 1024 * 1024,
         max_buffered_bytes: int = 64 * 1024 * 1024,
     ) -> Self:
         """Create a stream with connection, batching and runtime options.
@@ -80,8 +77,7 @@ class NominalLogStream:
             num_upload_workers: Number of upload workers.
             num_runtime_workers: Number of asynchronous I/O runtime workers.
             max_request_bytes: Maximum uncompressed protobuf request size.
-            max_batch_bytes: Charged memory limit per batch.
-            max_buffered_bytes: Charged memory limit across all accepted records.
+            max_buffered_bytes: Encoded size limit for all records held in memory.
         """
         return cls(
             auth_header,
@@ -92,7 +88,6 @@ class NominalLogStream:
                 num_upload_workers=num_upload_workers,
                 num_runtime_workers=num_runtime_workers,
                 max_request_bytes=max_request_bytes,
-                max_batch_bytes=max_batch_bytes,
                 max_buffered_bytes=max_buffered_bytes,
             ),
         )
@@ -154,10 +149,6 @@ class NominalLogStream:
     def flush(self) -> LogStreamStats:
         return self._impl.flush()
 
-    def save_failed(self, directory: str | Path) -> LogStreamStats:
-        """Rescue retained failed batches to a usable journal directory after close."""
-        return self._impl.save_failed(Path(directory))
-
     def stats(self) -> LogStreamStats:
         return self._impl.stats()
 
@@ -170,9 +161,7 @@ class NominalLogStream:
         *,
         args: Mapping[str, str] | None = None,
     ) -> None:
-        self._impl.enqueue(
-            channel_name, timestamp if type(timestamp) is int else _timestamp_ns(timestamp), value, _args(tags, args)
-        )
+        self._impl.enqueue(channel_name, _timestamp_ns(timestamp), value, _args(tags, args))
 
     def enqueue_from_dict(
         self,
@@ -182,7 +171,7 @@ class NominalLogStream:
         *,
         args: Mapping[str, str] | None = None,
     ) -> None:
-        normalized = timestamp if type(timestamp) is int else _timestamp_ns(timestamp)
+        normalized = _timestamp_ns(timestamp)
         common = _args(tags, args)
         for channel_name, value in channel_values.items():
             self._impl.enqueue(channel_name, normalized, value, common)

@@ -189,30 +189,32 @@ pub fn encode_request(
     Ok(request)
 }
 
-pub(crate) fn columnar_request(body: bytes::Bytes, api_key: &BearerToken) -> WriteRequest<'static> {
+const COLUMNAR_PATH: &str = "/storage/writer/v1/nominal-columnar";
+
+pub(crate) fn columnar_request(body: Vec<u8>, api_key: &BearerToken) -> WriteRequest<'static> {
     let mut request = compressed_protobuf_request(body, api_key);
-    *request.uri_mut() = "/storage/writer/v1/nominal-columnar".parse().unwrap();
+    *request.uri_mut() = COLUMNAR_PATH.parse().unwrap();
     request
         .extensions_mut()
         .insert(conjure_http::client::Endpoint::new(
             "NominalChannelWriterService",
             None,
             "writeNominalColumnarBatches",
-            "/storage/writer/v1/nominal-columnar",
+            COLUMNAR_PATH,
         ));
     request
 }
 
 /// Compress once into a fixed body that Conjure can replay without re-encoding.
-pub(crate) fn compress(bytes: &[u8]) -> std::io::Result<bytes::Bytes> {
-    zstd::bulk::compress(bytes, ZSTD_LEVEL).map(Into::into)
+pub(crate) fn compress(bytes: &[u8]) -> std::io::Result<Vec<u8>> {
+    zstd::bulk::compress(bytes, ZSTD_LEVEL)
 }
 
 pub(crate) fn compressed_protobuf_request(
-    body: bytes::Bytes,
+    body: Vec<u8>,
     api_key: &BearerToken,
 ) -> WriteRequest<'static> {
-    let mut request = Request::new(AsyncRequestBody::Fixed(body));
+    let mut request = Request::new(AsyncRequestBody::Fixed(body.into()));
     let headers = request.headers_mut();
     headers.insert(CONTENT_TYPE, "application/x-protobuf".parse().unwrap());
     headers.insert(CONTENT_ENCODING, "zstd".parse().unwrap());
@@ -235,12 +237,10 @@ mod tests {
             "/storage/writer/v1/nominal/ri.catalog.main.dataset.test"
         );
         let body = compress(b"protobuf payload").unwrap();
-        let request = columnar_request(body.clone(), &token);
+        let request = columnar_request(body, &token);
         assert_eq!(request.headers(), timeseries.headers());
         assert_eq!(request.method(), "POST");
-        assert_eq!(request.uri(), "/storage/writer/v1/nominal-columnar");
-        assert_eq!(request.headers()["content-type"], "application/x-protobuf");
-        assert_eq!(request.headers()["content-encoding"], "zstd");
+        assert_eq!(request.uri(), COLUMNAR_PATH);
         assert_eq!(request.headers()["authorization"], "Bearer test-token");
         for request in [timeseries, request] {
             let AsyncRequestBody::Fixed(encoded) = request.into_body() else {

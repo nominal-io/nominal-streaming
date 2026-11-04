@@ -2,8 +2,8 @@
 //!
 //! Like [`crate::stream::NominalDatasetStream`], a log stream batches writes, applies
 //! backpressure and delivers complete requests through a consumer. Logs use a separate
-//! columnar wire representation and journal JSONL fallback. Their admission limits count
-//! serialized bytes and memory as well as records, since messages and arguments vary in size.
+//! columnar wire representation and journal JSONL fallback. Their limits count encoded
+//! protobuf bytes as well as records, since messages and arguments vary in size.
 //!
 //! # Example: recording to a journal
 //!
@@ -36,7 +36,6 @@ mod batch;
 mod consumer;
 mod journal;
 mod stream;
-mod transport;
 
 use std::collections::HashMap;
 use std::time::Duration;
@@ -66,21 +65,6 @@ impl LogRecord {
             args,
         }
     }
-
-    // Conservatively charge framing, string allocations, and map entries as well as content.
-    // This is an admission budget, not a measurement of process RSS or allocator bookkeeping.
-    fn accounted_bytes(&self, channel: &str) -> usize {
-        256usize
-            .saturating_add(channel.len())
-            .saturating_add(self.message.capacity())
-            .saturating_add(self.args.capacity().saturating_mul(96))
-            .saturating_add(
-                self.args
-                    .iter()
-                    .map(|(k, v)| k.capacity().saturating_add(v.capacity()))
-                    .sum::<usize>(),
-            )
-    }
 }
 
 /// Limits include ready and in-flight batches, so a stalled backend applies backpressure.
@@ -91,13 +75,15 @@ impl LogRecord {
 pub struct NominalLogStreamOpts {
     /// Maximum uncompressed protobuf request size, including all framing.
     pub max_request_bytes: usize,
-    /// Charged memory per batch, including raw/compressed encoding reservations.
-    pub max_batch_bytes: usize,
-    /// Total charged memory for pending, queued, in-flight and retained failed records.
-    /// Excludes caller-owned input, allocator bookkeeping and per-worker codec/runtime overhead.
+    /// Encoded size of all records held in memory: pending, queued or in flight. Each record
+    /// counts its own bytes; shared channel and request framing is not counted. Enqueue
+    /// blocks while this is full.
     pub max_buffered_bytes: usize,
+    /// Maximum number of records in one request.
     pub max_records_per_batch: usize,
+    /// Maximum time a record waits in a partial batch before upload.
     pub max_request_delay: Duration,
+    /// Number of threads that upload batches in parallel.
     pub num_upload_workers: usize,
     pub base_api_url: String,
 }
@@ -106,7 +92,6 @@ impl Default for NominalLogStreamOpts {
     fn default() -> Self {
         Self {
             max_request_bytes: 8 * 1024 * 1024,
-            max_batch_bytes: 16 * 1024 * 1024,
             max_buffered_bytes: 64 * 1024 * 1024,
             max_records_per_batch: 10_000,
             max_request_delay: Duration::from_millis(250),
@@ -119,14 +104,13 @@ impl Default for NominalLogStreamOpts {
 impl NominalLogStreamOpts {
     fn validate(&self) -> Result<(), LogStreamError> {
         if self.max_request_bytes < 512
-            || self.max_batch_bytes < 512
-            || self.max_buffered_bytes < self.max_batch_bytes
+            || self.max_buffered_bytes < self.max_request_bytes
             || self.max_records_per_batch == 0
             || self.num_upload_workers == 0
             || self.max_request_delay.is_zero()
         {
             return Err(LogStreamError::Invalid(
-                "invalid batch, buffer, worker or flush delay limits".into(),
+                "invalid request, buffer, worker or flush delay limits".into(),
             ));
         }
         Ok(())

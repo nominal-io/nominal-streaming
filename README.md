@@ -6,4 +6,4 @@ Please refer to the crate documentation at https://docs.rs/nominal-streaming/lat
 
 ## Log streaming
 
-For timestamped messages with per-record arguments, use the dedicated Rust/Python `NominalLogStream`. It provides bounded buffering, protobuf + zstd uploads, exponential-backoff retries, and journal JSON backup of failed deliveries. See [Python log stream usage](py-nominal-streaming/README.md#log-streams).
+For timestamped messages with per-record arguments, use the dedicated Rust/Python `NominalLogStream`. It provides bounded buffering, protobuf + zstd uploads through the same retrying client as time-series streams, and journal JSON backup of failed deliveries. See [Python log stream usage](py-nominal-streaming/README.md#log-streams).
