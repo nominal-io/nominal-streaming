@@ -21,13 +21,12 @@ pub struct PyNominalLogStreamOpts {
 #[pymethods]
 impl PyNominalLogStreamOpts {
     #[new]
-    #[pyo3(signature = (*, max_request_bytes=8*1024*1024, max_batch_bytes=16*1024*1024, max_buffered_bytes=64*1024*1024,
+    #[pyo3(signature = (*, max_request_bytes=8*1024*1024, max_buffered_bytes=64*1024*1024,
         max_points_per_batch=10_000, max_request_delay_secs=0.25, num_upload_workers=4, num_runtime_workers=2,
         base_api_url="https://api.gov.nominal.io/api"))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         max_request_bytes: usize,
-        max_batch_bytes: usize,
         max_buffered_bytes: usize,
         max_points_per_batch: usize,
         max_request_delay_secs: f64,
@@ -42,7 +41,6 @@ impl PyNominalLogStreamOpts {
         }
         let mut inner = NominalLogStreamOpts::default();
         inner.max_request_bytes = max_request_bytes;
-        inner.max_batch_bytes = max_batch_bytes;
         inner.max_buffered_bytes = max_buffered_bytes;
         inner.max_records_per_batch = max_points_per_batch;
         inner.max_request_delay = duration(max_request_delay_secs)?;
@@ -62,17 +60,6 @@ impl PyNominalLogStreamOpts {
         value: usize,
     ) -> PyResult<PyRefMut<'_, Self>> {
         slf.inner.max_request_bytes = value;
-        Ok(slf)
-    }
-    #[getter]
-    fn max_batch_bytes(&self) -> usize {
-        self.inner.max_batch_bytes
-    }
-    fn with_max_batch_bytes(
-        mut slf: PyRefMut<'_, Self>,
-        value: usize,
-    ) -> PyResult<PyRefMut<'_, Self>> {
-        slf.inner.max_batch_bytes = value;
         Ok(slf)
     }
     #[getter]
@@ -153,6 +140,6 @@ impl PyNominalLogStreamOpts {
 
 impl std::fmt::Display for PyNominalLogStreamOpts {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "PyNominalLogStreamOpts(max_request_bytes={}, max_batch_bytes={}, max_buffered_bytes={}, max_points_per_batch={}, max_request_delay_secs={}, num_upload_workers={}, base_api_url={:?}, num_runtime_workers={})", self.inner.max_request_bytes, self.inner.max_batch_bytes, self.inner.max_buffered_bytes, self.inner.max_records_per_batch, self.inner.max_request_delay.as_secs_f64(), self.inner.num_upload_workers, self.inner.base_api_url.clone(), self.num_runtime_workers)
+        write!(f, "PyNominalLogStreamOpts(max_request_bytes={}, max_buffered_bytes={}, max_points_per_batch={}, max_request_delay_secs={}, num_upload_workers={}, base_api_url={:?}, num_runtime_workers={})", self.inner.max_request_bytes, self.inner.max_buffered_bytes, self.inner.max_records_per_batch, self.inner.max_request_delay.as_secs_f64(), self.inner.num_upload_workers, self.inner.base_api_url.clone(), self.num_runtime_workers)
     }
 }

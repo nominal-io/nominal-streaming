@@ -1,14 +1,12 @@
 //! Deliver complete log requests to Core, with journal fallback for unconfirmed writes.
 
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use nominal_api::tonic::nominal::direct_channel_writer::v2 as wire;
 
-use super::journal;
+use super::journal::Journal;
 use super::transport::LogTransport;
 use super::transport::{self};
-use super::NominalLogStreamOpts;
 
 pub(super) enum DeliveryOutcome {
     Acknowledged,
@@ -17,22 +15,17 @@ pub(super) enum DeliveryOutcome {
 
 /// The stream owns admission and draining; the consumer owns delivery and preservation.
 pub(super) struct LogConsumer {
-    opts: NominalLogStreamOpts,
     target: Option<Arc<dyn LogTransport>>,
-    backup: Option<PathBuf>,
+    journal: Option<Journal>,
 }
 
 impl LogConsumer {
-    pub fn new(
-        opts: NominalLogStreamOpts,
-        target: Option<Arc<dyn LogTransport>>,
-        backup: Option<PathBuf>,
-    ) -> Self {
-        Self {
-            opts,
-            target,
-            backup,
-        }
+    pub fn new(target: Option<Arc<dyn LogTransport>>, journal: Option<Journal>) -> Self {
+        Self { target, journal }
+    }
+
+    pub fn has_journal(&self) -> bool {
+        self.journal.is_some()
     }
 
     pub fn consume(
@@ -50,11 +43,11 @@ impl LogConsumer {
         if let Some(error) = &error {
             tracing::warn!(error = %error, "Log batch delivery unconfirmed");
         }
-        let directory = self
-            .backup
+        let journal = self
+            .journal
             .as_ref()
             .ok_or_else(|| error.clone().unwrap_or_else(|| "no log destination".into()))?;
-        journal::save(directory, request).map_err(|disk| {
+        journal.append(request).map_err(|disk| {
             format!(
                 "{}; journal backup failed: {disk}",
                 error.as_deref().unwrap_or("file-only stream")
@@ -72,8 +65,8 @@ impl LogConsumer {
         request: &wire::WriteBatchesRequest,
         on_request: &mut impl FnMut(),
     ) -> Result<(), String> {
-        let body = transport::encode(request, self.opts.max_request_bytes)
-            .map_err(|error| format!("encoding failed: {error}"))?;
+        let body =
+            transport::encode(request).map_err(|error| format!("encoding failed: {error}"))?;
         on_request();
         target.send(&body)
     }

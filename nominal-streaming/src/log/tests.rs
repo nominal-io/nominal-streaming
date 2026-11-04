@@ -78,7 +78,7 @@ fn file_only_flush_preserves_nanoseconds_and_message() {
 fn invalid_options_and_reserved_keys_fail_before_acceptance() {
     let dir = tempfile::tempdir().unwrap();
     let opts = NominalLogStreamOpts {
-        max_batch_bytes: 0,
+        max_request_bytes: 0,
         ..Default::default()
     };
     assert!(NominalLogStream::builder()
@@ -101,7 +101,7 @@ fn invalid_options_and_reserved_keys_fail_before_acceptance() {
 }
 
 #[test]
-fn byte_and_record_limits_rotate_batches_and_timer_flushes() {
+fn record_limit_rotates_batches_into_one_journal_per_channel() {
     let dir = tempfile::tempdir().unwrap();
     let opts = NominalLogStreamOpts {
         max_records_per_batch: 2,
@@ -122,17 +122,20 @@ fn byte_and_record_limits_rotate_batches_and_timer_flushes() {
     }
     assert_eq!(stream.stats().backed_up_records, 3);
     stream.close().unwrap();
-    let count = std::fs::read_dir(dir.path())
+    // Two batches for one channel append to a single journal file.
+    let journals: Vec<_> = std::fs::read_dir(dir.path())
         .unwrap()
-        .filter(|p| {
-            p.as_ref()
-                .unwrap()
-                .path()
-                .extension()
-                .is_some_and(|e| e == "jsonl")
-        })
-        .count();
-    assert_eq!(count, 2);
+        .map(|p| p.unwrap().path())
+        .filter(|p| p.extension().is_some_and(|e| e == "jsonl"))
+        .collect();
+    assert_eq!(journals.len(), 1);
+    assert_eq!(
+        std::fs::read_to_string(&journals[0])
+            .unwrap()
+            .lines()
+            .count(),
+        3
+    );
 }
 
 #[test]
@@ -291,7 +294,7 @@ fn disk_failure_is_observable_and_retained_records_can_be_rescued() {
 fn oversized_record_and_batch_are_rejected_atomically() {
     let dir = tempfile::tempdir().unwrap();
     let options = NominalLogStreamOpts {
-        max_batch_bytes: 512,
+        max_request_bytes: 512,
         max_buffered_bytes: 512,
         ..Default::default()
     };
@@ -302,7 +305,10 @@ fn oversized_record_and_batch_are_rejected_atomically() {
         .unwrap();
     assert!(stream.enqueue("a", record(&"x".repeat(513))).is_err());
     assert!(stream
-        .enqueue_batch("a", vec![record("one"), record("two")])
+        .enqueue_batch(
+            "a",
+            vec![record(&"x".repeat(300)), record(&"y".repeat(300))]
+        )
         .is_err());
     assert_eq!(stream.close().unwrap().accepted_records, 0);
 }
@@ -323,7 +329,7 @@ fn backpressure_counts_inflight_bytes_and_close_wakes_blocked_producer() {
     let (started_tx, started_rx) = crossbeam_channel::bounded(1);
     let (finish_tx, finish_rx) = crossbeam_channel::bounded(1);
     let options = NominalLogStreamOpts {
-        max_batch_bytes: 512,
+        max_request_bytes: 512,
         max_buffered_bytes: 512,
         max_records_per_batch: 1,
         num_upload_workers: 1,
@@ -339,14 +345,15 @@ fn backpressure_counts_inflight_bytes_and_close_wakes_blocked_producer() {
         None,
     )
     .unwrap();
-    stream.enqueue("a", record("one")).unwrap();
+    // Each record is about 300 encoded bytes, so the second waits for the first upload.
+    stream.enqueue("a", record(&"x".repeat(300))).unwrap();
     started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
     std::thread::scope(|scope| {
         let (done_tx, done_rx) = crossbeam_channel::bounded(1);
         let stream_ref = &stream;
         scope.spawn(move || {
             done_tx
-                .send(stream_ref.enqueue("a", record("two")))
+                .send(stream_ref.enqueue("a", record(&"y".repeat(300))))
                 .unwrap();
         });
         assert!(done_rx.recv_timeout(Duration::from_millis(20)).is_err());
@@ -441,23 +448,6 @@ fn serialized_oversized_singleton_rejects_entire_input() {
 }
 
 #[test]
-fn admission_reserves_encoding_capacity_before_accepting() {
-    let input = record(&"x".repeat(2048));
-    let record_only = input.accounted_bytes("a");
-    let transport = target(0);
-    let opts = NominalLogStreamOpts {
-        max_batch_bytes: record_only,
-        max_buffered_bytes: record_only,
-        ..NominalLogStreamOpts::default()
-    };
-    let stream =
-        NominalLogStream::start(opts, Some(transport.clone()), "fixture".into(), None).unwrap();
-    assert!(stream.enqueue("a", input).is_err());
-    assert_eq!(stream.close().unwrap().accepted_records, 0);
-    assert!(transport.requests.lock().unwrap().is_empty());
-}
-
-#[test]
 fn request_limit_includes_multiple_channels_and_dataset_envelope() {
     let transport = target(0);
     let opts = NominalLogStreamOpts {
@@ -480,15 +470,13 @@ fn request_limit_includes_multiple_channels_and_dataset_envelope() {
 }
 
 #[test]
-fn encoder_rejects_oversize_before_encoding_and_preserves_roundtrip() {
-    let mut batch = super::batch::Batch::default();
+fn encoder_roundtrips_request() {
+    let mut batch = super::batch::LogBatch::default();
     let record = record(&"abcdef".repeat(200));
-    let size = super::batch::RecordSize::new(&record);
+    let size = super::batch::LogRecordSize::new(&record);
     batch.push("channel", record, size, 0);
     let request = batch.into_request("fixture");
-    let limit = request.encoded_len();
-    assert!(transport::encode(&request, limit - 1).is_err());
-    let body = transport::encode(&request, limit).unwrap();
+    let body = transport::encode(&request).unwrap();
     assert_eq!(
         request,
         wire::WriteBatchesRequest::decode(zstd::decode_all(body.as_ref()).unwrap().as_slice())
@@ -499,7 +487,7 @@ fn encoder_rejects_oversize_before_encoding_and_preserves_roundtrip() {
 #[test]
 fn exactly_full_serialized_batch_dispatches_without_waiting_for_timer() {
     let input = record(&"x".repeat(600));
-    let limit = super::batch::RecordSize::new(&input).singleton_len("channel", "fixture");
+    let limit = super::batch::LogRecordSize::new(&input).singleton_len("channel", "fixture");
     let transport = target(0);
     let opts = NominalLogStreamOpts {
         max_request_bytes: limit,

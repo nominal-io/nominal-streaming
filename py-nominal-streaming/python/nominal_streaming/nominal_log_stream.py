@@ -67,7 +67,6 @@ class NominalLogStream:
         num_runtime_workers: int = 2,
         *,
         max_request_bytes: int = 8 * 1024 * 1024,
-        max_batch_bytes: int = 16 * 1024 * 1024,
         max_buffered_bytes: int = 64 * 1024 * 1024,
     ) -> Self:
         """Create a stream with connection, batching and runtime options.
@@ -80,8 +79,7 @@ class NominalLogStream:
             num_upload_workers: Number of upload workers.
             num_runtime_workers: Number of asynchronous I/O runtime workers.
             max_request_bytes: Maximum uncompressed protobuf request size.
-            max_batch_bytes: Charged memory limit per batch.
-            max_buffered_bytes: Charged memory limit across all accepted records.
+            max_buffered_bytes: Encoded size limit for all records held in memory.
         """
         return cls(
             auth_header,
@@ -92,7 +90,6 @@ class NominalLogStream:
                 num_upload_workers=num_upload_workers,
                 num_runtime_workers=num_runtime_workers,
                 max_request_bytes=max_request_bytes,
-                max_batch_bytes=max_batch_bytes,
                 max_buffered_bytes=max_buffered_bytes,
             ),
         )

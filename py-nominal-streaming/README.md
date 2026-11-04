@@ -147,8 +147,8 @@ with (NominalLogStream(os.environ["NOMINAL_TOKEN"], opts)
 ```
 
 For local-only recording, use `with NominalLogStream().to_file(Path("logs")) as stream:`.
-The destination is a directory of per-channel JSONL journals plus manifests with explicit
-nanosecond timestamp metadata, not a telemetry Avro file. Journal field names reserved
+The destination is a directory, not a telemetry Avro file. Each channel gets one append-only
+JSONL journal per stream, plus a manifest with its channel and nanosecond timestamp metadata. Journal field names reserved
 for timestamp and message cannot also be argument keys. File preservation increments
 `backed_up_records`, not `acknowledged_records`.
 
@@ -171,8 +171,8 @@ python -m unittest discover -s py-nominal-streaming/tests -v
 
 If a journal write also fails, accepted batches remain in memory while the stream
 object is alive. After fixing disk access, call `stream.save_failed(Path("recovered-logs"))`
-and then `stream.close()`. Recovery may produce duplicate segments after a partial disk
-write; inspect the manifests before importing recovered files.
+and then `stream.close()`. A batch that was partly written before the failure can appear
+twice after recovery.
 
 Log options follow `PyNominalStreamOpts`: keyword configuration, read-only properties,
 fluent `with_*` setters, and a readable `repr`. Streams copy their options when configured.

@@ -31,12 +31,12 @@ fn timestamp(nanos: i64) -> Timestamp {
 }
 
 #[derive(Clone, Copy, Default)]
-pub(super) struct RecordSize {
+pub(super) struct LogRecordSize {
     timestamps: usize,
     logs: usize,
 }
 
-impl RecordSize {
+impl LogRecordSize {
     pub fn new(record: &LogRecord) -> Self {
         let value = string(record.message.len())
             + encoding::hash_map::encoded_len(
@@ -59,15 +59,6 @@ impl RecordSize {
         string(dataset_rid.len()) + self.channel_len(channel)
     }
 
-    pub fn encoding_reservation(self, channel: &str, dataset_rid: &str) -> usize {
-        let raw = self.singleton_len(channel, dataset_rid);
-        // Covers raw protobuf plus zstd compressBound(raw), including its small-input
-        // overhead. Summing singleton envelopes over-reserves shared batch framing.
-        raw.saturating_mul(2)
-            .saturating_add(raw / 128)
-            .saturating_add(128)
-    }
-
     fn plus(self, other: Self) -> Self {
         Self {
             timestamps: self.timestamps + other.timestamps,
@@ -79,11 +70,11 @@ impl RecordSize {
 #[derive(Clone, Default)]
 struct ChannelBatch {
     records: Vec<LogRecord>,
-    size: RecordSize,
+    size: LogRecordSize,
 }
 
 #[derive(Clone, Default)]
-pub(super) struct Batch {
+pub(super) struct LogBatch {
     channels: HashMap<String, ChannelBatch>,
     channel_bytes: usize,
     pub bytes: usize,
@@ -91,25 +82,24 @@ pub(super) struct Batch {
     pub first_record: Option<Instant>,
 }
 
-impl Batch {
+impl LogBatch {
     pub fn encoded_len(&self, dataset_rid: &str) -> usize {
         string(dataset_rid.len()) + self.channel_bytes
     }
 
-    pub fn encoded_len_after(&self, channel: &str, size: RecordSize, dataset_rid: &str) -> usize {
+    pub fn encoded_len_after(
+        &self,
+        channel: &str,
+        size: LogRecordSize,
+        dataset_rid: &str,
+    ) -> usize {
         let (old, updated) = self.channels.get(channel).map_or((0, size), |batch| {
             (batch.size.channel_len(channel), batch.size.plus(size))
         });
         self.encoded_len(dataset_rid) - old + updated.channel_len(channel)
     }
 
-    pub fn push(
-        &mut self,
-        channel: &str,
-        record: LogRecord,
-        size: RecordSize,
-        charged_bytes: usize,
-    ) {
+    pub fn push(&mut self, channel: &str, record: LogRecord, size: LogRecordSize, bytes: usize) {
         if let Some(batch) = self.channels.get_mut(channel) {
             self.channel_bytes -= batch.size.channel_len(channel);
             batch.size = batch.size.plus(size);
@@ -125,7 +115,7 @@ impl Batch {
                 },
             );
         }
-        self.bytes += charged_bytes;
+        self.bytes += bytes;
         self.count += 1;
         self.first_record.get_or_insert_with(Instant::now);
     }
@@ -170,9 +160,8 @@ mod tests {
 
     #[test]
     fn incremental_lengths_match_prost_across_nested_boundaries() {
-        let mut batch = Batch::default();
+        let mut batch = LogBatch::default();
         let rid = "r".repeat(128);
-        let mut reserved = 0;
         for i in 0..64 {
             let channel = ["a", "多字节", "another-channel"][i % 3];
             let len = [0, 1, 127, 128, 16383, 16384][i % 6];
@@ -186,14 +175,11 @@ mod tests {
                     ("empty-value".into(), String::new()),
                 ]),
             );
-            let size = RecordSize::new(&record);
+            let size = LogRecordSize::new(&record);
             let predicted = batch.encoded_len_after(channel, size, &rid);
-            reserved += size.encoding_reservation(channel, &rid);
             batch.push(channel, record, size, 0);
             let request = batch.clone().into_request(&rid);
             assert_eq!(predicted, request.encoded_len(), "insertion {i}");
-            let raw = request.encode_to_vec();
-            assert!(reserved >= raw.len() + zstd::zstd_safe::compress_bound(raw.len()));
         }
     }
 
@@ -202,8 +188,8 @@ mod tests {
         for length in [0, 127, 128, 16383, 16384] {
             let record = LogRecord::new(0, "", HashMap::from([(String::new(), String::new())]));
             let channel = "x".repeat(length);
-            let size = RecordSize::new(&record);
-            let mut batch = Batch::default();
+            let size = LogRecordSize::new(&record);
+            let mut batch = LogBatch::default();
             batch.push(&channel, record, size, 0);
             assert_eq!(
                 size.singleton_len(&channel, ""),

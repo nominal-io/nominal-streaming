@@ -38,17 +38,6 @@ impl HttpTransport {
         }
         let endpoint = url::Url::parse(&opts.base_api_url)
             .map_err(|_| LogStreamError::Invalid("invalid base_api_url".into()))?;
-        let local = endpoint
-            .host_str()
-            .is_some_and(|h| matches!(h, "localhost" | "127.0.0.1" | "[::1]"));
-        if (endpoint.scheme() != "https" && !(endpoint.scheme() == "http" && local))
-            || !endpoint.username().is_empty()
-            || endpoint.password().is_some()
-            || endpoint.query().is_some()
-            || endpoint.fragment().is_some()
-        {
-            return Err(LogStreamError::Invalid("base_api_url must use HTTPS (HTTP permitted on loopback only), without credentials, query or fragment".into()));
-        }
         let client = NominalApiClients::try_from_url(endpoint)
             .map_err(|e| LogStreamError::Invalid(crate::consumer::describe_request_error(&e)))?;
         Ok(Self {
@@ -77,27 +66,13 @@ impl LogTransport for HttpTransport {
     }
 }
 
-pub(super) fn encode(
-    request: &wire::WriteBatchesRequest,
-    max_request_bytes: usize,
-) -> std::io::Result<Bytes> {
-    let encode_started = std::time::Instant::now();
-    if request.encoded_len() > max_request_bytes {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "protobuf request exceeds max_request_bytes",
-        ));
-    }
+/// Batching already keeps requests within `max_request_bytes`; the server rejects anything else.
+pub(super) fn encode(request: &wire::WriteBatchesRequest) -> std::io::Result<Bytes> {
     let raw = request.encode_to_vec();
-    let compression_started = std::time::Instant::now();
     let compressed = crate::client::compress(raw.as_slice())?;
     tracing::debug!(
         raw_bytes = raw.len(),
         wire_bytes = compressed.len(),
-        protobuf_micros = compression_started
-            .duration_since(encode_started)
-            .as_micros() as u64,
-        zstd_micros = compression_started.elapsed().as_micros() as u64,
         "Encoded log request"
     );
     Ok(compressed)

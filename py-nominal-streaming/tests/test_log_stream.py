@@ -20,7 +20,6 @@ class LogStreamTests(unittest.TestCase):
         self.assertEqual(opts.num_runtime_workers, 2)
         values = {
             "max_request_bytes": 4096,
-            "max_batch_bytes": 8192,
             "max_buffered_bytes": 32768,
             "max_points_per_batch": 5,
             "max_request_delay_secs": 0.5,
@@ -80,7 +79,9 @@ class LogStreamTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "max_request_bytes"):
                     stream.enqueue(channel_name="app", timestamp=3, value="x" * 1024)
             self.assertEqual(stream.stats().backed_up_records, 2)
-            self.assertEqual(len(list(Path(directory).glob("*.jsonl"))), 2)
+            journals = list(Path(directory).glob("*.jsonl"))
+            self.assertEqual(len(journals), 1)
+            self.assertEqual(len(journals[0].read_text().splitlines()), 2)
 
     def test_exact_timestamps(self):
         self.assertEqual(_timestamp_ns("2026-09-14T00:00:00.123456789Z") % 1_000_000_000, 123456789)
