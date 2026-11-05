@@ -80,12 +80,18 @@ impl Debug for NominalApiClients {
 
 impl NominalApiClients {
     pub fn from_uri(base_uri: &str) -> Self {
-        let base_uri = base_uri.parse::<url::Url>().unwrap();
-        let streaming = async_conjure_streaming_client(base_uri.clone())
-            .expect("Failed to create streaming client");
-        let services = async_conjure_client("upload-ingest", base_uri)
-            .expect("Failed to create upload/ingest client");
-        Self::from_conjure_clients(streaming, services, &Arc::new(ConjureRuntime::default()))
+        Self::try_from_url(base_uri.parse::<url::Url>().unwrap())
+            .expect("Failed to create Nominal API clients")
+    }
+
+    pub fn try_from_url(base_url: Url) -> Result<Self, Error> {
+        let streaming = async_conjure_streaming_client(base_url.clone())?;
+        let services = async_conjure_client("upload-ingest", base_url)?;
+        Ok(Self::from_conjure_clients(
+            streaming,
+            services,
+            &Arc::new(ConjureRuntime::default()),
+        ))
     }
 
     /// NOTE: the conjure client type is a shared handle, and cheap to clone.
@@ -103,6 +109,18 @@ impl NominalApiClients {
 
     pub async fn send(&self, req: WriteRequest<'_>) -> Result<Response<ResponseBody>, Error> {
         self.streaming.send(req).await
+    }
+
+    /// Send from a synchronous worker thread, describing failures compactly.
+    pub(crate) fn send_blocking(
+        &self,
+        handle: &tokio::runtime::Handle,
+        req: WriteRequest<'_>,
+    ) -> Result<(), String> {
+        handle
+            .block_on(self.send(req))
+            .map(|_| ())
+            .map_err(|e| crate::consumer::describe_request_error(&e))
     }
 }
 
@@ -152,15 +170,7 @@ pub fn encode_request(
     api_key: &BearerToken,
     data_source_rid: &ResourceIdentifier,
 ) -> std::io::Result<WriteRequest<'static>> {
-    let body = zstd::encode_all(write_request_bytes, ZSTD_LEVEL)?;
-
-    let mut request = Request::new(AsyncRequestBody::Fixed(body.into()));
-
-    let headers = request.headers_mut();
-    headers.insert(CONTENT_TYPE, "application/x-protobuf".parse().unwrap());
-    headers.insert(CONTENT_ENCODING, "zstd".parse().unwrap());
-
-    *request.method_mut() = conjure_http::private::http::Method::POST;
+    let mut request = compressed_protobuf_request(compress(write_request_bytes)?, api_key);
     let mut path = conjure_http::private::UriBuilder::new();
     path.push_literal("/storage/writer/v1/nominal");
 
@@ -168,7 +178,6 @@ pub fn encode_request(
     path.push_path_parameter(&nominal_data_source_or_dataset_rid);
 
     *request.uri_mut() = path.build();
-    conjure_http::private::encode_header_auth(&mut request, api_key);
     request
         .extensions_mut()
         .insert(conjure_http::client::Endpoint::new(
@@ -178,4 +187,69 @@ pub fn encode_request(
             "/storage/writer/v1/nominal/{dataSourceRid}",
         ));
     Ok(request)
+}
+
+const COLUMNAR_PATH: &str = "/storage/writer/v1/nominal-columnar";
+
+pub(crate) fn columnar_request(body: Vec<u8>, api_key: &BearerToken) -> WriteRequest<'static> {
+    let mut request = compressed_protobuf_request(body, api_key);
+    *request.uri_mut() = COLUMNAR_PATH.parse().unwrap();
+    request
+        .extensions_mut()
+        .insert(conjure_http::client::Endpoint::new(
+            "NominalChannelWriterService",
+            None,
+            "writeNominalColumnarBatches",
+            COLUMNAR_PATH,
+        ));
+    request
+}
+
+/// Compress once into a fixed body that Conjure can replay without re-encoding.
+pub(crate) fn compress(bytes: &[u8]) -> std::io::Result<Vec<u8>> {
+    zstd::bulk::compress(bytes, ZSTD_LEVEL)
+}
+
+pub(crate) fn compressed_protobuf_request(
+    body: Vec<u8>,
+    api_key: &BearerToken,
+) -> WriteRequest<'static> {
+    let mut request = Request::new(AsyncRequestBody::Fixed(body.into()));
+    let headers = request.headers_mut();
+    headers.insert(CONTENT_TYPE, "application/x-protobuf".parse().unwrap());
+    headers.insert(CONTENT_ENCODING, "zstd".parse().unwrap());
+    *request.method_mut() = conjure_http::private::http::Method::POST;
+    conjure_http::private::encode_header_auth(&mut request, api_key);
+    request
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn columnar_request_shares_time_series_headers_and_compression() {
+        let token = BearerToken::new("test-token").unwrap();
+        let rid = ResourceIdentifier::new("ri.catalog.main.dataset.test").unwrap();
+        let timeseries = encode_request(b"protobuf payload", &token, &rid).unwrap();
+        assert_eq!(
+            timeseries.uri(),
+            "/storage/writer/v1/nominal/ri.catalog.main.dataset.test"
+        );
+        let body = compress(b"protobuf payload").unwrap();
+        let request = columnar_request(body, &token);
+        assert_eq!(request.headers(), timeseries.headers());
+        assert_eq!(request.method(), "POST");
+        assert_eq!(request.uri(), COLUMNAR_PATH);
+        assert_eq!(request.headers()["authorization"], "Bearer test-token");
+        for request in [timeseries, request] {
+            let AsyncRequestBody::Fixed(encoded) = request.into_body() else {
+                panic!("request must be replayable");
+            };
+            assert_eq!(
+                zstd::decode_all(encoded.as_ref()).unwrap(),
+                b"protobuf payload"
+            );
+        }
+    }
 }

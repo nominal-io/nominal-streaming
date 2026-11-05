@@ -137,6 +137,15 @@ impl IntoPoints for Vec<StringArrayPoint> {
 
 pub trait IntoTimestamp {
     fn into_timestamp(self) -> Timestamp;
+
+    /// Convert without narrowing overflow. Custom implementations should override this
+    /// if their input range exceeds the protobuf timestamp representation.
+    fn try_into_timestamp(self) -> Result<Timestamp, std::num::TryFromIntError>
+    where
+        Self: Sized,
+    {
+        Ok(self.into_timestamp())
+    }
 }
 
 impl IntoTimestamp for Duration {
@@ -145,6 +154,13 @@ impl IntoTimestamp for Duration {
             seconds: self.as_secs() as i64,
             nanos: self.subsec_nanos() as i32,
         }
+    }
+
+    fn try_into_timestamp(self) -> Result<Timestamp, std::num::TryFromIntError> {
+        Ok(Timestamp {
+            seconds: i64::try_from(self.as_secs())?,
+            nanos: self.subsec_nanos() as i32,
+        })
     }
 }
 

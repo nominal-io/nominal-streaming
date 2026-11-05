@@ -1859,6 +1859,7 @@ dependencies = [
  "nominal-api",
  "nominal-streaming",
  "pyo3",
+ "tempfile",
  "tokio",
  "tracing",
 ]
