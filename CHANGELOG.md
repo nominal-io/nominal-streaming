@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.6](https://github.com/nominal-io/nominal-streaming/compare/v0.10.5...v0.10.6) - 2026-11-05
+
+### Added
+
+- add bounded log streaming with journal fallback ([#345](https://github.com/nominal-io/nominal-streaming/pull/345))
+
 ## [0.10.5](https://github.com/nominal-io/nominal-streaming/compare/v0.10.4...v0.10.5) - 2026-10-23
 
 ### Other
