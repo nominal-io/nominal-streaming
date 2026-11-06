@@ -44,6 +44,8 @@ pub use stream::NominalLogStream;
 pub use stream::NominalLogStreamBuilder;
 pub use stream::NominalLogWriter;
 
+use crate::client::ProductAgent;
+
 /// One log event. Integer timestamps are signed nanoseconds since the Unix epoch.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LogRecord {
@@ -86,6 +88,9 @@ pub struct NominalLogStreamOpts {
     /// Number of threads that upload batches in parallel.
     pub num_upload_workers: usize,
     pub base_api_url: String,
+    /// Program name and version at the start of the `User-Agent` header of every request the log
+    /// stream sends. Unset by default. See [`ProductAgent`].
+    pub user_agent: Option<ProductAgent>,
 }
 
 impl Default for NominalLogStreamOpts {
@@ -97,6 +102,7 @@ impl Default for NominalLogStreamOpts {
             max_request_delay: Duration::from_millis(250),
             num_upload_workers: 4,
             base_api_url: crate::client::PRODUCTION_API_URL.into(),
+            user_agent: None,
         }
     }
 }

@@ -1,9 +1,12 @@
 //! The Python-exposed log stream configuration class (Rust side).
 use std::time::Duration;
 
+use nominal_streaming::client::ProductAgent;
 use nominal_streaming::log::NominalLogStreamOpts;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
+
+use crate::nominal_stream_opts::sent_user_agent;
 
 fn duration(value: f64) -> PyResult<Duration> {
     Duration::try_from_secs_f64(value)
@@ -129,6 +132,18 @@ impl PyNominalLogStreamOpts {
         slf.num_runtime_workers = runtime_workers(value)?;
         Ok(slf)
     }
+    #[getter]
+    fn user_agent(&self) -> Option<String> {
+        sent_user_agent(self.inner.user_agent.as_ref())
+    }
+    fn with_user_agent<'py>(
+        mut slf: PyRefMut<'py, Self>,
+        name: &str,
+        version: &str,
+    ) -> PyRefMut<'py, Self> {
+        slf.inner.user_agent = Some(ProductAgent::new(name, version));
+        slf
+    }
 
     fn __repr__(&self) -> String {
         self.to_string()
@@ -145,14 +160,16 @@ impl std::fmt::Display for PyNominalLogStreamOpts {
             f,
             "PyNominalLogStreamOpts(max_request_bytes={}, max_buffered_bytes={}, \
              max_points_per_batch={}, max_request_delay_secs={}, num_upload_workers={}, \
-             base_api_url={:?}, num_runtime_workers={})",
+             base_api_url={:?}, num_runtime_workers={}, user_agent={})",
             opts.max_request_bytes,
             opts.max_buffered_bytes,
             opts.max_records_per_batch,
             opts.max_request_delay.as_secs_f64(),
             opts.num_upload_workers,
             opts.base_api_url,
-            self.num_runtime_workers
+            self.num_runtime_workers,
+            sent_user_agent(opts.user_agent.as_ref())
+                .map_or_else(|| "None".to_string(), |agent| format!("{agent:?}")),
         )
     }
 }

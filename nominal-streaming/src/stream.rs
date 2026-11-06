@@ -38,6 +38,7 @@ use tracing::debug;
 use tracing::error;
 
 use crate::client::NominalApiClients;
+use crate::client::ProductAgent;
 use crate::client::PRODUCTION_API_URL;
 use crate::consumer::AvroFileConsumer;
 use crate::consumer::DualWriteRequestConsumer;
@@ -75,6 +76,14 @@ pub struct NominalStreamOpts {
     /// beyond the request metrics `track_metrics` emits itself. They are excluded from
     /// request latency measurements when `track_metrics` is enabled.
     pub additional_metric_channels: Vec<String>,
+    /// Program name and version at the start of the `User-Agent` header of requests from the
+    /// Core consumer [`NominalDatasetStreamBuilder`] builds. Unset by default. See
+    /// [`ProductAgent`].
+    ///
+    /// Consumers passed to [`NominalDatasetStream::new_with_consumer`] keep the agent of the
+    /// clients they were built with. Build those clients with
+    /// [`NominalApiClients::try_from_url_with_agent`].
+    pub user_agent: Option<ProductAgent>,
 }
 
 impl Default for NominalStreamOpts {
@@ -87,6 +96,7 @@ impl Default for NominalStreamOpts {
             base_api_url: PRODUCTION_API_URL.to_string(),
             track_metrics: false,
             additional_metric_channels: Vec::new(),
+            user_agent: None,
         }
     }
 }
@@ -127,6 +137,11 @@ impl NominalStreamOpts {
         channels: impl IntoIterator<Item = impl Into<String>>,
     ) -> Self {
         self.additional_metric_channels = channels.into_iter().map(Into::into).collect();
+        self
+    }
+
+    pub fn with_user_agent(mut self, user_agent: ProductAgent) -> Self {
+        self.user_agent = Some(user_agent);
         self
     }
 }
@@ -251,7 +266,10 @@ impl NominalDatasetStreamBuilder {
             .as_ref()
             .map(|(auth_provider, dataset, handle)| {
                 NominalCoreConsumer::new(
-                    NominalApiClients::from_uri(self.opts.base_api_url.as_str()),
+                    NominalApiClients::from_uri_with_agent(
+                        self.opts.base_api_url.as_str(),
+                        self.opts.user_agent.as_ref(),
+                    ),
                     handle.clone(),
                     auth_provider.clone(),
                     dataset.clone(),
