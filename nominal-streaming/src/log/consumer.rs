@@ -40,7 +40,7 @@ impl HttpTransport {
         }
         let endpoint = url::Url::parse(&opts.base_api_url)
             .map_err(|_| LogStreamError::Invalid("invalid base_api_url".into()))?;
-        let client = NominalApiClients::try_from_url(endpoint)
+        let client = NominalApiClients::try_from_url_with_agent(endpoint, opts.user_agent.clone())
             .map_err(|e| LogStreamError::Invalid(crate::consumer::describe_request_error(&e)))?;
         Ok(Self {
             client,

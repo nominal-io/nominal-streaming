@@ -1,3 +1,4 @@
+use std::fmt;
 use std::fmt::Debug;
 use std::sync::Arc;
 use std::sync::LazyLock;
@@ -23,6 +24,8 @@ use nominal_api::clients::ingest::api::AsyncIngestServiceClient;
 use nominal_api::clients::upload::api::AsyncUploadServiceClient;
 use nominal_api::objects::api::rids::NominalDataSourceOrDatasetRid;
 use nominal_api::objects::api::rids::WorkspaceRid;
+use regex::Regex;
+use tracing::warn;
 use url::Url;
 
 use crate::types::AuthProvider;
@@ -38,6 +41,113 @@ pub mod conjure {
 pub const PRODUCTION_API_URL: &str = "https://api.gov.nominal.io/api";
 
 const USER_AGENT: &str = "nominal-streaming";
+
+/// Sent when nothing usable remains of a [`ProductAgent`] name or version.
+const FALLBACK_NAME: &str = "unknown";
+const FALLBACK_VERSION: &str = "0.0.0";
+
+/// The version format the HTTP client accepts. It replaces any other version with `0.0.0`.
+static VALID_VERSION: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^[0-9]+(\.[0-9]+)*(-rc[0-9]+)?(-[0-9]+-g[a-f0-9]+)?$").unwrap());
+static LEADING_VERSION_NUMBERS: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^[0-9]+(\.[0-9]+)*").unwrap());
+
+/// The program name and version at the start of the `User-Agent` header of every request this
+/// crate sends to Nominal.
+///
+/// Nominal's usage reporting groups requests by this agent. With one set, the header starts with
+/// `<name>/<version> nominal-streaming/<crate version>`. Without one, it starts with
+/// `nominal-streaming/<crate version>`. The HTTP client appends its own agents after these.
+///
+/// Set it with [`NominalStreamOpts::with_user_agent`](crate::stream::NominalStreamOpts::with_user_agent),
+/// [`NominalLogStreamOpts::user_agent`](crate::log::NominalLogStreamOpts::user_agent) or
+/// [`NominalApiClients::try_from_url_with_agent`].
+///
+/// The HTTP client accepts only some names and versions, so `new` changes others to the closest
+/// accepted value and logs a warning:
+///
+/// - A name keeps ASCII letters, digits and hyphens, and any other character becomes a hyphen.
+///   Leading characters before the first letter are dropped. `nominal_matlab` becomes
+///   `nominal-matlab`. A name with no letters becomes `unknown`.
+/// - A version drops a leading `v` and keeps its leading dot-separated numbers. `v0.3.0` and
+///   `0.3.0-beta.1` both become `0.3.0`. A version that doesn't start with a number becomes
+///   `0.0.0`. Release candidates such as `0.3.0-rc1` are kept.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProductAgent {
+    name: String,
+    version: String,
+}
+
+impl ProductAgent {
+    pub fn new(name: &str, version: &str) -> Self {
+        let agent = Self {
+            name: clean_agent_name(name),
+            version: clean_agent_version(version),
+        };
+        if agent.name != name || agent.version != version {
+            warn!(
+                requested = %format!("{name}/{version}"),
+                sent = %agent,
+                "changed user agent to a format the HTTP client accepts"
+            );
+        }
+        agent
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn version(&self) -> &str {
+        &self.version
+    }
+}
+
+impl fmt::Display for ProductAgent {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}/{}", self.name, self.version)
+    }
+}
+
+fn clean_agent_name(name: &str) -> String {
+    let replaced: String = name
+        .trim()
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    match replaced.trim_start_matches(|c: char| !c.is_ascii_alphabetic()) {
+        "" => FALLBACK_NAME.to_string(),
+        cleaned => cleaned.to_string(),
+    }
+}
+
+fn clean_agent_version(version: &str) -> String {
+    let trimmed = version.trim();
+    let unprefixed = trimmed.strip_prefix(['v', 'V']).unwrap_or(trimmed);
+    if VALID_VERSION.is_match(unprefixed) {
+        return unprefixed.to_string();
+    }
+    LEADING_VERSION_NUMBERS
+        .find(unprefixed)
+        .map_or(FALLBACK_VERSION, |numbers| numbers.as_str())
+        .to_string()
+}
+
+fn user_agent(product: Option<&ProductAgent>) -> UserAgent {
+    let streaming = Agent::new(USER_AGENT, env!("CARGO_PKG_VERSION"));
+    let Some(product) = product else {
+        return UserAgent::new(streaming);
+    };
+    let mut user_agent = UserAgent::new(Agent::new(&product.name, &product.version));
+    user_agent.push_agent(streaming);
+    user_agent
+}
 
 impl AuthProvider for BearerToken {
     fn token(&self) -> Option<BearerToken> {
@@ -80,13 +190,27 @@ impl Debug for NominalApiClients {
 
 impl NominalApiClients {
     pub fn from_uri(base_uri: &str) -> Self {
-        Self::try_from_url(base_uri.parse::<url::Url>().unwrap())
+        Self::from_uri_with_agent(base_uri, None)
+    }
+
+    /// Like [`Self::from_uri`], with `agent` at the start of the `User-Agent` header.
+    pub(crate) fn from_uri_with_agent(base_uri: &str, agent: Option<ProductAgent>) -> Self {
+        Self::try_from_url_with_agent(base_uri.parse::<url::Url>().unwrap(), agent)
             .expect("Failed to create Nominal API clients")
     }
 
     pub fn try_from_url(base_url: Url) -> Result<Self, Error> {
-        let streaming = async_conjure_streaming_client(base_url.clone())?;
-        let services = async_conjure_client("upload-ingest", base_url)?;
+        Self::try_from_url_with_agent(base_url, None)
+    }
+
+    /// Like [`Self::try_from_url`], with `agent` at the start of the `User-Agent` header.
+    pub fn try_from_url_with_agent(
+        base_url: Url,
+        agent: Option<ProductAgent>,
+    ) -> Result<Self, Error> {
+        let streaming =
+            async_conjure_streaming_client_with_agent(base_url.clone(), agent.as_ref())?;
+        let services = async_conjure_client_with_agent("upload-ingest", base_url, agent.as_ref())?;
         Ok(Self::from_conjure_clients(
             streaming,
             services,
@@ -128,12 +252,17 @@ pub static PRODUCTION_CLIENTS: LazyLock<NominalApiClients> =
     LazyLock::new(|| NominalApiClients::from_uri(PRODUCTION_API_URL));
 
 pub fn async_conjure_streaming_client(uri: Url) -> Result<Client, Error> {
+    async_conjure_streaming_client_with_agent(uri, None)
+}
+
+/// Like [`async_conjure_streaming_client`], with `agent` at the start of the `User-Agent` header.
+fn async_conjure_streaming_client_with_agent(
+    uri: Url,
+    agent: Option<&ProductAgent>,
+) -> Result<Client, Error> {
     Client::builder()
         .service("core-streaming-rs")
-        .user_agent(UserAgent::new(Agent::new(
-            USER_AGENT,
-            env!("CARGO_PKG_VERSION"),
-        )))
+        .user_agent(user_agent(agent))
         .uri(uri)
         .connect_timeout(std::time::Duration::from_secs(1))
         .read_timeout(std::time::Duration::from_secs(2))
@@ -146,12 +275,18 @@ pub fn async_conjure_streaming_client(uri: Url) -> Result<Client, Error> {
 }
 
 pub fn async_conjure_client(service: &'static str, uri: Url) -> Result<Client, Error> {
+    async_conjure_client_with_agent(service, uri, None)
+}
+
+/// Like [`async_conjure_client`], with `agent` at the start of the `User-Agent` header.
+fn async_conjure_client_with_agent(
+    service: &'static str,
+    uri: Url,
+    agent: Option<&ProductAgent>,
+) -> Result<Client, Error> {
     Client::builder()
         .service(service)
-        .user_agent(UserAgent::new(Agent::new(
-            USER_AGENT,
-            env!("CARGO_PKG_VERSION"),
-        )))
+        .user_agent(user_agent(agent))
         .uri(uri)
         .build()
 }
@@ -226,6 +361,67 @@ pub(crate) fn compressed_protobuf_request(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const CRATE_AGENT: &str = concat!("nominal-streaming/", env!("CARGO_PKG_VERSION"));
+
+    /// The HTTP client panics on a name it rejects and replaces a version it rejects with `0.0.0`.
+    fn assert_http_client_accepts(agent: &ProductAgent) {
+        assert_eq!(
+            Agent::new(agent.name(), agent.version()).version(),
+            agent.version()
+        );
+    }
+
+    #[test]
+    fn user_agent_starts_with_crate_agent_when_unset() {
+        assert_eq!(user_agent(None).to_string(), CRATE_AGENT);
+    }
+
+    #[test]
+    fn user_agent_puts_product_agent_before_crate_agent() {
+        let agent = ProductAgent::new("nominal-matlab", "0.3.0");
+        assert_eq!(
+            user_agent(Some(&agent)).to_string(),
+            format!("nominal-matlab/0.3.0 {CRATE_AGENT}")
+        );
+    }
+
+    #[rstest::rstest]
+    #[case("nominal-matlab", "nominal-matlab")]
+    #[case("NominalLabVIEW", "NominalLabVIEW")]
+    #[case("nominal_matlab", "nominal-matlab")]
+    #[case("nominal.matlab", "nominal-matlab")]
+    #[case("nominal matlab", "nominal-matlab")]
+    #[case(" nominal-matlab ", "nominal-matlab")]
+    #[case("nominal-é", "nominal--")]
+    #[case("3d-tool", "d-tool")]
+    #[case("123", "unknown")]
+    #[case("", "unknown")]
+    fn product_agent_cleans_name(#[case] requested: &str, #[case] sent: &str) {
+        let agent = ProductAgent::new(requested, "1.0.0");
+        assert_eq!(agent.name(), sent);
+        assert_http_client_accepts(&agent);
+    }
+
+    #[rstest::rstest]
+    #[case("0.3.0", "0.3.0")]
+    #[case("1", "1")]
+    #[case("0.3.0-rc1", "0.3.0-rc1")]
+    #[case("0.3.0-rc1-5-gabc123", "0.3.0-rc1-5-gabc123")]
+    #[case("v0.3.0", "0.3.0")]
+    #[case("V0.3.0-rc1", "0.3.0-rc1")]
+    #[case(" 0.3.0 ", "0.3.0")]
+    #[case("0.3.0-beta.1", "0.3.0")]
+    #[case("0.3.0-dev", "0.3.0")]
+    #[case("0.3.0+build.7", "0.3.0")]
+    #[case("0.3.0-5-gABC123", "0.3.0")]
+    #[case("dev", "0.0.0")]
+    #[case("", "0.0.0")]
+    fn product_agent_cleans_version(#[case] requested: &str, #[case] sent: &str) {
+        let agent = ProductAgent::new("nominal-matlab", requested);
+        assert_eq!(agent.version(), sent);
+        assert_http_client_accepts(&agent);
+    }
 
     #[test]
     fn columnar_request_shares_time_series_headers_and_compression() {
