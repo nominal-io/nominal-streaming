@@ -76,8 +76,13 @@ pub struct NominalStreamOpts {
     /// beyond the request metrics `track_metrics` emits itself. They are excluded from
     /// request latency measurements when `track_metrics` is enabled.
     pub additional_metric_channels: Vec<String>,
-    /// Program name and version at the start of the `User-Agent` header of every request to
-    /// Nominal. Unset by default. See [`ProductAgent`].
+    /// Program name and version at the start of the `User-Agent` header of requests from the
+    /// Core consumer [`NominalDatasetStreamBuilder`] builds. Unset by default. See
+    /// [`ProductAgent`].
+    ///
+    /// Consumers passed to [`NominalDatasetStream::new_with_consumer`] keep the agent of the
+    /// clients they were built with. Build those clients with
+    /// [`NominalApiClients::try_from_url_with_agent`].
     pub user_agent: Option<ProductAgent>,
 }
 
@@ -263,7 +268,7 @@ impl NominalDatasetStreamBuilder {
                 NominalCoreConsumer::new(
                     NominalApiClients::from_uri_with_agent(
                         self.opts.base_api_url.as_str(),
-                        self.opts.user_agent.clone(),
+                        self.opts.user_agent.as_ref(),
                     ),
                     handle.clone(),
                     auth_provider.clone(),

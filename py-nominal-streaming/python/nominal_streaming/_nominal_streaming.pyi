@@ -221,6 +221,35 @@ class PyNominalStreamOpts:
             >>> opts = PyNominalStreamOpts().with_api_base_url("https://staging.nominal.io")
         """
 
+    @property
+    def user_agent(self) -> str | None:
+        """The ``name/version`` sent first in the ``User-Agent`` header.
+
+        Returns:
+            The agent after cleanup, or ``None`` if none is set or its name has no letters.
+        """
+
+    def with_user_agent(self, name: str, version: str) -> Self:
+        """Set the program name and version sent first in the ``User-Agent`` header.
+
+        Nominal's usage reporting groups requests by this agent, and
+        ``nominal-streaming/<version>`` follows it. A name or version the HTTP client
+        rejects is changed to the closest accepted value. A name with no letters is
+        ignored.
+
+        Args:
+            name: Program name, such as ``"nominal-python"``.
+            version: Program version, such as ``"1.2.0"``.
+
+        Returns:
+            The updated instance for fluent chaining.
+
+        Example:
+            >>> opts = PyNominalStreamOpts().with_user_agent("nominal-python", "1.2.0")
+            >>> opts.user_agent
+            'nominal-python/1.2.0'
+        """
+
     def __repr__(self) -> str:
         """Return a developer-friendly string representation of this configuration."""
 
@@ -550,6 +579,9 @@ class PyNominalLogStreamOpts:
     @property
     def num_runtime_workers(self) -> int: ...
     def with_num_runtime_workers(self, value: int) -> Self: ...
+    @property
+    def user_agent(self) -> str | None: ...
+    def with_user_agent(self, name: str, version: str) -> Self: ...
     def __repr__(self) -> str: ...
     def __str__(self) -> str: ...
 

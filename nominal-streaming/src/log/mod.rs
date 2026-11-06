@@ -88,8 +88,8 @@ pub struct NominalLogStreamOpts {
     /// Number of threads that upload batches in parallel.
     pub num_upload_workers: usize,
     pub base_api_url: String,
-    /// Program name and version at the start of the `User-Agent` header of every request to
-    /// Nominal. Unset by default. See [`ProductAgent`].
+    /// Program name and version at the start of the `User-Agent` header of every request the log
+    /// stream sends. Unset by default. See [`ProductAgent`].
     pub user_agent: Option<ProductAgent>,
 }
 
