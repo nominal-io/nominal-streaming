@@ -15,8 +15,12 @@ use tokio::runtime::Builder;
 use tokio::sync::oneshot;
 use tracing::error;
 use tracing::info;
+use tracing::warn;
 
 use crate::lazy_dataset_stream_builder::LazyDatasetStreamBuilder;
+
+/// Runtime worker count when no options are given and the CPU count cannot be determined.
+const FALLBACK_RUNTIME_WORKERS: usize = 2;
 
 /// The parts of a running stream that the python-facing layer needs to interact with.
 pub struct StreamRuntime {
@@ -40,6 +44,7 @@ pub struct StreamRuntime {
 pub fn spawn_runtime_worker(
     builder: LazyDatasetStreamBuilder,
 ) -> Result<(JoinHandle<()>, StreamRuntime)> {
+    let mut unknown_parallelism = None;
     let num_workers = match &builder.opts {
         Some(opts) => {
             if opts.num_runtime_workers == 0 {
@@ -56,7 +61,13 @@ pub fn spawn_runtime_worker(
             }
             opts.num_runtime_workers
         }
-        None => thread::available_parallelism().map_or(2, |n| n.get()),
+        None => match thread::available_parallelism() {
+            Ok(n) => n.get(),
+            Err(e) => {
+                unknown_parallelism = Some(e);
+                FALLBACK_RUNTIME_WORKERS
+            }
+        },
     };
 
     let (rt_info_tx, rt_info_rx) = crossbeam_channel::bounded::<Result<StreamRuntime>>(1);
@@ -79,7 +90,14 @@ pub fn spawn_runtime_worker(
 
         // Build the stream on this runtime's handle and hand it to the caller. This thread keeps no
         // reference of its own, so the caller's drop is what drains the stream.
-        match builder.build(runtime.handle().clone()) {
+        let built = builder.build(runtime.handle().clone());
+        // Logged here because building the stream is what sets up logging.
+        if let Some(e) = unknown_parallelism {
+            warn!(
+                "Could not determine the number of available CPUs ({e}); using {FALLBACK_RUNTIME_WORKERS} runtime workers"
+            );
+        }
+        match built {
             Ok(stream) => {
                 let _ = rt_info_tx.send(Ok(StreamRuntime {
                     stream,
