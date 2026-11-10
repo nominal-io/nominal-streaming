@@ -11,7 +11,7 @@ from nominal_streaming._nominal_streaming import PyNominalDatasetStream
 class StartupTests(unittest.TestCase):
     def test_open_without_a_target_reports_the_configuration_error(self):
         stream = PyNominalDatasetStream(None)
-        with self.assertRaisesRegex(RuntimeError, "must either stream to file or core"):
+        with self.assertRaisesRegex(RuntimeError, r"call with_core_consumer\(\.\.\.\) or to_file\(\.\.\.\)"):
             stream.open()
 
     def test_open_reports_the_unusable_file_path(self):

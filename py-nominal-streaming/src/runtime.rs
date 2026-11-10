@@ -88,7 +88,7 @@ pub fn spawn_runtime_worker(
             }
             Err(e) => {
                 error!("Failed to start underlying stream: {e}");
-                let _ = rt_info_tx.send(Err(e.into()));
+                let _ = rt_info_tx.send(Err(e));
                 return;
             }
         }

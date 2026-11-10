@@ -1,5 +1,7 @@
 use std::path::PathBuf;
 
+use anyhow::anyhow;
+use anyhow::Result;
 use nominal_streaming::prelude::*;
 use nominal_streaming::stream::NominalDatasetStreamBuilder;
 
@@ -33,10 +35,14 @@ pub struct LazyDatasetStreamBuilder {
 }
 
 impl LazyDatasetStreamBuilder {
-    pub fn build(
-        &self,
-        handle: tokio::runtime::Handle,
-    ) -> Result<NominalDatasetStream, StreamBuildError> {
+    pub fn build(&self, handle: tokio::runtime::Handle) -> Result<NominalDatasetStream> {
+        // The underlying builder rejects this too, but names the Rust builder methods.
+        if self.targets.core_target.is_none() && self.targets.file_target.is_none() {
+            return Err(anyhow!(
+                "no streaming target configured; call with_core_consumer(...) or to_file(...)"
+            ));
+        }
+
         let mut builder = NominalDatasetStreamBuilder::new();
 
         if let Some(core_target) = &self.targets.core_target {
@@ -60,6 +66,6 @@ impl LazyDatasetStreamBuilder {
             builder = builder.with_options(opts.inner.clone());
         }
 
-        builder.try_build()
+        Ok(builder.try_build()?)
     }
 }
