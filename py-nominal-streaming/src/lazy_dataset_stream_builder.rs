@@ -1,7 +1,5 @@
 use std::path::PathBuf;
 
-use anyhow::anyhow;
-use anyhow::Result;
 use nominal_streaming::prelude::*;
 use nominal_streaming::stream::NominalDatasetStreamBuilder;
 
@@ -35,27 +33,6 @@ pub struct LazyDatasetStreamBuilder {
 }
 
 impl LazyDatasetStreamBuilder {
-    /// Checks the runtime sizing, which the underlying stream builder knows nothing about.
-    /// Targets and stream options are validated when the stream is built.
-    pub fn validate_runtime(&self) -> Result<()> {
-        let Some(opts) = &self.opts else {
-            return Ok(());
-        };
-        if opts.num_runtime_workers == 0 {
-            return Err(anyhow!(
-                "Number of runtime workers must be greater than zero"
-            ));
-        }
-        if opts.num_runtime_workers < opts.inner.request_dispatcher_tasks {
-            return Err(anyhow!(
-                "Number of runtime workers must be at least as large as the number of request dispatcher tasks ({} < {})",
-                opts.num_runtime_workers,
-                opts.inner.request_dispatcher_tasks,
-            ));
-        }
-        Ok(())
-    }
-
     pub fn build(
         &self,
         handle: tokio::runtime::Handle,

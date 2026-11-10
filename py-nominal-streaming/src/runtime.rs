@@ -40,13 +40,26 @@ pub struct StreamRuntime {
 pub fn spawn_runtime_worker(
     builder: LazyDatasetStreamBuilder,
 ) -> Result<(JoinHandle<()>, StreamRuntime)> {
-    let (rt_info_tx, rt_info_rx) = crossbeam_channel::bounded::<Result<StreamRuntime>>(1);
+    let num_workers = match &builder.opts {
+        Some(opts) => {
+            if opts.num_runtime_workers == 0 {
+                return Err(anyhow!(
+                    "Number of runtime workers must be greater than zero"
+                ));
+            }
+            if opts.num_runtime_workers < opts.inner.request_dispatcher_tasks {
+                return Err(anyhow!(
+                    "Number of runtime workers must be at least as large as the number of request dispatcher tasks ({} < {})",
+                    opts.num_runtime_workers,
+                    opts.inner.request_dispatcher_tasks,
+                ));
+            }
+            opts.num_runtime_workers
+        }
+        None => thread::available_parallelism().map_or(2, |n| n.get()),
+    };
 
-    let num_workers = builder
-        .opts
-        .as_ref()
-        .map(|o| o.num_runtime_workers)
-        .unwrap_or_else(|| thread::available_parallelism().map_or(1, |n| n.get()));
+    let (rt_info_tx, rt_info_rx) = crossbeam_channel::bounded::<Result<StreamRuntime>>(1);
 
     let join = thread::spawn(move || {
         let runtime = match Builder::new_multi_thread()
