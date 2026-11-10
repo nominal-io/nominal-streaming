@@ -30,7 +30,7 @@ For example:
   ```
 
 - A stream that sends data to Nominal Core, but writes failed requests to a file, is created as follows.
-  The fallback file is created when a request first fails, and `build` panics if a non-empty file already exists at that path (use `try_build` to handle the error):
+  The fallback file is created when a request first fails, and if a non-empty file already exists at that path it is left untouched and a timestamp is appended to the fallback's file name:
 
   ```rust,ignore
   let stream = NominalDatasetStreamBuilder::new()

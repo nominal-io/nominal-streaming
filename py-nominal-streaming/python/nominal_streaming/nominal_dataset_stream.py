@@ -191,7 +191,8 @@ class NominalDatasetStream:
 
         The written file will contain snappy-compressed avro data for any batches of data that were unable to make
         it to the backend successfully. The file is created when a batch first fails, so a stream that delivers
-        everything leaves no file behind. An existing non-empty file is never overwritten: `open()` raises instead.
+        everything leaves no file behind. An existing non-empty file is never overwritten: a timestamp is appended
+        to the fallback's file name instead, and a warning with the new name is logged.
         The file can be read as follows:
 
             ```python

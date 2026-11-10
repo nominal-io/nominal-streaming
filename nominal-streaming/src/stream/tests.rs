@@ -90,37 +90,32 @@ fn file_fallback_is_not_created_without_a_failed_request() {
 }
 
 #[test]
-fn try_build_fails_rather_than_truncating_existing_file_fallback() {
+fn existing_file_fallback_is_left_untouched() {
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("fallback.avro");
     std::fs::write(&path, b"undelivered points").unwrap();
 
-    let result = core_builder(&runtime).with_file_fallback(&path).try_build();
+    let stream = core_builder(&runtime)
+        .with_file_fallback(&path)
+        .try_build()
+        .unwrap();
+    drop(stream);
 
-    let Err(StreamBuildError::File {
-        path: failed,
-        source,
-    }) = result
-    else {
-        panic!("expected a file error");
-    };
-    assert_eq!(failed, path);
-    assert_eq!(source.kind(), std::io::ErrorKind::AlreadyExists);
     assert_eq!(std::fs::read(&path).unwrap(), b"undelivered points");
+    assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 1);
 }
 
 #[test]
-fn rejected_file_fallback_leaves_stream_to_file_untouched() {
+fn unusable_file_fallback_leaves_stream_to_file_untouched() {
     let directory = tempfile::tempdir().unwrap();
     let file = directory.path().join("data.avro");
-    let fallback = directory.path().join("fallback.avro");
+    let parent = tempfile::NamedTempFile::new().unwrap();
     std::fs::write(&file, b"previous data").unwrap();
-    std::fs::write(&fallback, b"undelivered points").unwrap();
 
     let result = NominalDatasetStreamBuilder::new()
         .stream_to_file(&file)
-        .with_file_fallback(&fallback)
+        .with_file_fallback(parent.path().join("fallback.avro"))
         .try_build();
 
     assert!(matches!(result, Err(StreamBuildError::File { .. })));
