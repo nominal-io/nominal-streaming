@@ -77,16 +77,15 @@ fn core_builder(runtime: &tokio::runtime::Runtime) -> NominalDatasetStreamBuilde
 fn file_fallback_is_not_created_without_a_failed_request() {
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("fallback.avro");
 
     let stream = core_builder(&runtime)
-        .with_file_fallback(&path)
+        .with_file_fallback(directory.path().join("fallback.avro"))
         .try_build()
         .unwrap();
-    assert!(!path.exists());
+    assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 0);
 
     drop(stream);
-    assert!(!path.exists());
+    assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 0);
 }
 
 #[test]
@@ -104,6 +103,36 @@ fn existing_file_fallback_is_left_untouched() {
 
     assert_eq!(std::fs::read(&path).unwrap(), b"undelivered points");
     assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 1);
+}
+
+#[test]
+fn file_fallback_name_includes_the_start_time() {
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("fallback.avro");
+
+    let consumer = core_builder(&runtime)
+        .with_file_fallback(&path)
+        .fallback_consumer()
+        .unwrap()
+        .unwrap();
+
+    let used = consumer.path();
+    let name = used.file_name().unwrap().to_str().unwrap();
+    assert_eq!(used.parent(), path.parent());
+    assert!(
+        name.starts_with("fallback_") && name.ends_with(".avro"),
+        "{name}"
+    );
+    assert_ne!(used, path);
+}
+
+#[test]
+fn start_time_is_appended_to_names_without_an_extension() {
+    let name = with_start_time(std::path::Path::new("dir/fallback"));
+    let name = name.to_str().unwrap();
+    assert!(name.starts_with("dir/fallback_"), "{name}");
+    assert!(!name.contains('.'), "{name}");
 }
 
 #[test]

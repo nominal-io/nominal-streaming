@@ -36,6 +36,7 @@ use parking_lot::Mutex;
 use parking_lot::MutexGuard;
 use tracing::debug;
 use tracing::error;
+use tracing::info;
 
 use crate::client::NominalApiClients;
 use crate::client::PRODUCTION_API_URL;
@@ -163,6 +164,18 @@ impl StreamBuildError {
     }
 }
 
+/// Appends the current UTC time to the file name, before any extension.
+fn with_start_time(path: &std::path::Path) -> PathBuf {
+    let datetime = chrono::Utc::now().format("%Y%m%d_%H%M%S");
+    let mut name = path.file_stem().unwrap_or_default().to_os_string();
+    name.push(format!("_{datetime}"));
+    if let Some(extension) = path.extension() {
+        name.push(".");
+        name.push(extension);
+    }
+    path.with_file_name(name)
+}
+
 #[derive(Default)]
 pub struct NominalDatasetStreamBuilder {
     stream_to_core: Option<(BearerToken, ResourceIdentifier, tokio::runtime::Handle)>,
@@ -264,9 +277,9 @@ impl NominalDatasetStreamBuilder {
     /// Validates the configuration and starts the stream.
     ///
     /// The `stream_to_file` file is created here, replacing any existing file. The
-    /// `with_file_fallback` file is created when a request first fails. If a
-    /// non-empty file already exists at that path it is left untouched, and a
-    /// timestamp is appended to the fallback's file name.
+    /// `with_file_fallback` file is created when a request first fails, and is
+    /// named after the given path with the stream's start time (UTC) appended to
+    /// the file name: `fallback.avro` becomes `fallback_20260101_120000.avro`.
     pub fn try_build(self) -> Result<NominalDatasetStream, StreamBuildError> {
         if self.stream_to_core.is_none() && self.stream_to_file.is_none() {
             return Err(StreamBuildError::Invalid(
@@ -359,8 +372,11 @@ impl NominalDatasetStreamBuilder {
         self.file_fallback
             .as_ref()
             .map(|path| {
-                AvroFileConsumer::new_lazy(path, self.dataset_rid())
-                    .map_err(|source| StreamBuildError::file(path, source))
+                let path = with_start_time(path);
+                let consumer = AvroFileConsumer::new_lazy(&path, self.dataset_rid())
+                    .map_err(|source| StreamBuildError::file(&path, source))?;
+                info!("failed requests will be written to {}", path.display());
+                Ok(consumer)
             })
             .transpose()
     }

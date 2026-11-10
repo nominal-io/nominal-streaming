@@ -30,7 +30,7 @@ For example:
   ```
 
 - A stream that sends data to Nominal Core, but writes failed requests to a file, is created as follows.
-  The fallback file is created when a request first fails, and if a non-empty file already exists at that path it is left untouched and a timestamp is appended to the fallback's file name:
+  The fallback file is created when a request first fails. The stream's start time (UTC) is appended to its file name, so this stream would write to `fallback_20260101_120000.avro` and each run gets its own file:
 
   ```rust,ignore
   let stream = NominalDatasetStreamBuilder::new()

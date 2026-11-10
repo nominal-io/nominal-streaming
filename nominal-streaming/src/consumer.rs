@@ -282,29 +282,19 @@ impl AvroFileConsumer {
     /// Defers creating `file_path` until the first request is consumed, so a
     /// consumer that never receives a request leaves no file behind.
     ///
-    /// An existing non-empty file at `file_path` is never modified: a UTC
-    /// timestamp is appended to the file name instead, and [`Self::path`]
-    /// returns the name in use. The parent directory is created here so that
-    /// an unusable location is reported up front.
+    /// An existing non-empty file at `file_path` is never modified: this
+    /// returns an `io::ErrorKind::AlreadyExists` error. The parent directory
+    /// is created here so that an unusable location is reported up front.
     pub fn new_lazy(
         file_path: impl Into<PathBuf>,
         dataset_rid: Option<ResourceIdentifier>,
     ) -> std::io::Result<Self> {
-        let mut path = file_path.into();
+        let path = file_path.into();
         if holds_data(&path)? {
-            let timestamped = with_timestamp(&path);
-            if holds_data(&timestamped)? {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::AlreadyExists,
-                    format!("{} already exists and is not empty", timestamped.display()),
-                ));
-            }
-            warn!(
-                "{} already exists and is not empty, writing to {} instead",
-                path.display(),
-                timestamped.display()
-            );
-            path = timestamped;
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                "file already exists and is not empty",
+            ));
         }
         std::fs::create_dir_all(path.parent().unwrap_or(&path))?;
 
@@ -392,17 +382,6 @@ fn open_writer(
     }
 
     Ok(writer)
-}
-
-fn with_timestamp(path: &std::path::Path) -> PathBuf {
-    let datetime = chrono::Utc::now().format("%Y%m%d_%H%M%S");
-    let mut name = path.file_stem().unwrap_or_default().to_os_string();
-    name.push(format!("_{datetime}"));
-    if let Some(extension) = path.extension() {
-        name.push(".");
-        name.push(extension);
-    }
-    path.with_file_name(name)
 }
 
 fn holds_data(path: &std::path::Path) -> std::io::Result<bool> {
@@ -1209,6 +1188,7 @@ mod tests {
         let path = tmp_dir.path().join("nested").join("fallback.avro");
 
         let consumer = AvroFileConsumer::new_lazy(&path, None).unwrap();
+        assert_eq!(consumer.path(), path);
         assert!(!path.exists());
 
         consumer.consume(&integer_request(2)).unwrap();
@@ -1265,35 +1245,15 @@ mod tests {
     }
 
     #[test]
-    fn lazy_consumer_writes_to_timestamped_file_when_path_holds_data() {
-        let tmp_dir = tempfile::tempdir().unwrap();
-        let path = tmp_dir.path().join("fallback.avro");
+    fn lazy_consumer_rejects_existing_data() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let path: PathBuf = tmp_file.path().to_path_buf();
         std::fs::write(&path, b"prior content").unwrap();
 
-        let consumer = AvroFileConsumer::new_lazy(&path, None).unwrap();
-        let used = consumer.path().to_path_buf();
-        let name = used.file_name().unwrap().to_str().unwrap();
-        assert_ne!(used, path);
-        assert_eq!(used.parent(), path.parent());
-        assert!(
-            name.starts_with("fallback_") && name.ends_with(".avro"),
-            "{name}"
-        );
-        assert!(!used.exists());
+        let err = AvroFileConsumer::new_lazy(&path, None).unwrap_err();
 
-        consumer.consume(&integer_request(2)).unwrap();
-        drop(consumer);
-
-        assert_eq!(read_integer_point_count(&used), 2);
+        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
         assert_eq!(std::fs::read(&path).unwrap(), b"prior content");
-    }
-
-    #[test]
-    fn timestamp_is_appended_to_names_without_an_extension() {
-        let name = with_timestamp(std::path::Path::new("dir/fallback"));
-        let name = name.to_str().unwrap();
-        assert!(name.starts_with("dir/fallback_"), "{name}");
-        assert!(!name.contains('.'), "{name}");
     }
 
     #[test]
