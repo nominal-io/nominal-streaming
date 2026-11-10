@@ -86,7 +86,7 @@ impl LazyDatasetStreamBuilder {
             builder = builder.with_options(opts.inner.clone());
         }
 
-        std::panic::catch_unwind(|| builder.build())
+        std::panic::catch_unwind(|| builder.try_build())
             .map_err(|_| anyhow!("Failed to build underlying stream"))?
             .map_err(|e| anyhow!("Failed to build underlying stream: {e}"))
     }

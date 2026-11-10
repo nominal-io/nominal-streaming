@@ -81,7 +81,7 @@ fn file_fallback_is_not_created_without_a_failed_request() {
 
     let stream = core_builder(&runtime)
         .with_file_fallback(&path)
-        .build()
+        .try_build()
         .unwrap();
     assert!(!path.exists());
 
@@ -90,13 +90,13 @@ fn file_fallback_is_not_created_without_a_failed_request() {
 }
 
 #[test]
-fn build_fails_rather_than_truncating_existing_file_fallback() {
+fn try_build_fails_rather_than_truncating_existing_file_fallback() {
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("fallback.avro");
     std::fs::write(&path, b"undelivered points").unwrap();
 
-    let result = core_builder(&runtime).with_file_fallback(&path).build();
+    let result = core_builder(&runtime).with_file_fallback(&path).try_build();
 
     let Err(StreamBuildError::File {
         path: failed,
@@ -121,48 +121,59 @@ fn rejected_file_fallback_leaves_stream_to_file_untouched() {
     let result = NominalDatasetStreamBuilder::new()
         .stream_to_file(&file)
         .with_file_fallback(&fallback)
-        .build();
+        .try_build();
 
     assert!(matches!(result, Err(StreamBuildError::File { .. })));
     assert_eq!(std::fs::read(&file).unwrap(), b"previous data");
 }
 
 #[test]
-fn build_returns_error_when_file_fallback_cannot_be_opened() {
+fn try_build_returns_error_when_file_fallback_cannot_be_opened() {
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let parent = tempfile::NamedTempFile::new().unwrap();
 
     let result = core_builder(&runtime)
         .with_file_fallback(parent.path().join("fallback.avro"))
-        .build();
+        .try_build();
 
     assert!(matches!(result, Err(StreamBuildError::File { .. })));
 }
 
 #[test]
-fn build_returns_error_when_stream_to_file_cannot_be_opened() {
+fn try_build_returns_error_when_stream_to_file_cannot_be_opened() {
     let parent = tempfile::NamedTempFile::new().unwrap();
 
     let result = NominalDatasetStreamBuilder::new()
         .stream_to_file(parent.path().join("data.avro"))
-        .build();
+        .try_build();
 
     assert!(matches!(result, Err(StreamBuildError::File { .. })));
 }
 
 #[test]
-fn build_returns_error_for_invalid_targets() {
+fn try_build_returns_error_for_invalid_targets() {
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let directory = tempfile::tempdir().unwrap();
     let file = directory.path().join("data.avro");
 
-    let no_target = NominalDatasetStreamBuilder::new().build();
+    let no_target = NominalDatasetStreamBuilder::new().try_build();
     assert!(matches!(no_target, Err(StreamBuildError::Invalid(_))));
 
     let all_targets = core_builder(&runtime)
         .stream_to_file(&file)
         .with_file_fallback(directory.path().join("fallback.avro"))
-        .build();
+        .try_build();
     assert!(matches!(all_targets, Err(StreamBuildError::Invalid(_))));
     assert!(!file.exists());
+}
+
+#[test]
+#[should_panic(expected = "failed to open")]
+fn build_panics_when_file_fallback_cannot_be_opened() {
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let parent = tempfile::NamedTempFile::new().unwrap();
+
+    core_builder(&runtime)
+        .with_file_fallback(parent.path().join("fallback.avro"))
+        .build();
 }
