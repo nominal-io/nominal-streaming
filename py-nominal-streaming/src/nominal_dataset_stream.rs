@@ -202,11 +202,11 @@ impl PyNominalDatasetStream {
             return Ok(());
         }
 
-        self.builder
-            .validate()
-            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
-
-        let (runtime_task, runtime) = match spawn_runtime_worker(self.builder.clone()) {
+        let started = self
+            .builder
+            .validate_runtime()
+            .and_then(|()| spawn_runtime_worker(self.builder.clone()));
+        let (runtime_task, runtime) = match started {
             Ok(parts) => parts,
             Err(e) => {
                 // leave the stream closed so that a failed open can be retried

@@ -46,15 +46,21 @@ pub fn spawn_runtime_worker(
         .opts
         .as_ref()
         .map(|o| o.num_runtime_workers)
-        .unwrap_or_else(|| thread::available_parallelism().unwrap().get());
+        .unwrap_or_else(|| thread::available_parallelism().map_or(1, |n| n.get()));
 
     let join = thread::spawn(move || {
-        let runtime = Builder::new_multi_thread()
+        let runtime = match Builder::new_multi_thread()
             .enable_all()
             .thread_name("nominal-stream-runtime")
             .worker_threads(num_workers)
             .build()
-            .expect("tokio runtime failed to initialize");
+        {
+            Ok(runtime) => runtime,
+            Err(e) => {
+                let _ = rt_info_tx.send(Err(anyhow!("Failed to start tokio runtime: {e}")));
+                return;
+            }
+        };
 
         let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
 
@@ -69,7 +75,7 @@ pub fn spawn_runtime_worker(
             }
             Err(e) => {
                 error!("Failed to start underlying stream: {e}");
-                let _ = rt_info_tx.send(Err(e));
+                let _ = rt_info_tx.send(Err(e.into()));
                 return;
             }
         }
@@ -84,7 +90,7 @@ pub fn spawn_runtime_worker(
 
     let rt_info = rt_info_rx
         .recv()
-        .map_err(|_| anyhow!("Failed to init runtime"))??;
+        .map_err(|_| anyhow!("Runtime thread exited before the stream started"))??;
 
     info!("Runtime worker successfully started");
     Ok((join, rt_info))

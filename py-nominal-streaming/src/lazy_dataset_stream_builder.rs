@@ -35,34 +35,31 @@ pub struct LazyDatasetStreamBuilder {
 }
 
 impl LazyDatasetStreamBuilder {
-    pub fn validate(&self) -> Result<()> {
-        if self.targets.core_target.is_none() && self.targets.file_target.is_none() {
+    /// Checks the runtime sizing, which the underlying stream builder knows nothing about.
+    /// Targets and stream options are validated when the stream is built.
+    pub fn validate_runtime(&self) -> Result<()> {
+        let Some(opts) = &self.opts else {
+            return Ok(());
+        };
+        if opts.num_runtime_workers == 0 {
             return Err(anyhow!(
-                "no streaming target configured; call with_core_consumer(...) or to_file(...)"
+                "Number of runtime workers must be greater than zero"
             ));
-        } else if self.targets.core_target.is_some()
-            && self.targets.file_target.is_some()
-            && self.targets.file_fallback.is_some()
-        {
-            return Err(anyhow!(
-                "Must choose one of stream_to_file and file_fallback when streaming to core"
-            ));
-        } else if let Some(opts) = self.opts.clone() {
-            if opts.num_runtime_workers < opts.inner.request_dispatcher_tasks {
-                return Err(
-                    anyhow!(
-                        "Number of runtime workers must be at least as large as the number of request dispatcher tasks ({} < {})", 
-                        opts.num_runtime_workers,
-                        opts.inner.request_dispatcher_tasks,
-                    )
-                );
-            }
         }
-
+        if opts.num_runtime_workers < opts.inner.request_dispatcher_tasks {
+            return Err(anyhow!(
+                "Number of runtime workers must be at least as large as the number of request dispatcher tasks ({} < {})",
+                opts.num_runtime_workers,
+                opts.inner.request_dispatcher_tasks,
+            ));
+        }
         Ok(())
     }
 
-    pub fn build(&self, handle: tokio::runtime::Handle) -> Result<NominalDatasetStream> {
+    pub fn build(
+        &self,
+        handle: tokio::runtime::Handle,
+    ) -> Result<NominalDatasetStream, StreamBuildError> {
         let mut builder = NominalDatasetStreamBuilder::new();
 
         if let Some(core_target) = &self.targets.core_target {
@@ -78,16 +75,14 @@ impl LazyDatasetStreamBuilder {
             builder = builder.with_file_fallback(file_fallback);
         }
 
-        if let Some(ref log_level) = &self.log_level {
+        if let Some(log_level) = &self.log_level {
             builder = builder.enable_logging_with_directive(log_level);
         }
 
-        if let Some(ref opts) = &self.opts {
+        if let Some(opts) = &self.opts {
             builder = builder.with_options(opts.inner.clone());
         }
 
-        std::panic::catch_unwind(|| builder.try_build())
-            .map_err(|_| anyhow!("Failed to build underlying stream"))?
-            .map_err(|e| anyhow!("Failed to build underlying stream: {e}"))
+        builder.try_build()
     }
 }
