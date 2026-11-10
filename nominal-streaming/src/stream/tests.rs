@@ -172,3 +172,51 @@ fn build_panics_when_file_fallback_cannot_be_opened() {
         .with_file_fallback(parent.path().join("fallback.avro"))
         .build();
 }
+
+#[test]
+fn try_build_returns_error_for_invalid_base_api_url() {
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+
+    let result = core_builder(&runtime)
+        .with_options(NominalStreamOpts::default().with_base_api_url("not a url"))
+        .try_build();
+
+    let Err(StreamBuildError::InvalidUrl { url, .. }) = result else {
+        panic!("expected an invalid url error");
+    };
+    assert_eq!(url, "not a url");
+}
+
+#[rstest::rstest]
+#[case::zero_record_limit(NominalStreamOpts::default().with_max_points_per_record(0))]
+#[case::zero_dispatchers(NominalStreamOpts::default().with_request_dispatcher_tasks(0))]
+fn try_build_rejects_zero_options_before_creating_files(#[case] opts: NominalStreamOpts) {
+    let directory = tempfile::tempdir().unwrap();
+    let file = directory.path().join("data.avro");
+
+    let result = NominalDatasetStreamBuilder::new()
+        .stream_to_file(&file)
+        .with_options(opts)
+        .try_build();
+
+    assert!(matches!(result, Err(StreamBuildError::Invalid(_))));
+    assert!(!file.exists());
+}
+
+#[test]
+#[should_panic(expected = "request_dispatcher_tasks must be greater than zero")]
+fn new_with_consumer_rejects_zero_dispatchers() {
+    NominalDatasetStream::new_with_consumer(
+        DiscardingConsumer,
+        NominalStreamOpts::default().with_request_dispatcher_tasks(0),
+    );
+}
+
+#[derive(Debug)]
+struct DiscardingConsumer;
+
+impl WriteRequestConsumer for DiscardingConsumer {
+    fn consume(&self, _request: &WriteRequestNominal) -> crate::consumer::ConsumerResult<()> {
+        Ok(())
+    }
+}

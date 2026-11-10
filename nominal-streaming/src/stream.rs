@@ -39,6 +39,7 @@ use tracing::error;
 
 use crate::client::NominalApiClients;
 use crate::client::PRODUCTION_API_URL;
+use crate::consumer::describe_request_error;
 use crate::consumer::AvroFileConsumer;
 use crate::consumer::DualWriteRequestConsumer;
 use crate::consumer::ListeningWriteRequestConsumer;
@@ -62,6 +63,7 @@ pub struct NominalStreamOpts {
     pub max_points_per_record: usize,
     pub max_request_delay: Duration,
     pub max_buffered_requests: usize,
+    /// Number of threads sending requests to the consumer. Must be greater than zero.
     pub request_dispatcher_tasks: usize,
     pub base_api_url: String,
     /// Emit request runtime metrics from the builder's Core consumer. Disabled by default.
@@ -142,6 +144,14 @@ pub enum StreamBuildError {
         #[source]
         source: std::io::Error,
     },
+    #[error("invalid base API url {url:?}: {source}")]
+    InvalidUrl {
+        url: String,
+        #[source]
+        source: url::ParseError,
+    },
+    #[error("failed to create Nominal API clients: {0}")]
+    Client(String),
 }
 
 impl StreamBuildError {
@@ -272,7 +282,18 @@ impl NominalDatasetStreamBuilder {
             ));
         }
 
-        let core_consumer = self.core_consumer();
+        if self.opts.max_points_per_record == 0 {
+            return Err(StreamBuildError::Invalid(
+                "max_points_per_record must be greater than zero",
+            ));
+        }
+        if self.opts.request_dispatcher_tasks == 0 {
+            return Err(StreamBuildError::Invalid(
+                "request_dispatcher_tasks must be greater than zero",
+            ));
+        }
+
+        let core_consumer = self.core_consumer()?;
         let fallback_consumer = self.fallback_consumer()?;
         let file_consumer = self.file_consumer()?;
 
@@ -295,21 +316,29 @@ impl NominalDatasetStreamBuilder {
         })
     }
 
-    fn core_consumer(&self) -> Option<NominalCoreConsumer<BearerToken>> {
-        self.stream_to_core
-            .as_ref()
-            .map(|(auth_provider, dataset, handle)| {
-                NominalCoreConsumer::new(
-                    NominalApiClients::from_uri(self.opts.base_api_url.as_str()),
-                    handle.clone(),
-                    auth_provider.clone(),
-                    dataset.clone(),
-                )
-                .with_track_metrics(self.opts.track_metrics)
-                .with_additional_metric_channels(
-                    self.opts.additional_metric_channels.iter().cloned(),
-                )
-            })
+    fn core_consumer(&self) -> Result<Option<NominalCoreConsumer<BearerToken>>, StreamBuildError> {
+        let Some((auth_provider, dataset, handle)) = &self.stream_to_core else {
+            return Ok(None);
+        };
+        let url = self.opts.base_api_url.as_str();
+        let parsed = url
+            .parse::<url::Url>()
+            .map_err(|source| StreamBuildError::InvalidUrl {
+                url: url.to_string(),
+                source,
+            })?;
+        let clients = NominalApiClients::try_from_url(parsed)
+            .map_err(|e| StreamBuildError::Client(describe_request_error(&e)))?;
+        Ok(Some(
+            NominalCoreConsumer::new(
+                clients,
+                handle.clone(),
+                auth_provider.clone(),
+                dataset.clone(),
+            )
+            .with_track_metrics(self.opts.track_metrics)
+            .with_additional_metric_channels(self.opts.additional_metric_channels.iter().cloned()),
+        ))
     }
 
     fn dataset_rid(&self) -> Option<ResourceIdentifier> {
@@ -378,7 +407,7 @@ impl NominalDatasetStream {
     }
 
     /// # Panics
-    /// Panics if `opts.max_points_per_record` is zero.
+    /// Panics if `opts.max_points_per_record` or `opts.request_dispatcher_tasks` is zero.
     pub fn new_with_consumer<C: WriteRequestConsumer + 'static>(
         consumer: C,
         opts: NominalStreamOpts,
@@ -386,6 +415,10 @@ impl NominalDatasetStream {
         assert!(
             opts.max_points_per_record > 0,
             "max_points_per_record must be greater than zero"
+        );
+        assert!(
+            opts.request_dispatcher_tasks > 0,
+            "request_dispatcher_tasks must be greater than zero"
         );
         let primary_buffer = Arc::new(SeriesBuffer::new(opts.max_points_per_record));
         let secondary_buffer = Arc::new(SeriesBuffer::new(opts.max_points_per_record));
