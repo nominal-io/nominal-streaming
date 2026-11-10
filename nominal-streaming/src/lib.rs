@@ -29,7 +29,8 @@ For example:
       .build();
   ```
 
-- A stream that sends data to Nominal Core, but writes failed requests to a file, is created as follows:
+- A stream that sends data to Nominal Core, but writes failed requests to a file, is created as follows.
+  The fallback file is created when a request first fails, and if a non-empty file already exists at that path it is left untouched and a timestamp is appended to the fallback's file name:
 
   ```rust,ignore
   let stream = NominalDatasetStreamBuilder::new()
@@ -229,6 +230,7 @@ pub mod prelude {
     #[expect(deprecated)]
     pub use crate::stream::NominalDatasourceStream;
     pub use crate::stream::NominalStreamOpts;
+    pub use crate::stream::StreamBuildError;
     pub use crate::types::AuthProvider;
     pub use crate::types::ChannelDescriptor;
     pub use crate::types::IntoTimestamp;
