@@ -220,38 +220,3 @@ impl WriteRequestConsumer for DiscardingConsumer {
         Ok(())
     }
 }
-
-#[rstest::rstest]
-#[case::secondary_processor(1)]
-#[case::first_dispatcher(2)]
-#[case::last_dispatcher(4)]
-fn failed_thread_spawn_returns_error_and_stops_started_workers(#[case] failing_spawn: usize) {
-    let (exited_tx, exited_rx) = crossbeam_channel::unbounded();
-    let spawned = AtomicUsize::new(0);
-    let spawn = |name: String, work: Box<dyn FnOnce() + Send>| {
-        if spawned.fetch_add(1, Ordering::Relaxed) == failing_spawn {
-            return Err(std::io::Error::other("no threads left"));
-        }
-        let exited_tx = exited_tx.clone();
-        spawn_thread(
-            name,
-            Box::new(move || {
-                work();
-                exited_tx.send(()).unwrap();
-            }),
-        )
-    };
-
-    let result = NominalDatasetStream::start(
-        DiscardingConsumer,
-        NominalStreamOpts::default().with_request_dispatcher_tasks(3),
-        &spawn,
-    );
-
-    assert_eq!(result.err().unwrap().to_string(), "no threads left");
-    for _ in 0..failing_spawn {
-        exited_rx
-            .recv_timeout(Duration::from_secs(5))
-            .expect("a started worker did not exit");
-    }
-}

@@ -152,8 +152,6 @@ pub enum StreamBuildError {
     },
     #[error("failed to create Nominal API clients: {0}")]
     Client(String),
-    #[error("failed to spawn stream worker thread: {0}")]
-    Thread(#[source] std::io::Error),
 }
 
 impl StreamBuildError {
@@ -299,7 +297,7 @@ impl NominalDatasetStreamBuilder {
         let fallback_consumer = self.fallback_consumer()?;
         let file_consumer = self.file_consumer()?;
 
-        match (core_consumer, file_consumer, fallback_consumer) {
+        Ok(match (core_consumer, file_consumer, fallback_consumer) {
             (None, None, _) | (Some(_), Some(_), Some(_)) => {
                 unreachable!("target combination was validated")
             }
@@ -315,7 +313,7 @@ impl NominalDatasetStreamBuilder {
             (Some(core), Some(file), None) => {
                 self.into_stream(DualWriteRequestConsumer::new(core, file))
             }
-        }
+        })
     }
 
     fn core_consumer(&self) -> Result<Option<NominalCoreConsumer<BearerToken>>, StreamBuildError> {
@@ -367,15 +365,11 @@ impl NominalDatasetStreamBuilder {
             .transpose()
     }
 
-    fn into_stream<C: WriteRequestConsumer + 'static>(
-        self,
-        consumer: C,
-    ) -> Result<NominalDatasetStream, StreamBuildError> {
+    fn into_stream<C: WriteRequestConsumer + 'static>(self, consumer: C) -> NominalDatasetStream {
         let mut listeners = self.listeners;
         listeners.push(Arc::new(LoggingListener));
         let listening_consumer = ListeningWriteRequestConsumer::new(consumer, listeners);
-        NominalDatasetStream::start(listening_consumer, self.opts, &spawn_thread)
-            .map_err(StreamBuildError::Thread)
+        NominalDatasetStream::new_with_consumer(listening_consumer, self.opts)
     }
 }
 
@@ -413,8 +407,7 @@ impl NominalDatasetStream {
     }
 
     /// # Panics
-    /// Panics if `opts.max_points_per_record` or `opts.request_dispatcher_tasks` is zero,
-    /// or if a worker thread cannot be spawned.
+    /// Panics if `opts.max_points_per_record` or `opts.request_dispatcher_tasks` is zero.
     pub fn new_with_consumer<C: WriteRequestConsumer + 'static>(
         consumer: C,
         opts: NominalStreamOpts,
@@ -427,16 +420,6 @@ impl NominalDatasetStream {
             opts.request_dispatcher_tasks > 0,
             "request_dispatcher_tasks must be greater than zero"
         );
-        Self::start(consumer, opts, &spawn_thread).expect("failed to spawn stream worker thread")
-    }
-
-    /// Starts the worker threads. If one cannot be spawned, the workers already
-    /// started are told to exit and the error is returned.
-    fn start<C: WriteRequestConsumer + 'static>(
-        consumer: C,
-        opts: NominalStreamOpts,
-        spawn: &SpawnThread<'_>,
-    ) -> std::io::Result<Self> {
         let primary_buffer = Arc::new(SeriesBuffer::new(opts.max_points_per_record));
         let secondary_buffer = Arc::new(SeriesBuffer::new(opts.max_points_per_record));
 
@@ -451,77 +434,75 @@ impl NominalDatasetStream {
         #[cfg(feature = "instrument")]
         let dispatcher_ns = Arc::new(AtomicU64::new(0));
 
-        let primary_handle = spawn("nmstream_primary".to_string(), {
-            let points_buffer = Arc::clone(&primary_buffer);
-            let running = running.clone();
-            let tx = request_tx.clone();
-            #[cfg(feature = "instrument")]
-            let bp_ns = Arc::clone(&batch_processor_ns);
-            Box::new(move || {
-                batch_processor(
-                    running,
-                    points_buffer,
-                    tx,
-                    opts.max_request_delay,
-                    #[cfg(feature = "instrument")]
-                    bp_ns,
-                );
+        let primary_handle = thread::Builder::new()
+            .name("nmstream_primary".to_string())
+            .spawn({
+                let points_buffer = Arc::clone(&primary_buffer);
+                let running = running.clone();
+                let tx = request_tx.clone();
+                #[cfg(feature = "instrument")]
+                let bp_ns = Arc::clone(&batch_processor_ns);
+                move || {
+                    batch_processor(
+                        running,
+                        points_buffer,
+                        tx,
+                        opts.max_request_delay,
+                        #[cfg(feature = "instrument")]
+                        bp_ns,
+                    );
+                }
             })
-        })?;
+            .unwrap();
 
-        // Batch processors exit once `running` is false, dropping their senders;
-        // dispatchers exit once every sender is gone.
-        let stop = |batch_processors: &[&thread::JoinHandle<()>]| {
-            running.store(false, Ordering::Release);
-            for handle in batch_processors {
-                handle.thread().unpark();
-            }
-        };
-
-        let secondary_handle = spawn("nmstream_secondary".to_string(), {
-            let secondary_buffer = Arc::clone(&secondary_buffer);
-            let running = running.clone();
-            #[cfg(feature = "instrument")]
-            let bp_ns = Arc::clone(&batch_processor_ns);
-            Box::new(move || {
-                batch_processor(
-                    running,
-                    secondary_buffer,
-                    request_tx,
-                    opts.max_request_delay,
-                    #[cfg(feature = "instrument")]
-                    bp_ns,
-                );
+        let secondary_handle = thread::Builder::new()
+            .name("nmstream_secondary".to_string())
+            .spawn({
+                let secondary_buffer = Arc::clone(&secondary_buffer);
+                let running = running.clone();
+                #[cfg(feature = "instrument")]
+                let bp_ns = Arc::clone(&batch_processor_ns);
+                move || {
+                    batch_processor(
+                        running,
+                        secondary_buffer,
+                        request_tx,
+                        opts.max_request_delay,
+                        #[cfg(feature = "instrument")]
+                        bp_ns,
+                    );
+                }
             })
-        })
-        .inspect_err(|_| stop(&[&primary_handle]))?;
+            .unwrap();
 
         let consumer = Arc::new(consumer);
 
         for i in 0..opts.request_dispatcher_tasks {
-            spawn(format!("nmstream_dispatch_{i}"), {
-                let running = Arc::clone(&running);
-                let unflushed_points = Arc::clone(&unflushed_points);
-                let rx = request_rx.clone();
-                let consumer = consumer.clone();
-                #[cfg(feature = "instrument")]
-                let disp_ns = Arc::clone(&dispatcher_ns);
-                Box::new(move || {
-                    debug!("starting request dispatcher #{}", i);
-                    request_dispatcher(
-                        running,
-                        unflushed_points,
-                        rx,
-                        consumer,
-                        #[cfg(feature = "instrument")]
-                        disp_ns,
-                    );
+            thread::Builder::new()
+                .name(format!("nmstream_dispatch_{i}"))
+                .spawn({
+                    let running = Arc::clone(&running);
+                    let unflushed_points = Arc::clone(&unflushed_points);
+                    let rx = request_rx.clone();
+                    let consumer = consumer.clone();
+                    #[cfg(feature = "instrument")]
+                    let disp_ns = Arc::clone(&dispatcher_ns);
+                    move || {
+                        debug!("starting request dispatcher #{}", i);
+                        request_dispatcher(
+                            running,
+                            unflushed_points,
+                            rx,
+                            consumer,
+                            #[cfg(feature = "instrument")]
+                            disp_ns,
+                        );
+                    }
                 })
-            })
-            .inspect_err(|_| stop(&[&primary_handle, &secondary_handle]))?;
+                .unwrap();
         }
 
-        Ok(NominalDatasetStream {
+        NominalDatasetStream {
             opts,
             running,
             unflushed_points,
@@ -533,7 +514,7 @@ impl NominalDatasetStream {
             batch_processor_ns,
             #[cfg(feature = "instrument")]
             dispatcher_ns,
-        })
+        }
     }
 
     pub fn double_writer(&self, channel_descriptor: ChannelDescriptor) -> NominalDoubleWriter<'_> {
@@ -1095,16 +1076,6 @@ fn into_series(points: HashMap<ChannelDescriptor, PointsType>) -> Vec<Series> {
             }
         })
         .collect()
-}
-
-type SpawnThread<'a> =
-    dyn Fn(String, Box<dyn FnOnce() + Send>) -> std::io::Result<thread::JoinHandle<()>> + 'a;
-
-fn spawn_thread(
-    name: String,
-    work: Box<dyn FnOnce() + Send>,
-) -> std::io::Result<thread::JoinHandle<()>> {
-    thread::Builder::new().name(name).spawn(work)
 }
 
 fn batch_processor(
