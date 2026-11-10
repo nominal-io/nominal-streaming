@@ -305,6 +305,11 @@ impl AvroFileConsumer {
         })
     }
 
+    fn open_deferred(&self) -> std::io::Result<AvroWriter> {
+        let overwrite = !holds_data(&self.path)?;
+        open_writer(&self.path, overwrite, self.dataset_rid.as_ref())
+    }
+
     fn append_series(&self, series: &[Series]) -> ConsumerResult<()> {
         let mut records: Vec<Record> = Vec::new();
         for series in series {
@@ -330,14 +335,12 @@ impl AvroFileConsumer {
         let mut writer = self.writer.lock();
         let writer = match &mut *writer {
             Some(writer) => writer,
-            unopened => {
-                let overwrite = !holds_data(&self.path)?;
-                unopened.insert(open_writer(
-                    &self.path,
-                    overwrite,
-                    self.dataset_rid.as_ref(),
-                )?)
-            }
+            unopened => unopened.insert(self.open_deferred().map_err(|e| {
+                std::io::Error::new(
+                    e.kind(),
+                    format!("failed to open {}: {e}", self.path.display()),
+                )
+            })?),
         };
         writer
             .extend(records)
@@ -1256,7 +1259,11 @@ mod tests {
 
         let err = consumer.consume(&integer_request(1)).unwrap_err();
 
-        assert!(matches!(err, ConsumerError::IoError(_)), "{err:?}");
+        let ConsumerError::IoError(io) = &err else {
+            panic!("expected an io error, got {err:?}");
+        };
+        assert_eq!(io.kind(), std::io::ErrorKind::AlreadyExists);
+        assert!(err.to_string().contains(path.to_str().unwrap()), "{err}");
         assert_eq!(std::fs::read(&path).unwrap(), b"prior content");
     }
 
