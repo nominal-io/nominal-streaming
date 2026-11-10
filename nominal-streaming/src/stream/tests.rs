@@ -63,3 +63,106 @@ fn empty_batches_do_not_block_waiting_producers() {
         .expect("on_notify waited on a buffer holding no points");
     assert_eq!(buffer.count(), 1);
 }
+
+fn core_builder(runtime: &tokio::runtime::Runtime) -> NominalDatasetStreamBuilder {
+    NominalDatasetStreamBuilder::new().stream_to_core(
+        BearerToken::new("unused").unwrap(),
+        ResourceIdentifier::new("ri.catalog.main.dataset.00000000-0000-0000-0000-000000000000")
+            .unwrap(),
+        runtime.handle().clone(),
+    )
+}
+
+#[test]
+fn file_fallback_is_not_created_without_a_failed_request() {
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("fallback.avro");
+
+    let stream = core_builder(&runtime)
+        .with_file_fallback(&path)
+        .build()
+        .unwrap();
+    assert!(!path.exists());
+
+    drop(stream);
+    assert!(!path.exists());
+}
+
+#[test]
+fn build_fails_rather_than_truncating_existing_file_fallback() {
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("fallback.avro");
+    std::fs::write(&path, b"undelivered points").unwrap();
+
+    let result = core_builder(&runtime).with_file_fallback(&path).build();
+
+    let Err(StreamBuildError::File {
+        path: failed,
+        source,
+    }) = result
+    else {
+        panic!("expected a file error");
+    };
+    assert_eq!(failed, path);
+    assert_eq!(source.kind(), std::io::ErrorKind::AlreadyExists);
+    assert_eq!(std::fs::read(&path).unwrap(), b"undelivered points");
+}
+
+#[test]
+fn rejected_file_fallback_leaves_stream_to_file_untouched() {
+    let directory = tempfile::tempdir().unwrap();
+    let file = directory.path().join("data.avro");
+    let fallback = directory.path().join("fallback.avro");
+    std::fs::write(&file, b"previous data").unwrap();
+    std::fs::write(&fallback, b"undelivered points").unwrap();
+
+    let result = NominalDatasetStreamBuilder::new()
+        .stream_to_file(&file)
+        .with_file_fallback(&fallback)
+        .build();
+
+    assert!(matches!(result, Err(StreamBuildError::File { .. })));
+    assert_eq!(std::fs::read(&file).unwrap(), b"previous data");
+}
+
+#[test]
+fn build_returns_error_when_file_fallback_cannot_be_opened() {
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let parent = tempfile::NamedTempFile::new().unwrap();
+
+    let result = core_builder(&runtime)
+        .with_file_fallback(parent.path().join("fallback.avro"))
+        .build();
+
+    assert!(matches!(result, Err(StreamBuildError::File { .. })));
+}
+
+#[test]
+fn build_returns_error_when_stream_to_file_cannot_be_opened() {
+    let parent = tempfile::NamedTempFile::new().unwrap();
+
+    let result = NominalDatasetStreamBuilder::new()
+        .stream_to_file(parent.path().join("data.avro"))
+        .build();
+
+    assert!(matches!(result, Err(StreamBuildError::File { .. })));
+}
+
+#[test]
+fn build_returns_error_for_invalid_targets() {
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let file = directory.path().join("data.avro");
+
+    let no_target = NominalDatasetStreamBuilder::new().build();
+    assert!(matches!(no_target, Err(StreamBuildError::Invalid(_))));
+
+    let all_targets = core_builder(&runtime)
+        .stream_to_file(&file)
+        .with_file_fallback(directory.path().join("fallback.avro"))
+        .build();
+    assert!(matches!(all_targets, Err(StreamBuildError::Invalid(_))));
+    assert!(!file.exists());
+}

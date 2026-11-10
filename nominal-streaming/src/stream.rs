@@ -41,6 +41,7 @@ use crate::client::NominalApiClients;
 use crate::client::PRODUCTION_API_URL;
 use crate::consumer::AvroFileConsumer;
 use crate::consumer::DualWriteRequestConsumer;
+use crate::consumer::LazyAvroFileConsumer;
 use crate::consumer::ListeningWriteRequestConsumer;
 use crate::consumer::NominalCoreConsumer;
 use crate::consumer::RequestConsumerWithFallback;
@@ -128,6 +129,28 @@ impl NominalStreamOpts {
     ) -> Self {
         self.additional_metric_channels = channels.into_iter().map(Into::into).collect();
         self
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum StreamBuildError {
+    #[error("invalid stream configuration: {0}")]
+    Invalid(&'static str),
+    #[error("failed to open {}: {source}", path.display())]
+    File {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+}
+
+impl StreamBuildError {
+    fn file(path: &std::path::Path, source: std::io::Error) -> Self {
+        Self::File {
+            path: path.to_path_buf(),
+            source,
+        }
     }
 }
 
@@ -221,15 +244,33 @@ impl NominalDatasetStreamBuilder {
         self.init_logging(Some(log_directive))
     }
 
-    pub fn build(self) -> NominalDatasetStream {
-        let core_consumer = self.core_consumer();
-        let file_consumer = self.file_consumer();
-        let fallback_consumer = self.fallback_consumer();
+    /// Validates the configuration and starts the stream.
+    ///
+    /// The `stream_to_file` file is created here, replacing any existing file. The
+    /// `with_file_fallback` file is created when a request first fails; building
+    /// fails if a non-empty file already exists at that path.
+    pub fn build(self) -> Result<NominalDatasetStream, StreamBuildError> {
+        if self.stream_to_core.is_none() && self.stream_to_file.is_none() {
+            return Err(StreamBuildError::Invalid(
+                "nominal dataset stream must either stream to file or core",
+            ));
+        }
+        if self.stream_to_core.is_some()
+            && self.stream_to_file.is_some()
+            && self.file_fallback.is_some()
+        {
+            return Err(StreamBuildError::Invalid(
+                "must choose one of stream_to_file and file_fallback when streaming to core",
+            ));
+        }
 
-        match (core_consumer, file_consumer, fallback_consumer) {
-            (None, None, _) => panic!("nominal dataset stream must either stream to file or core"),
-            (Some(_), Some(_), Some(_)) => {
-                panic!("must choose one of stream_to_file and file_fallback when streaming to core")
+        let core_consumer = self.core_consumer();
+        let fallback_consumer = self.fallback_consumer()?;
+        let file_consumer = self.file_consumer()?;
+
+        Ok(match (core_consumer, file_consumer, fallback_consumer) {
+            (None, None, _) | (Some(_), Some(_), Some(_)) => {
+                unreachable!("target combination was validated")
             }
             (Some(core), None, None) => self.into_stream(core),
             (Some(core), None, Some(fallback)) => {
@@ -243,7 +284,7 @@ impl NominalDatasetStreamBuilder {
             (Some(core), Some(file), None) => {
                 self.into_stream(DualWriteRequestConsumer::new(core, file))
             }
-        }
+        })
     }
 
     fn core_consumer(&self) -> Option<NominalCoreConsumer<BearerToken>> {
@@ -267,16 +308,24 @@ impl NominalDatasetStreamBuilder {
         self.stream_to_core.as_ref().map(|(_, rid, _)| rid.clone())
     }
 
-    fn file_consumer(&self) -> Option<AvroFileConsumer> {
-        self.stream_to_file.as_ref().map(|path| {
-            AvroFileConsumer::new_with_full_path(path, true, self.dataset_rid()).unwrap()
-        })
+    fn file_consumer(&self) -> Result<Option<AvroFileConsumer>, StreamBuildError> {
+        self.stream_to_file
+            .as_ref()
+            .map(|path| {
+                AvroFileConsumer::new_with_full_path(path, true, self.dataset_rid())
+                    .map_err(|source| StreamBuildError::file(path, source))
+            })
+            .transpose()
     }
 
-    fn fallback_consumer(&self) -> Option<AvroFileConsumer> {
-        self.file_fallback.as_ref().map(|path| {
-            AvroFileConsumer::new_with_full_path(path, true, self.dataset_rid()).unwrap()
-        })
+    fn fallback_consumer(&self) -> Result<Option<LazyAvroFileConsumer>, StreamBuildError> {
+        self.file_fallback
+            .as_ref()
+            .map(|path| {
+                LazyAvroFileConsumer::new(path, self.dataset_rid())
+                    .map_err(|source| StreamBuildError::file(path, source))
+            })
+            .transpose()
     }
 
     fn into_stream<C: WriteRequestConsumer + 'static>(self, consumer: C) -> NominalDatasetStream {

@@ -26,16 +26,19 @@ For example:
 
   let stream = NominalDatasetStreamBuilder::new()
       .stream_to_file("my_data.avro")
-      .build();
+      .build()
+      .expect("Failed to build stream");
   ```
 
-- A stream that sends data to Nominal Core, but writes failed requests to a file, is created as follows:
+- A stream that sends data to Nominal Core, but writes failed requests to a file, is created as follows.
+  The fallback file is created when a request first fails, and `build` returns an error if a non-empty file already exists at that path:
 
   ```rust,ignore
   let stream = NominalDatasetStreamBuilder::new()
       .stream_to_core(token, dataset_rid, handle)
       .with_file_fallback("fallback.avro")
-      .build();
+      .build()
+      .expect("Failed to build stream");
   ```
 
 - Or, you can build a stream that sends data to Nominal Core *and* to a file:
@@ -44,7 +47,8 @@ For example:
   let stream = NominalDatasetStreamBuilder::new()
       .stream_to_core(token, dataset_rid, handle)
       .stream_to_file("my_data.avro")
-      .build();
+      .build()
+      .expect("Failed to build stream");
   ```
 
 (See below for a [full example](#example-streaming-from-memory-to-nominal-core-with-file-fallback), that also shows how to create the `token`, `dataset_rid`, and `handle` values above.)
@@ -111,7 +115,8 @@ async fn async_main() {
     let stream = NominalDatasetStreamBuilder::new()
         .stream_to_core(token, dataset_rid, handle)
         .with_file_fallback("fallback.avro")
-        .build();
+        .build()
+        .expect("Failed to build stream");
 
     let channel_descriptor = ChannelDescriptor::with_tags("channel_1", [("experiment_id", "123")]);
 
@@ -172,7 +177,8 @@ let stream = NominalDatasetStreamBuilder::new()
     .stream_to_core(token, dataset_rid, handle)
     .with_file_fallback("fallback.avro")
     .enable_logging()
-    .build();
+    .build()
+    .expect("Failed to build stream");
 ```
 */
 #![recursion_limit = "256"]
@@ -229,6 +235,7 @@ pub mod prelude {
     #[expect(deprecated)]
     pub use crate::stream::NominalDatasourceStream;
     pub use crate::stream::NominalStreamOpts;
+    pub use crate::stream::StreamBuildError;
     pub use crate::types::AuthProvider;
     pub use crate::types::ChannelDescriptor;
     pub use crate::types::IntoTimestamp;
