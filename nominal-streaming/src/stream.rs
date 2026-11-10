@@ -39,6 +39,7 @@ use tracing::error;
 
 use crate::client::NominalApiClients;
 use crate::client::PRODUCTION_API_URL;
+use crate::consumer::describe_request_error;
 use crate::consumer::AvroFileConsumer;
 use crate::consumer::DualWriteRequestConsumer;
 use crate::consumer::ListeningWriteRequestConsumer;
@@ -62,6 +63,7 @@ pub struct NominalStreamOpts {
     pub max_points_per_record: usize,
     pub max_request_delay: Duration,
     pub max_buffered_requests: usize,
+    /// Number of threads sending requests to the consumer. Must be greater than zero.
     pub request_dispatcher_tasks: usize,
     pub base_api_url: String,
     /// Emit request runtime metrics from the builder's Core consumer. Disabled by default.
@@ -142,6 +144,16 @@ pub enum StreamBuildError {
         #[source]
         source: std::io::Error,
     },
+    #[error("invalid base API url {url:?}: {source}")]
+    InvalidUrl {
+        url: String,
+        #[source]
+        source: url::ParseError,
+    },
+    #[error("failed to create Nominal API clients: {0}")]
+    Client(String),
+    #[error("failed to spawn stream worker thread: {0}")]
+    Thread(#[source] std::io::Error),
 }
 
 impl StreamBuildError {
@@ -272,11 +284,22 @@ impl NominalDatasetStreamBuilder {
             ));
         }
 
-        let core_consumer = self.core_consumer();
+        if self.opts.max_points_per_record == 0 {
+            return Err(StreamBuildError::Invalid(
+                "max_points_per_record must be greater than zero",
+            ));
+        }
+        if self.opts.request_dispatcher_tasks == 0 {
+            return Err(StreamBuildError::Invalid(
+                "request_dispatcher_tasks must be greater than zero",
+            ));
+        }
+
+        let core_consumer = self.core_consumer()?;
         let fallback_consumer = self.fallback_consumer()?;
         let file_consumer = self.file_consumer()?;
 
-        Ok(match (core_consumer, file_consumer, fallback_consumer) {
+        match (core_consumer, file_consumer, fallback_consumer) {
             (None, None, _) | (Some(_), Some(_), Some(_)) => {
                 unreachable!("target combination was validated")
             }
@@ -292,24 +315,32 @@ impl NominalDatasetStreamBuilder {
             (Some(core), Some(file), None) => {
                 self.into_stream(DualWriteRequestConsumer::new(core, file))
             }
-        })
+        }
     }
 
-    fn core_consumer(&self) -> Option<NominalCoreConsumer<BearerToken>> {
-        self.stream_to_core
-            .as_ref()
-            .map(|(auth_provider, dataset, handle)| {
-                NominalCoreConsumer::new(
-                    NominalApiClients::from_uri(self.opts.base_api_url.as_str()),
-                    handle.clone(),
-                    auth_provider.clone(),
-                    dataset.clone(),
-                )
-                .with_track_metrics(self.opts.track_metrics)
-                .with_additional_metric_channels(
-                    self.opts.additional_metric_channels.iter().cloned(),
-                )
-            })
+    fn core_consumer(&self) -> Result<Option<NominalCoreConsumer<BearerToken>>, StreamBuildError> {
+        let Some((auth_provider, dataset, handle)) = &self.stream_to_core else {
+            return Ok(None);
+        };
+        let url = self.opts.base_api_url.as_str();
+        let parsed = url
+            .parse::<url::Url>()
+            .map_err(|source| StreamBuildError::InvalidUrl {
+                url: url.to_string(),
+                source,
+            })?;
+        let clients = NominalApiClients::try_from_url(parsed)
+            .map_err(|e| StreamBuildError::Client(describe_request_error(&e)))?;
+        Ok(Some(
+            NominalCoreConsumer::new(
+                clients,
+                handle.clone(),
+                auth_provider.clone(),
+                dataset.clone(),
+            )
+            .with_track_metrics(self.opts.track_metrics)
+            .with_additional_metric_channels(self.opts.additional_metric_channels.iter().cloned()),
+        ))
     }
 
     fn dataset_rid(&self) -> Option<ResourceIdentifier> {
@@ -336,11 +367,15 @@ impl NominalDatasetStreamBuilder {
             .transpose()
     }
 
-    fn into_stream<C: WriteRequestConsumer + 'static>(self, consumer: C) -> NominalDatasetStream {
+    fn into_stream<C: WriteRequestConsumer + 'static>(
+        self,
+        consumer: C,
+    ) -> Result<NominalDatasetStream, StreamBuildError> {
         let mut listeners = self.listeners;
         listeners.push(Arc::new(LoggingListener));
         let listening_consumer = ListeningWriteRequestConsumer::new(consumer, listeners);
-        NominalDatasetStream::new_with_consumer(listening_consumer, self.opts)
+        NominalDatasetStream::start(listening_consumer, self.opts, &spawn_thread)
+            .map_err(StreamBuildError::Thread)
     }
 }
 
@@ -378,7 +413,8 @@ impl NominalDatasetStream {
     }
 
     /// # Panics
-    /// Panics if `opts.max_points_per_record` is zero.
+    /// Panics if `opts.max_points_per_record` or `opts.request_dispatcher_tasks` is zero,
+    /// or if a worker thread cannot be spawned.
     pub fn new_with_consumer<C: WriteRequestConsumer + 'static>(
         consumer: C,
         opts: NominalStreamOpts,
@@ -387,6 +423,20 @@ impl NominalDatasetStream {
             opts.max_points_per_record > 0,
             "max_points_per_record must be greater than zero"
         );
+        assert!(
+            opts.request_dispatcher_tasks > 0,
+            "request_dispatcher_tasks must be greater than zero"
+        );
+        Self::start(consumer, opts, &spawn_thread).expect("failed to spawn stream worker thread")
+    }
+
+    /// Starts the worker threads. If one cannot be spawned, the workers already
+    /// started are told to exit and the error is returned.
+    fn start<C: WriteRequestConsumer + 'static>(
+        consumer: C,
+        opts: NominalStreamOpts,
+        spawn: &SpawnThread<'_>,
+    ) -> std::io::Result<Self> {
         let primary_buffer = Arc::new(SeriesBuffer::new(opts.max_points_per_record));
         let secondary_buffer = Arc::new(SeriesBuffer::new(opts.max_points_per_record));
 
@@ -401,75 +451,77 @@ impl NominalDatasetStream {
         #[cfg(feature = "instrument")]
         let dispatcher_ns = Arc::new(AtomicU64::new(0));
 
-        let primary_handle = thread::Builder::new()
-            .name("nmstream_primary".to_string())
-            .spawn({
-                let points_buffer = Arc::clone(&primary_buffer);
-                let running = running.clone();
-                let tx = request_tx.clone();
-                #[cfg(feature = "instrument")]
-                let bp_ns = Arc::clone(&batch_processor_ns);
-                move || {
-                    batch_processor(
-                        running,
-                        points_buffer,
-                        tx,
-                        opts.max_request_delay,
-                        #[cfg(feature = "instrument")]
-                        bp_ns,
-                    );
-                }
+        let primary_handle = spawn("nmstream_primary".to_string(), {
+            let points_buffer = Arc::clone(&primary_buffer);
+            let running = running.clone();
+            let tx = request_tx.clone();
+            #[cfg(feature = "instrument")]
+            let bp_ns = Arc::clone(&batch_processor_ns);
+            Box::new(move || {
+                batch_processor(
+                    running,
+                    points_buffer,
+                    tx,
+                    opts.max_request_delay,
+                    #[cfg(feature = "instrument")]
+                    bp_ns,
+                );
             })
-            .unwrap();
+        })?;
 
-        let secondary_handle = thread::Builder::new()
-            .name("nmstream_secondary".to_string())
-            .spawn({
-                let secondary_buffer = Arc::clone(&secondary_buffer);
-                let running = running.clone();
-                #[cfg(feature = "instrument")]
-                let bp_ns = Arc::clone(&batch_processor_ns);
-                move || {
-                    batch_processor(
-                        running,
-                        secondary_buffer,
-                        request_tx,
-                        opts.max_request_delay,
-                        #[cfg(feature = "instrument")]
-                        bp_ns,
-                    );
-                }
+        // Batch processors exit once `running` is false, dropping their senders;
+        // dispatchers exit once every sender is gone.
+        let stop = |batch_processors: &[&thread::JoinHandle<()>]| {
+            running.store(false, Ordering::Release);
+            for handle in batch_processors {
+                handle.thread().unpark();
+            }
+        };
+
+        let secondary_handle = spawn("nmstream_secondary".to_string(), {
+            let secondary_buffer = Arc::clone(&secondary_buffer);
+            let running = running.clone();
+            #[cfg(feature = "instrument")]
+            let bp_ns = Arc::clone(&batch_processor_ns);
+            Box::new(move || {
+                batch_processor(
+                    running,
+                    secondary_buffer,
+                    request_tx,
+                    opts.max_request_delay,
+                    #[cfg(feature = "instrument")]
+                    bp_ns,
+                );
             })
-            .unwrap();
+        })
+        .inspect_err(|_| stop(&[&primary_handle]))?;
 
         let consumer = Arc::new(consumer);
 
         for i in 0..opts.request_dispatcher_tasks {
-            thread::Builder::new()
-                .name(format!("nmstream_dispatch_{i}"))
-                .spawn({
-                    let running = Arc::clone(&running);
-                    let unflushed_points = Arc::clone(&unflushed_points);
-                    let rx = request_rx.clone();
-                    let consumer = consumer.clone();
-                    #[cfg(feature = "instrument")]
-                    let disp_ns = Arc::clone(&dispatcher_ns);
-                    move || {
-                        debug!("starting request dispatcher #{}", i);
-                        request_dispatcher(
-                            running,
-                            unflushed_points,
-                            rx,
-                            consumer,
-                            #[cfg(feature = "instrument")]
-                            disp_ns,
-                        );
-                    }
+            spawn(format!("nmstream_dispatch_{i}"), {
+                let running = Arc::clone(&running);
+                let unflushed_points = Arc::clone(&unflushed_points);
+                let rx = request_rx.clone();
+                let consumer = consumer.clone();
+                #[cfg(feature = "instrument")]
+                let disp_ns = Arc::clone(&dispatcher_ns);
+                Box::new(move || {
+                    debug!("starting request dispatcher #{}", i);
+                    request_dispatcher(
+                        running,
+                        unflushed_points,
+                        rx,
+                        consumer,
+                        #[cfg(feature = "instrument")]
+                        disp_ns,
+                    );
                 })
-                .unwrap();
+            })
+            .inspect_err(|_| stop(&[&primary_handle, &secondary_handle]))?;
         }
 
-        NominalDatasetStream {
+        Ok(NominalDatasetStream {
             opts,
             running,
             unflushed_points,
@@ -481,7 +533,7 @@ impl NominalDatasetStream {
             batch_processor_ns,
             #[cfg(feature = "instrument")]
             dispatcher_ns,
-        }
+        })
     }
 
     pub fn double_writer(&self, channel_descriptor: ChannelDescriptor) -> NominalDoubleWriter<'_> {
@@ -1043,6 +1095,16 @@ fn into_series(points: HashMap<ChannelDescriptor, PointsType>) -> Vec<Series> {
             }
         })
         .collect()
+}
+
+type SpawnThread<'a> =
+    dyn Fn(String, Box<dyn FnOnce() + Send>) -> std::io::Result<thread::JoinHandle<()>> + 'a;
+
+fn spawn_thread(
+    name: String,
+    work: Box<dyn FnOnce() + Send>,
+) -> std::io::Result<thread::JoinHandle<()>> {
+    thread::Builder::new().name(name).spawn(work)
 }
 
 fn batch_processor(
