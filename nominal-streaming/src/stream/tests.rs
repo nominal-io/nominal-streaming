@@ -77,16 +77,15 @@ fn core_builder(runtime: &tokio::runtime::Runtime) -> NominalDatasetStreamBuilde
 fn file_fallback_is_not_created_without_a_failed_request() {
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("fallback.avro");
 
     let stream = core_builder(&runtime)
-        .with_file_fallback(&path)
+        .with_file_fallback(directory.path().join("fallback.avro"))
         .try_build()
         .unwrap();
-    assert!(!path.exists());
+    assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 0);
 
     drop(stream);
-    assert!(!path.exists());
+    assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 0);
 }
 
 #[test]

@@ -264,9 +264,9 @@ impl NominalDatasetStreamBuilder {
     /// Validates the configuration and starts the stream.
     ///
     /// The `stream_to_file` file is created here, replacing any existing file. The
-    /// `with_file_fallback` file is created when a request first fails. If a
-    /// non-empty file already exists at that path it is left untouched, and a
-    /// timestamp is appended to the fallback's file name.
+    /// `with_file_fallback` file is created when a request first fails, and is
+    /// named after the given path with the stream's start time (UTC) appended to
+    /// the file name: `fallback.avro` becomes `fallback_20260101_120000.avro`.
     pub fn try_build(self) -> Result<NominalDatasetStream, StreamBuildError> {
         if self.stream_to_core.is_none() && self.stream_to_file.is_none() {
             return Err(StreamBuildError::Invalid(
