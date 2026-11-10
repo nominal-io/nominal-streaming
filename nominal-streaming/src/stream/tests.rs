@@ -106,6 +106,36 @@ fn existing_file_fallback_is_left_untouched() {
 }
 
 #[test]
+fn file_fallback_name_includes_the_start_time() {
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("fallback.avro");
+
+    let consumer = core_builder(&runtime)
+        .with_file_fallback(&path)
+        .fallback_consumer()
+        .unwrap()
+        .unwrap();
+
+    let used = consumer.path();
+    let name = used.file_name().unwrap().to_str().unwrap();
+    assert_eq!(used.parent(), path.parent());
+    assert!(
+        name.starts_with("fallback_") && name.ends_with(".avro"),
+        "{name}"
+    );
+    assert_ne!(used, path);
+}
+
+#[test]
+fn start_time_is_appended_to_names_without_an_extension() {
+    let name = with_start_time(std::path::Path::new("dir/fallback"));
+    let name = name.to_str().unwrap();
+    assert!(name.starts_with("dir/fallback_"), "{name}");
+    assert!(!name.contains('.'), "{name}");
+}
+
+#[test]
 fn unusable_file_fallback_leaves_stream_to_file_untouched() {
     let directory = tempfile::tempdir().unwrap();
     let file = directory.path().join("data.avro");

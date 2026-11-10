@@ -36,6 +36,7 @@ use parking_lot::Mutex;
 use parking_lot::MutexGuard;
 use tracing::debug;
 use tracing::error;
+use tracing::info;
 
 use crate::client::NominalApiClients;
 use crate::client::PRODUCTION_API_URL;
@@ -161,6 +162,18 @@ impl StreamBuildError {
             source,
         }
     }
+}
+
+/// Appends the current UTC time to the file name, before any extension.
+fn with_start_time(path: &std::path::Path) -> PathBuf {
+    let datetime = chrono::Utc::now().format("%Y%m%d_%H%M%S");
+    let mut name = path.file_stem().unwrap_or_default().to_os_string();
+    name.push(format!("_{datetime}"));
+    if let Some(extension) = path.extension() {
+        name.push(".");
+        name.push(extension);
+    }
+    path.with_file_name(name)
 }
 
 #[derive(Default)]
@@ -359,8 +372,11 @@ impl NominalDatasetStreamBuilder {
         self.file_fallback
             .as_ref()
             .map(|path| {
-                AvroFileConsumer::new_lazy(path, self.dataset_rid())
-                    .map_err(|source| StreamBuildError::file(path, source))
+                let path = with_start_time(path);
+                let consumer = AvroFileConsumer::new_lazy(&path, self.dataset_rid())
+                    .map_err(|source| StreamBuildError::file(&path, source))?;
+                info!("failed requests will be written to {}", path.display());
+                Ok(consumer)
             })
             .transpose()
     }

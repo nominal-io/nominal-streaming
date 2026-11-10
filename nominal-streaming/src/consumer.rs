@@ -24,7 +24,6 @@ use nominal_api::tonic::io::nominal::scout::api::proto::Uint64Points;
 use nominal_api::tonic::io::nominal::scout::api::proto::WriteRequestNominal;
 use parking_lot::Mutex;
 use prost::Message;
-use tracing::info;
 use tracing::warn;
 
 use crate::client::NominalApiClients;
@@ -280,27 +279,24 @@ impl AvroFileConsumer {
         })
     }
 
-    /// Defers creating the file until the first request is consumed, so a
+    /// Defers creating `file_path` until the first request is consumed, so a
     /// consumer that never receives a request leaves no file behind.
     ///
-    /// The file is named after `file_path` with the current UTC time appended
-    /// to the file name (`fallback.avro` becomes `fallback_20260101_120000.avro`),
-    /// so each consumer writes to its own file. [`Self::path`] returns the name
-    /// in use. The parent directory is created here so that an unusable location
-    /// is reported up front.
+    /// An existing non-empty file at `file_path` is never modified: this
+    /// returns an `io::ErrorKind::AlreadyExists` error. The parent directory
+    /// is created here so that an unusable location is reported up front.
     pub fn new_lazy(
         file_path: impl Into<PathBuf>,
         dataset_rid: Option<ResourceIdentifier>,
     ) -> std::io::Result<Self> {
-        let path = with_timestamp(&file_path.into());
+        let path = file_path.into();
         if holds_data(&path)? {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::AlreadyExists,
-                format!("{} already exists and is not empty", path.display()),
+                "file already exists and is not empty",
             ));
         }
         std::fs::create_dir_all(path.parent().unwrap_or(&path))?;
-        info!("requests will be written to {} if needed", path.display());
 
         Ok(Self {
             writer: Arc::new(Mutex::new(None)),
@@ -315,7 +311,8 @@ impl AvroFileConsumer {
     }
 
     fn open_deferred(&self) -> std::io::Result<AvroWriter> {
-        open_writer(&self.path, false, self.dataset_rid.as_ref())
+        let overwrite = !holds_data(&self.path)?;
+        open_writer(&self.path, overwrite, self.dataset_rid.as_ref())
     }
 
     fn append_series(&self, series: &[Series]) -> ConsumerResult<()> {
@@ -385,17 +382,6 @@ fn open_writer(
     }
 
     Ok(writer)
-}
-
-fn with_timestamp(path: &std::path::Path) -> PathBuf {
-    let datetime = chrono::Utc::now().format("%Y%m%d_%H%M%S");
-    let mut name = path.file_stem().unwrap_or_default().to_os_string();
-    name.push(format!("_{datetime}"));
-    if let Some(extension) = path.extension() {
-        name.push(".");
-        name.push(extension);
-    }
-    path.with_file_name(name)
 }
 
 fn holds_data(path: &std::path::Path) -> std::io::Result<bool> {
@@ -1196,41 +1182,30 @@ mod tests {
         }
     }
 
-    fn file_count(directory: &std::path::Path) -> usize {
-        std::fs::read_dir(directory).unwrap().count()
-    }
-
     #[test]
-    fn lazy_consumer_creates_timestamped_file_on_first_request() {
+    fn lazy_consumer_creates_file_on_first_request() {
         let tmp_dir = tempfile::tempdir().unwrap();
-        let directory = tmp_dir.path().join("nested");
-        let path = directory.join("fallback.avro");
+        let path = tmp_dir.path().join("nested").join("fallback.avro");
 
         let consumer = AvroFileConsumer::new_lazy(&path, None).unwrap();
-        let used = consumer.path().to_path_buf();
-        let name = used.file_name().unwrap().to_str().unwrap();
-        assert_eq!(used.parent(), path.parent());
-        assert!(
-            name.starts_with("fallback_") && name.ends_with(".avro"),
-            "{name}"
-        );
-        assert_eq!(file_count(&directory), 0);
+        assert_eq!(consumer.path(), path);
+        assert!(!path.exists());
 
         consumer.consume(&integer_request(2)).unwrap();
         consumer.consume(&integer_request(3)).unwrap();
         drop(consumer);
 
-        assert_eq!(read_integer_point_count(&used), 5);
-        assert_eq!(file_count(&directory), 1);
+        assert_eq!(read_integer_point_count(&path), 5);
     }
 
     #[test]
     fn lazy_consumer_without_requests_leaves_no_file() {
         let tmp_dir = tempfile::tempdir().unwrap();
+        let path = tmp_dir.path().join("fallback.avro");
 
-        drop(AvroFileConsumer::new_lazy(tmp_dir.path().join("fallback.avro"), None).unwrap());
+        drop(AvroFileConsumer::new_lazy(&path, None).unwrap());
 
-        assert_eq!(file_count(tmp_dir.path()), 0);
+        assert!(!path.exists());
     }
 
     #[derive(Debug)]
@@ -1253,52 +1228,39 @@ mod tests {
     #[case::primary_fails(false)]
     fn lazy_fallback_file_exists_only_after_a_failed_request(#[case] succeeds: bool) {
         let tmp_dir = tempfile::tempdir().unwrap();
-        let fallback =
-            AvroFileConsumer::new_lazy(tmp_dir.path().join("fallback.avro"), None).unwrap();
-        let path = fallback.path().to_path_buf();
-        let consumer =
-            RequestConsumerWithFallback::new(FixedOutcomeConsumer { succeeds }, fallback);
+        let path = tmp_dir.path().join("fallback.avro");
+        let consumer = RequestConsumerWithFallback::new(
+            FixedOutcomeConsumer { succeeds },
+            AvroFileConsumer::new_lazy(&path, None).unwrap(),
+        );
 
         consumer.consume(&integer_request(3)).unwrap();
         drop(consumer);
 
         if succeeds {
-            assert_eq!(file_count(tmp_dir.path()), 0);
+            assert!(!path.exists());
         } else {
             assert_eq!(read_integer_point_count(&path), 3);
         }
     }
 
     #[test]
-    fn lazy_consumer_leaves_file_at_requested_path_untouched() {
-        let tmp_dir = tempfile::tempdir().unwrap();
-        let path = tmp_dir.path().join("fallback.avro");
+    fn lazy_consumer_rejects_existing_data() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let path: PathBuf = tmp_file.path().to_path_buf();
         std::fs::write(&path, b"prior content").unwrap();
 
-        let consumer = AvroFileConsumer::new_lazy(&path, None).unwrap();
-        consumer.consume(&integer_request(2)).unwrap();
-        let used = consumer.path().to_path_buf();
-        drop(consumer);
+        let err = AvroFileConsumer::new_lazy(&path, None).unwrap_err();
 
-        assert_ne!(used, path);
-        assert_eq!(read_integer_point_count(&used), 2);
+        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
         assert_eq!(std::fs::read(&path).unwrap(), b"prior content");
-    }
-
-    #[test]
-    fn timestamp_is_appended_to_names_without_an_extension() {
-        let name = with_timestamp(std::path::Path::new("dir/fallback"));
-        let name = name.to_str().unwrap();
-        assert!(name.starts_with("dir/fallback_"), "{name}");
-        assert!(!name.contains('.'), "{name}");
     }
 
     #[test]
     fn lazy_consumer_does_not_truncate_file_created_after_construction() {
         let tmp_dir = tempfile::tempdir().unwrap();
-        let consumer =
-            AvroFileConsumer::new_lazy(tmp_dir.path().join("fallback.avro"), None).unwrap();
-        let path = consumer.path().to_path_buf();
+        let path = tmp_dir.path().join("fallback.avro");
+        let consumer = AvroFileConsumer::new_lazy(&path, None).unwrap();
         std::fs::write(&path, b"prior content").unwrap();
 
         let err = consumer.consume(&integer_request(1)).unwrap_err();
@@ -1309,6 +1271,18 @@ mod tests {
         assert_eq!(io.kind(), std::io::ErrorKind::AlreadyExists);
         assert!(err.to_string().contains(path.to_str().unwrap()), "{err}");
         assert_eq!(std::fs::read(&path).unwrap(), b"prior content");
+    }
+
+    #[test]
+    fn lazy_consumer_reuses_empty_file() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let path: PathBuf = tmp_file.path().to_path_buf();
+
+        let consumer = AvroFileConsumer::new_lazy(&path, None).unwrap();
+        consumer.consume(&integer_request(4)).unwrap();
+        drop(consumer);
+
+        assert_eq!(read_integer_point_count(&path), 4);
     }
 
     #[test]
