@@ -202,10 +202,6 @@ impl PyNominalDatasetStream {
             return Ok(());
         }
 
-        self.builder
-            .validate()
-            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
-
         let (runtime_task, runtime) = match spawn_runtime_worker(self.builder.clone()) {
             Ok(parts) => parts,
             Err(e) => {
