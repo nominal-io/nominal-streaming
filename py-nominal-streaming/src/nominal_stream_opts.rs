@@ -166,7 +166,7 @@ impl PyNominalStreamOpts {
     ) -> PyResult<PyRefMut<'py, Self>> {
         let agent =
             ProductAgent::new(name, version).map_err(|e| PyValueError::new_err(e.to_string()))?;
-        slf.inner.user_agent = agent.into();
+        slf.inner.user_agent = agent;
         Ok(slf)
     }
 

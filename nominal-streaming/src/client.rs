@@ -19,7 +19,7 @@ use conjure_runtime_rustls_platform_verifier::BodyWriter;
 use conjure_runtime_rustls_platform_verifier::Client;
 use conjure_runtime_rustls_platform_verifier::Idempotency;
 use conjure_runtime_rustls_platform_verifier::ResponseBody;
-pub use conjure_runtime_rustls_platform_verifier::UserAgent;
+use conjure_runtime_rustls_platform_verifier::UserAgent;
 use nominal_api::clients::ingest::api::AsyncIngestServiceClient;
 use nominal_api::clients::upload::api::AsyncUploadServiceClient;
 use nominal_api::objects::api::rids::NominalDataSourceOrDatasetRid;
@@ -40,12 +40,12 @@ pub const PRODUCTION_API_URL: &str = "https://api.gov.nominal.io/api";
 
 const USER_AGENT: &str = "nominal-streaming";
 
-/// A program name and version to put at the start of the `User-Agent` header of requests to
-/// Nominal.
+/// The program name and version at the start of the `User-Agent` header of requests to Nominal.
 ///
-/// Nominal's usage reporting groups requests by this agent. Converting it into a [`UserAgent`]
-/// gives `<name>/<version> nominal-streaming/<crate version>`. The HTTP client appends its own
-/// agents after these.
+/// Nominal's usage reporting groups requests by this agent. The default is
+/// `nominal-streaming/<crate version>`. For any other agent, the header starts with
+/// `<name>/<version> nominal-streaming/<crate version>`. The HTTP client appends its own agents
+/// after these.
 ///
 /// Set it with [`NominalStreamOpts::with_user_agent`](crate::stream::NominalStreamOpts::with_user_agent),
 /// [`NominalLogStreamOpts::user_agent`](crate::log::NominalLogStreamOpts::user_agent) or
@@ -104,21 +104,19 @@ impl fmt::Display for ProductAgent {
     }
 }
 
-impl From<ProductAgent> for UserAgent {
-    fn from(product: ProductAgent) -> Self {
-        let mut user_agent = UserAgent::new(product.0);
-        user_agent.push_agent(crate_agent());
-        user_agent
+impl Default for ProductAgent {
+    fn default() -> Self {
+        Self(Agent::new(USER_AGENT, env!("CARGO_PKG_VERSION")))
     }
 }
 
-fn crate_agent() -> Agent {
-    Agent::new(USER_AGENT, env!("CARGO_PKG_VERSION"))
-}
-
-/// The `User-Agent` sent when no [`ProductAgent`] is set: `nominal-streaming/<crate version>`.
-pub fn default_user_agent() -> UserAgent {
-    UserAgent::new(crate_agent())
+fn user_agent(product: &ProductAgent) -> UserAgent {
+    let mut user_agent = UserAgent::new(product.0.clone());
+    let streaming = ProductAgent::default();
+    if *product != streaming {
+        user_agent.push_agent(streaming.0);
+    }
+    user_agent
 }
 
 impl AuthProvider for BearerToken {
@@ -162,13 +160,16 @@ impl Debug for NominalApiClients {
 
 impl NominalApiClients {
     pub fn from_uri(base_uri: &str) -> Self {
-        Self::try_from_url(base_uri.parse::<url::Url>().unwrap(), default_user_agent())
-            .expect("Failed to create Nominal API clients")
+        Self::try_from_url(
+            base_uri.parse::<url::Url>().unwrap(),
+            &ProductAgent::default(),
+        )
+        .expect("Failed to create Nominal API clients")
     }
 
-    pub fn try_from_url(base_url: Url, user_agent: UserAgent) -> Result<Self, Error> {
-        let streaming = async_conjure_streaming_client(base_url.clone(), user_agent.clone())?;
-        let services = async_conjure_client("upload-ingest", base_url, user_agent)?;
+    pub fn try_from_url(base_url: Url, agent: &ProductAgent) -> Result<Self, Error> {
+        let streaming = async_conjure_streaming_client(base_url.clone(), agent)?;
+        let services = async_conjure_client("upload-ingest", base_url, agent)?;
         Ok(Self::from_conjure_clients(
             streaming,
             services,
@@ -209,10 +210,10 @@ impl NominalApiClients {
 pub static PRODUCTION_CLIENTS: LazyLock<NominalApiClients> =
     LazyLock::new(|| NominalApiClients::from_uri(PRODUCTION_API_URL));
 
-pub fn async_conjure_streaming_client(uri: Url, user_agent: UserAgent) -> Result<Client, Error> {
+pub fn async_conjure_streaming_client(uri: Url, agent: &ProductAgent) -> Result<Client, Error> {
     Client::builder()
         .service("core-streaming-rs")
-        .user_agent(user_agent)
+        .user_agent(user_agent(agent))
         .uri(uri)
         .connect_timeout(std::time::Duration::from_secs(1))
         .read_timeout(std::time::Duration::from_secs(2))
@@ -227,11 +228,11 @@ pub fn async_conjure_streaming_client(uri: Url, user_agent: UserAgent) -> Result
 pub fn async_conjure_client(
     service: &'static str,
     uri: Url,
-    user_agent: UserAgent,
+    agent: &ProductAgent,
 ) -> Result<Client, Error> {
     Client::builder()
         .service(service)
-        .user_agent(user_agent)
+        .user_agent(user_agent(agent))
         .uri(uri)
         .build()
 }
@@ -310,15 +311,19 @@ mod tests {
     const CRATE_AGENT: &str = concat!("nominal-streaming/", env!("CARGO_PKG_VERSION"));
 
     #[test]
-    fn default_user_agent_is_crate_agent() {
-        assert_eq!(default_user_agent().to_string(), CRATE_AGENT);
+    fn user_agent_is_crate_agent_by_default() {
+        assert_eq!(ProductAgent::default().to_string(), CRATE_AGENT);
+        assert_eq!(
+            user_agent(&ProductAgent::default()).to_string(),
+            CRATE_AGENT
+        );
     }
 
     #[test]
     fn user_agent_puts_product_agent_before_crate_agent() {
         let agent = ProductAgent::new("nominal-matlab", "0.3.0").unwrap();
         assert_eq!(
-            UserAgent::from(agent).to_string(),
+            user_agent(&agent).to_string(),
             format!("nominal-matlab/0.3.0 {CRATE_AGENT}")
         );
     }

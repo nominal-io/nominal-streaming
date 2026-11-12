@@ -38,10 +38,8 @@ use tracing::debug;
 use tracing::error;
 use tracing::info;
 
-use crate::client::default_user_agent;
 use crate::client::NominalApiClients;
 use crate::client::ProductAgent;
-use crate::client::UserAgent;
 use crate::client::PRODUCTION_API_URL;
 use crate::consumer::describe_request_error;
 use crate::consumer::AvroFileConsumer;
@@ -81,13 +79,13 @@ pub struct NominalStreamOpts {
     /// beyond the request metrics `track_metrics` emits itself. They are excluded from
     /// request latency measurements when `track_metrics` is enabled.
     pub additional_metric_channels: Vec<String>,
-    /// `User-Agent` header of requests from the Core consumer [`NominalDatasetStreamBuilder`]
-    /// builds. Defaults to `nominal-streaming/<crate version>`. See [`ProductAgent`].
+    /// Program name and version at the start of the `User-Agent` header of requests from the
+    /// Core consumer [`NominalDatasetStreamBuilder`] builds. See [`ProductAgent`].
     ///
     /// Consumers passed to [`NominalDatasetStream::new_with_consumer`] keep the agent of the
     /// clients they were built with. Build those clients with
     /// [`NominalApiClients::try_from_url`].
-    pub user_agent: UserAgent,
+    pub user_agent: ProductAgent,
 }
 
 impl Default for NominalStreamOpts {
@@ -100,7 +98,7 @@ impl Default for NominalStreamOpts {
             base_api_url: PRODUCTION_API_URL.to_string(),
             track_metrics: false,
             additional_metric_channels: Vec::new(),
-            user_agent: default_user_agent(),
+            user_agent: ProductAgent::default(),
         }
     }
 }
@@ -145,7 +143,7 @@ impl NominalStreamOpts {
     }
 
     pub fn with_user_agent(mut self, user_agent: ProductAgent) -> Self {
-        self.user_agent = user_agent.into();
+        self.user_agent = user_agent;
         self
     }
 }
@@ -356,7 +354,7 @@ impl NominalDatasetStreamBuilder {
                 url: url.to_string(),
                 source,
             })?;
-        let clients = NominalApiClients::try_from_url(parsed, self.opts.user_agent.clone())
+        let clients = NominalApiClients::try_from_url(parsed, &self.opts.user_agent)
             .map_err(|e| StreamBuildError::Client(describe_request_error(&e)))?;
         Ok(Some(
             NominalCoreConsumer::new(

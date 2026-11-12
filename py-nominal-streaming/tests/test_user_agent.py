@@ -16,7 +16,7 @@ class UserAgentTests(unittest.TestCase):
                 self.assertRegex(default, r"^nominal-streaming/[0-9.]+$")
                 self.assertIn(default, repr(opts))
                 self.assertIs(opts.with_user_agent("nominal-python", "1.2.0"), opts)
-                self.assertEqual(opts.user_agent, f"nominal-python/1.2.0 {default}")
+                self.assertEqual(opts.user_agent, "nominal-python/1.2.0")
                 self.assertIn(opts.user_agent, repr(opts))
 
     def test_invalid_name_or_version_raises(self):

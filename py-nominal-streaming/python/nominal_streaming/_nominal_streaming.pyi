@@ -223,10 +223,11 @@ class PyNominalStreamOpts:
 
     @property
     def user_agent(self) -> str:
-        """The agents sent first in the ``User-Agent`` header.
+        """The ``name/version`` sent first in the ``User-Agent`` header.
 
         Returns:
-            ``nominal-streaming/<version>``, after the agent set by ``with_user_agent`` if any.
+            The agent set by ``with_user_agent``, or ``nominal-streaming/<version>`` if
+            none is set.
         """
 
     def with_user_agent(self, name: str, version: str) -> Self:
@@ -251,7 +252,7 @@ class PyNominalStreamOpts:
         Example:
             >>> opts = PyNominalStreamOpts().with_user_agent("nominal-python", "1.2.0")
             >>> opts.user_agent
-            'nominal-python/1.2.0 nominal-streaming/<version>'
+            'nominal-python/1.2.0'
         """
 
     def __repr__(self) -> str:
