@@ -110,11 +110,25 @@ impl Default for ProductAgent {
     }
 }
 
+/// The agent as the HTTP client's type, for clients built outside this crate that should send the
+/// same name and version.
+impl From<ProductAgent> for Agent {
+    fn from(product: ProductAgent) -> Self {
+        product.0
+    }
+}
+
+impl From<&ProductAgent> for Agent {
+    fn from(product: &ProductAgent) -> Self {
+        product.0.clone()
+    }
+}
+
 fn user_agent(product: &ProductAgent) -> UserAgent {
-    let mut user_agent = UserAgent::new(product.0.clone());
+    let mut user_agent = UserAgent::new(product.into());
     let streaming = ProductAgent::default();
     if *product != streaming {
-        user_agent.push_agent(streaming.0);
+        user_agent.push_agent(streaming.into());
     }
     user_agent
 }
@@ -326,6 +340,14 @@ mod tests {
             user_agent(&agent).to_string(),
             format!("nominal-matlab/0.3.0 {CRATE_AGENT}")
         );
+    }
+
+    #[test]
+    fn product_agent_converts_into_http_client_agent() {
+        let product = ProductAgent::new("nominal-matlab", "0.3.0-rc1").unwrap();
+        let expected = Agent::new("nominal-matlab", "0.3.0-rc1");
+        assert_eq!(Agent::from(&product), expected);
+        assert_eq!(Agent::from(product), expected);
     }
 
     #[rstest::rstest]
