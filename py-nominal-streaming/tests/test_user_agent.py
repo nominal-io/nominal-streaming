@@ -12,11 +12,12 @@ class UserAgentTests(unittest.TestCase):
         for opts_type in OPTS_TYPES:
             with self.subTest(opts_type=opts_type.__name__):
                 opts = opts_type()
-                self.assertIsNone(opts.user_agent)
-                self.assertIn("user_agent=None", repr(opts))
+                default = opts.user_agent
+                self.assertRegex(default, r"^nominal-streaming/[0-9.]+$")
+                self.assertIn(default, repr(opts))
                 self.assertIs(opts.with_user_agent("nominal-python", "1.2.0"), opts)
-                self.assertEqual(opts.user_agent, "nominal-python/1.2.0")
-                self.assertIn("nominal-python/1.2.0", repr(opts))
+                self.assertEqual(opts.user_agent, f"nominal-python/1.2.0 {default}")
+                self.assertIn(opts.user_agent, repr(opts))
 
     def test_invalid_name_or_version_raises(self):
         for opts_type in OPTS_TYPES:
@@ -30,7 +31,7 @@ class UserAgentTests(unittest.TestCase):
                     opts = opts_type()
                     with self.assertRaises(ValueError):
                         opts.with_user_agent(name, version)
-                    self.assertIsNone(opts.user_agent)
+                    self.assertEqual(opts.user_agent, opts_type().user_agent)
 
 
 if __name__ == "__main__":

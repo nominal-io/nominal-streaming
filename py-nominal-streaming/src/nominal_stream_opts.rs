@@ -26,7 +26,7 @@ impl fmt::Display for PyNominalStreamOpts {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "NominalStreamOpts(max_points_per_batch={}, max_request_delay_secs{}, max_buffered_requests={}, num_upload_workers={}, num_runtime_workers={}, base_api_url='{}', track_metrics={}, user_agent={})",
+            "NominalStreamOpts(max_points_per_batch={}, max_request_delay_secs{}, max_buffered_requests={}, num_upload_workers={}, num_runtime_workers={}, base_api_url='{}', track_metrics={}, user_agent='{}')",
             self.inner.max_points_per_record,
             self.inner.max_request_delay.as_secs_f64(),
             self.inner.max_buffered_requests,
@@ -34,10 +34,7 @@ impl fmt::Display for PyNominalStreamOpts {
             self.num_runtime_workers,
             self.inner.base_api_url,
             self.inner.track_metrics,
-            self.inner
-                .user_agent
-                .as_ref()
-                .map_or_else(|| "None".to_string(), |agent| format!("'{agent}'")),
+            self.inner.user_agent,
         )
     }
 }
@@ -158,8 +155,8 @@ impl PyNominalStreamOpts {
     }
 
     #[getter]
-    fn user_agent(&self) -> Option<String> {
-        self.inner.user_agent.as_ref().map(ToString::to_string)
+    fn user_agent(&self) -> String {
+        self.inner.user_agent.to_string()
     }
 
     fn with_user_agent<'py>(
@@ -169,7 +166,7 @@ impl PyNominalStreamOpts {
     ) -> PyResult<PyRefMut<'py, Self>> {
         let agent =
             ProductAgent::new(name, version).map_err(|e| PyValueError::new_err(e.to_string()))?;
-        slf.inner.user_agent = Some(agent);
+        slf.inner.user_agent = agent.into();
         Ok(slf)
     }
 

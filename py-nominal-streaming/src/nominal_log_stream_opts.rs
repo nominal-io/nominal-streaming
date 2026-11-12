@@ -131,8 +131,8 @@ impl PyNominalLogStreamOpts {
         Ok(slf)
     }
     #[getter]
-    fn user_agent(&self) -> Option<String> {
-        self.inner.user_agent.as_ref().map(ToString::to_string)
+    fn user_agent(&self) -> String {
+        self.inner.user_agent.to_string()
     }
     fn with_user_agent<'py>(
         mut slf: PyRefMut<'py, Self>,
@@ -141,7 +141,7 @@ impl PyNominalLogStreamOpts {
     ) -> PyResult<PyRefMut<'py, Self>> {
         let agent =
             ProductAgent::new(name, version).map_err(|e| PyValueError::new_err(e.to_string()))?;
-        slf.inner.user_agent = Some(agent);
+        slf.inner.user_agent = agent.into();
         Ok(slf)
     }
 
@@ -160,7 +160,7 @@ impl std::fmt::Display for PyNominalLogStreamOpts {
             f,
             "PyNominalLogStreamOpts(max_request_bytes={}, max_buffered_bytes={}, \
              max_points_per_batch={}, max_request_delay_secs={}, num_upload_workers={}, \
-             base_api_url={:?}, num_runtime_workers={}, user_agent={})",
+             base_api_url={:?}, num_runtime_workers={}, user_agent={:?})",
             opts.max_request_bytes,
             opts.max_buffered_bytes,
             opts.max_records_per_batch,
@@ -168,10 +168,7 @@ impl std::fmt::Display for PyNominalLogStreamOpts {
             opts.num_upload_workers,
             opts.base_api_url,
             self.num_runtime_workers,
-            opts.user_agent.as_ref().map_or_else(
-                || "None".to_string(),
-                |agent| format!("{:?}", agent.to_string())
-            ),
+            opts.user_agent.to_string(),
         )
     }
 }
