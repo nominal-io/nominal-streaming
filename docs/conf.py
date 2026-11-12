@@ -1,6 +1,5 @@
 """Sphinx config for the nominal-streaming docs: the Rust crate and its Python package."""
 
-import re
 from pathlib import Path
 
 from nominal_sphinx_theme import theme_options
@@ -17,6 +16,8 @@ extensions = [
     "sphinx.ext.napoleon",
     "autoapi.extension",
     "nominal_sphinx_theme",
+    # the docstrings put examples in Markdown code fences
+    "nominal_sphinx_theme.docstring_fences",
 ]
 myst_enable_extensions = ["attrs_block", "colon_fence"]
 exclude_patterns = ["_build"]
@@ -38,35 +39,6 @@ suppress_warnings = ["autoapi.python_import_resolution"]
 napoleon_google_docstring = True
 napoleon_numpy_docstring = False
 
-
-# The docstrings put examples in Markdown code fences; Napoleon expects reStructuredText.
-CODE_FENCE = re.compile(
-    r"^(?P<indent> *)```(?P<language>[\w.+-]*)[ \t]*\n"
-    r"(?P<code>(?:(?P=indent)[^\n]*\n|[ \t]*\n)*?)^(?P=indent)```[ \t]*$",
-    re.MULTILINE,
-)
-
-
-def expand_code_fence(match: re.Match[str]) -> str:
-    body = "\n".join("    " + line if line.strip() else "" for line in match["code"].splitlines())
-    return f"{match['indent']}.. code-block:: {match['language'] or 'text'}\n\n{body}\n"
-
-
-def process_code_fences(app, what, name, obj, options, lines):
-    lines[:] = CODE_FENCE.sub(expand_code_fence, "\n".join(lines)).split("\n")
-
-
-def skip_submodules(app, what, name, obj, skip, options):
-    """Document each class once, on the package page: readers import them from nominal_streaming."""
-    if what == "module" and name != "nominal_streaming":
-        return True
-    return skip
-
-
-def setup(app):
-    app.connect("autodoc-process-docstring", process_code_fences, priority=400)  # before Napoleon
-    app.connect("autoapi-skip-member", skip_submodules)
-
 html_theme = "shibuya"
 # the browser tab and search results; the header shows project
 html_title = "nominal-streaming"
@@ -86,3 +58,14 @@ html_theme_options = theme_options(
         {"title": "Reference", "url": "ref/index"},
     ],
 )
+
+
+def skip_submodules(app, what, name, obj, skip, options):
+    """Document each class once, on the package page: readers import them from nominal_streaming."""
+    if what == "module" and name != "nominal_streaming":
+        return True
+    return skip
+
+
+def setup(app):
+    app.connect("autoapi-skip-member", skip_submodules)
