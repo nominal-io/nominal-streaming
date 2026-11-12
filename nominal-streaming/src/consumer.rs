@@ -213,10 +213,14 @@ pub static CORE_AVRO_SCHEMA: LazyLock<apache_avro::Schema> = LazyLock::new(|| {
     apache_avro::Schema::parse(&json).expect("Failed to parse Avro schema")
 });
 
+type AvroWriter = apache_avro::Writer<'static, std::fs::File>;
+
 #[derive(Clone)]
 pub struct AvroFileConsumer {
-    writer: Arc<Mutex<apache_avro::Writer<'static, std::fs::File>>>,
+    /// `None` until the file is opened, which a lazy consumer does on its first request.
+    writer: Arc<Mutex<Option<AvroWriter>>>,
     path: PathBuf,
+    dataset_rid: Option<ResourceIdentifier>,
 }
 
 impl Debug for AvroFileConsumer {
@@ -266,33 +270,49 @@ impl AvroFileConsumer {
     ) -> std::io::Result<Self> {
         let path = file_path.into();
         std::fs::create_dir_all(path.parent().unwrap_or(&path))?;
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true);
-        if overwrite {
-            options.create(true).truncate(true);
-        } else {
-            options.create_new(true);
-        }
-        let file = options.open(&path)?;
-
-        let mut writer = apache_avro::Writer::builder()
-            .schema(&CORE_AVRO_SCHEMA)
-            .writer(file)
-            .codec(apache_avro::Codec::Snappy)
-            .build();
-
-        if let Some(rid) = dataset_rid {
-            writer
-                .add_user_metadata(DATASET_RID_METADATA_KEY.to_string(), rid.to_string())
-                .map_err(|e| {
-                    std::io::Error::other(format!("failed to write avro metadata: {e}"))
-                })?;
-        }
+        let writer = open_writer(&path, overwrite, dataset_rid.as_ref())?;
 
         Ok(Self {
-            writer: Arc::new(Mutex::new(writer)),
+            writer: Arc::new(Mutex::new(Some(writer))),
             path,
+            dataset_rid,
         })
+    }
+
+    /// Defers creating `file_path` until the first request is consumed, so a
+    /// consumer that never receives a request leaves no file behind.
+    ///
+    /// An existing non-empty file at `file_path` is never modified: this
+    /// returns an `io::ErrorKind::AlreadyExists` error. The parent directory
+    /// is created here so that an unusable location is reported up front.
+    pub fn new_lazy(
+        file_path: impl Into<PathBuf>,
+        dataset_rid: Option<ResourceIdentifier>,
+    ) -> std::io::Result<Self> {
+        let path = file_path.into();
+        if holds_data(&path)? {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                "file already exists and is not empty",
+            ));
+        }
+        std::fs::create_dir_all(path.parent().unwrap_or(&path))?;
+
+        Ok(Self {
+            writer: Arc::new(Mutex::new(None)),
+            path,
+            dataset_rid,
+        })
+    }
+
+    /// The file this consumer writes to.
+    pub fn path(&self) -> &std::path::Path {
+        &self.path
+    }
+
+    fn open_deferred(&self) -> std::io::Result<AvroWriter> {
+        let overwrite = !holds_data(&self.path)?;
+        open_writer(&self.path, overwrite, self.dataset_rid.as_ref())
     }
 
     fn append_series(&self, series: &[Series]) -> ConsumerResult<()> {
@@ -317,12 +337,58 @@ impl AvroFileConsumer {
             records.push(record);
         }
 
-        self.writer
-            .lock()
+        let mut writer = self.writer.lock();
+        let writer = match &mut *writer {
+            Some(writer) => writer,
+            unopened => unopened.insert(self.open_deferred().map_err(|e| {
+                std::io::Error::new(
+                    e.kind(),
+                    format!("failed to open {}: {e}", self.path.display()),
+                )
+            })?),
+        };
+        writer
             .extend(records)
             .map_err(|e| ConsumerError::AvroError(Box::new(e)))?;
 
         Ok(())
+    }
+}
+
+fn open_writer(
+    path: &std::path::Path,
+    overwrite: bool,
+    dataset_rid: Option<&ResourceIdentifier>,
+) -> std::io::Result<AvroWriter> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true);
+    if overwrite {
+        options.create(true).truncate(true);
+    } else {
+        options.create_new(true);
+    }
+    let file = options.open(path)?;
+
+    let mut writer = apache_avro::Writer::builder()
+        .schema(&CORE_AVRO_SCHEMA)
+        .writer(file)
+        .codec(apache_avro::Codec::Snappy)
+        .build();
+
+    if let Some(rid) = dataset_rid {
+        writer
+            .add_user_metadata(DATASET_RID_METADATA_KEY.to_string(), rid.to_string())
+            .map_err(|e| std::io::Error::other(format!("failed to write avro metadata: {e}")))?;
+    }
+
+    Ok(writer)
+}
+
+fn holds_data(path: &std::path::Path) -> std::io::Result<bool> {
+    match std::fs::metadata(path) {
+        Ok(metadata) => Ok(!metadata.is_file() || metadata.len() > 0),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(e),
     }
 }
 
@@ -442,7 +508,10 @@ impl Drop for AvroFileConsumer {
     /// This impl makes that failure mode impossible regardless of how the
     /// inner writer is driven.
     fn drop(&mut self) {
-        if let Err(e) = self.writer.lock().flush() {
+        let Some(writer) = &mut *self.writer.lock() else {
+            return;
+        };
+        if let Err(e) = writer.flush() {
             warn!(
                 "failed to flush avro writer for {:?} on drop: {e:?}",
                 self.path
@@ -1026,7 +1095,13 @@ mod tests {
             );
             record.put("tags", HashMap::<String, String>::new());
 
-            consumer.writer.lock().append(record).unwrap();
+            consumer
+                .writer
+                .lock()
+                .as_mut()
+                .unwrap()
+                .append(record)
+                .unwrap();
             // consumer drops here — the only thing that can land the buffered
             // record on disk is a flush from the Drop impl.
         }
@@ -1085,6 +1160,137 @@ mod tests {
         write_integer_points_with(&path, 1, true, None);
 
         assert!(read_dataset_rid_metadata(&path).is_none());
+    }
+
+    fn integer_request(count: i64) -> WriteRequestNominal {
+        let points = (0..count)
+            .map(
+                |i| nominal_api::tonic::io::nominal::scout::api::proto::IntegerPoint {
+                    timestamp: make_timestamp(i, 0),
+                    value: i,
+                },
+            )
+            .collect();
+        WriteRequestNominal {
+            series: vec![make_series(
+                "ch",
+                Points {
+                    points_type: Some(PointsType::IntegerPoints(IntegerPoints { points })),
+                },
+            )],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn lazy_consumer_creates_file_on_first_request() {
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let path = tmp_dir.path().join("nested").join("fallback.avro");
+
+        let consumer = AvroFileConsumer::new_lazy(&path, None).unwrap();
+        assert_eq!(consumer.path(), path);
+        assert!(!path.exists());
+
+        consumer.consume(&integer_request(2)).unwrap();
+        consumer.consume(&integer_request(3)).unwrap();
+        drop(consumer);
+
+        assert_eq!(read_integer_point_count(&path), 5);
+    }
+
+    #[test]
+    fn lazy_consumer_without_requests_leaves_no_file() {
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let path = tmp_dir.path().join("fallback.avro");
+
+        drop(AvroFileConsumer::new_lazy(&path, None).unwrap());
+
+        assert!(!path.exists());
+    }
+
+    #[derive(Debug)]
+    struct FixedOutcomeConsumer {
+        succeeds: bool,
+    }
+
+    impl WriteRequestConsumer for FixedOutcomeConsumer {
+        fn consume(&self, _request: &WriteRequestNominal) -> ConsumerResult<()> {
+            if self.succeeds {
+                Ok(())
+            } else {
+                Err(ConsumerError::RequestError("unavailable".into()))
+            }
+        }
+    }
+
+    #[rstest::rstest]
+    #[case::primary_succeeds(true)]
+    #[case::primary_fails(false)]
+    fn lazy_fallback_file_exists_only_after_a_failed_request(#[case] succeeds: bool) {
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let path = tmp_dir.path().join("fallback.avro");
+        let consumer = RequestConsumerWithFallback::new(
+            FixedOutcomeConsumer { succeeds },
+            AvroFileConsumer::new_lazy(&path, None).unwrap(),
+        );
+
+        consumer.consume(&integer_request(3)).unwrap();
+        drop(consumer);
+
+        if succeeds {
+            assert!(!path.exists());
+        } else {
+            assert_eq!(read_integer_point_count(&path), 3);
+        }
+    }
+
+    #[test]
+    fn lazy_consumer_rejects_existing_data() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let path: PathBuf = tmp_file.path().to_path_buf();
+        std::fs::write(&path, b"prior content").unwrap();
+
+        let err = AvroFileConsumer::new_lazy(&path, None).unwrap_err();
+
+        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(std::fs::read(&path).unwrap(), b"prior content");
+    }
+
+    #[test]
+    fn lazy_consumer_does_not_truncate_file_created_after_construction() {
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let path = tmp_dir.path().join("fallback.avro");
+        let consumer = AvroFileConsumer::new_lazy(&path, None).unwrap();
+        std::fs::write(&path, b"prior content").unwrap();
+
+        let err = consumer.consume(&integer_request(1)).unwrap_err();
+
+        let ConsumerError::IoError(io) = &err else {
+            panic!("expected an io error, got {err:?}");
+        };
+        assert_eq!(io.kind(), std::io::ErrorKind::AlreadyExists);
+        assert!(err.to_string().contains(path.to_str().unwrap()), "{err}");
+        assert_eq!(std::fs::read(&path).unwrap(), b"prior content");
+    }
+
+    #[test]
+    fn lazy_consumer_reuses_empty_file() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let path: PathBuf = tmp_file.path().to_path_buf();
+
+        let consumer = AvroFileConsumer::new_lazy(&path, None).unwrap();
+        consumer.consume(&integer_request(4)).unwrap();
+        drop(consumer);
+
+        assert_eq!(read_integer_point_count(&path), 4);
+    }
+
+    #[test]
+    fn lazy_consumer_rejects_unusable_parent() {
+        let parent = NamedTempFile::new().unwrap();
+        let path = parent.path().join("fallback.avro");
+
+        assert!(AvroFileConsumer::new_lazy(&path, None).is_err());
     }
 
     fn write_integer_points(path: &PathBuf, count: i64) {

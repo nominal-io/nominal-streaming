@@ -35,34 +35,14 @@ pub struct LazyDatasetStreamBuilder {
 }
 
 impl LazyDatasetStreamBuilder {
-    pub fn validate(&self) -> Result<()> {
+    pub fn build(&self, handle: tokio::runtime::Handle) -> Result<NominalDatasetStream> {
+        // The underlying builder rejects this too, but names the Rust builder methods.
         if self.targets.core_target.is_none() && self.targets.file_target.is_none() {
             return Err(anyhow!(
                 "no streaming target configured; call with_core_consumer(...) or to_file(...)"
             ));
-        } else if self.targets.core_target.is_some()
-            && self.targets.file_target.is_some()
-            && self.targets.file_fallback.is_some()
-        {
-            return Err(anyhow!(
-                "Must choose one of stream_to_file and file_fallback when streaming to core"
-            ));
-        } else if let Some(opts) = self.opts.clone() {
-            if opts.num_runtime_workers < opts.inner.request_dispatcher_tasks {
-                return Err(
-                    anyhow!(
-                        "Number of runtime workers must be at least as large as the number of request dispatcher tasks ({} < {})", 
-                        opts.num_runtime_workers,
-                        opts.inner.request_dispatcher_tasks,
-                    )
-                );
-            }
         }
 
-        Ok(())
-    }
-
-    pub fn build(&self, handle: tokio::runtime::Handle) -> Result<NominalDatasetStream> {
         let mut builder = NominalDatasetStreamBuilder::new();
 
         if let Some(core_target) = &self.targets.core_target {
@@ -78,15 +58,14 @@ impl LazyDatasetStreamBuilder {
             builder = builder.with_file_fallback(file_fallback);
         }
 
-        if let Some(ref log_level) = &self.log_level {
+        if let Some(log_level) = &self.log_level {
             builder = builder.enable_logging_with_directive(log_level);
         }
 
-        if let Some(ref opts) = &self.opts {
+        if let Some(opts) = &self.opts {
             builder = builder.with_options(opts.inner.clone());
         }
 
-        std::panic::catch_unwind(|| builder.build())
-            .map_err(|_| anyhow!("Failed to build underlying stream"))
+        Ok(builder.try_build()?)
     }
 }

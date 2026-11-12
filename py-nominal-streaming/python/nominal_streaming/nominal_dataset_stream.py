@@ -190,7 +190,10 @@ class NominalDatasetStream:
         """Setup file fallback for streaming to core
 
         The written file will contain snappy-compressed avro data for any batches of data that were unable to make
-        it to the backend successfully. This can be read as follows:
+        it to the backend successfully. The file is created when a batch first fails, so a stream that delivers
+        everything leaves no file behind. The stream's start time (UTC) is appended to the file name, so each run
+        writes to its own file: `fallback.avro` becomes `fallback_20260101_120000.avro`.
+        The file can be read as follows:
 
             ```python
             from fastavro import reader

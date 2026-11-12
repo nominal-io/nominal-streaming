@@ -36,10 +36,12 @@ use parking_lot::Mutex;
 use parking_lot::MutexGuard;
 use tracing::debug;
 use tracing::error;
+use tracing::info;
 
 use crate::client::NominalApiClients;
 use crate::client::ProductAgent;
 use crate::client::PRODUCTION_API_URL;
+use crate::consumer::describe_request_error;
 use crate::consumer::AvroFileConsumer;
 use crate::consumer::DualWriteRequestConsumer;
 use crate::consumer::ListeningWriteRequestConsumer;
@@ -63,6 +65,7 @@ pub struct NominalStreamOpts {
     pub max_points_per_record: usize,
     pub max_request_delay: Duration,
     pub max_buffered_requests: usize,
+    /// Number of threads sending requests to the consumer. Must be greater than zero.
     pub request_dispatcher_tasks: usize,
     pub base_api_url: String,
     /// Emit request runtime metrics from the builder's Core consumer. Disabled by default.
@@ -144,6 +147,48 @@ impl NominalStreamOpts {
         self.user_agent = Some(user_agent);
         self
     }
+}
+
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum StreamBuildError {
+    #[error("invalid stream configuration: {0}")]
+    Invalid(&'static str),
+    #[error("failed to open {}: {source}", path.display())]
+    File {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("invalid base API url {url:?}: {source}")]
+    InvalidUrl {
+        url: String,
+        #[source]
+        source: url::ParseError,
+    },
+    #[error("failed to create Nominal API clients: {0}")]
+    Client(String),
+}
+
+impl StreamBuildError {
+    fn file(path: &std::path::Path, source: std::io::Error) -> Self {
+        Self::File {
+            path: path.to_path_buf(),
+            source,
+        }
+    }
+}
+
+/// Appends the current UTC time to the file name, before any extension.
+fn with_start_time(path: &std::path::Path) -> PathBuf {
+    let datetime = chrono::Utc::now().format("%Y%m%d_%H%M%S");
+    let mut name = path.file_stem().unwrap_or_default().to_os_string();
+    name.push(format!("_{datetime}"));
+    if let Some(extension) = path.extension() {
+        name.push(".");
+        name.push(extension);
+    }
+    path.with_file_name(name)
 }
 
 #[derive(Default)]
@@ -236,15 +281,53 @@ impl NominalDatasetStreamBuilder {
         self.init_logging(Some(log_directive))
     }
 
+    /// Validates the configuration and starts the stream.
+    ///
+    /// # Panics
+    /// Panics where [`Self::try_build`] returns an error.
     pub fn build(self) -> NominalDatasetStream {
-        let core_consumer = self.core_consumer();
-        let file_consumer = self.file_consumer();
-        let fallback_consumer = self.fallback_consumer();
+        self.try_build().unwrap_or_else(|e| panic!("{e}"))
+    }
 
-        match (core_consumer, file_consumer, fallback_consumer) {
-            (None, None, _) => panic!("nominal dataset stream must either stream to file or core"),
-            (Some(_), Some(_), Some(_)) => {
-                panic!("must choose one of stream_to_file and file_fallback when streaming to core")
+    /// Validates the configuration and starts the stream.
+    ///
+    /// The `stream_to_file` file is created here, replacing any existing file. The
+    /// `with_file_fallback` file is created when a request first fails, and is
+    /// named after the given path with the stream's start time (UTC) appended to
+    /// the file name: `fallback.avro` becomes `fallback_20260101_120000.avro`.
+    pub fn try_build(self) -> Result<NominalDatasetStream, StreamBuildError> {
+        if self.stream_to_core.is_none() && self.stream_to_file.is_none() {
+            return Err(StreamBuildError::Invalid(
+                "nominal dataset stream must either stream to file or core",
+            ));
+        }
+        if self.stream_to_core.is_some()
+            && self.stream_to_file.is_some()
+            && self.file_fallback.is_some()
+        {
+            return Err(StreamBuildError::Invalid(
+                "must choose one of stream_to_file and file_fallback when streaming to core",
+            ));
+        }
+
+        if self.opts.max_points_per_record == 0 {
+            return Err(StreamBuildError::Invalid(
+                "max_points_per_record must be greater than zero",
+            ));
+        }
+        if self.opts.request_dispatcher_tasks == 0 {
+            return Err(StreamBuildError::Invalid(
+                "request_dispatcher_tasks must be greater than zero",
+            ));
+        }
+
+        let core_consumer = self.core_consumer()?;
+        let fallback_consumer = self.fallback_consumer()?;
+        let file_consumer = self.file_consumer()?;
+
+        Ok(match (core_consumer, file_consumer, fallback_consumer) {
+            (None, None, _) | (Some(_), Some(_), Some(_)) => {
+                unreachable!("target combination was validated")
             }
             (Some(core), None, None) => self.into_stream(core),
             (Some(core), None, Some(fallback)) => {
@@ -258,43 +341,59 @@ impl NominalDatasetStreamBuilder {
             (Some(core), Some(file), None) => {
                 self.into_stream(DualWriteRequestConsumer::new(core, file))
             }
-        }
+        })
     }
 
-    fn core_consumer(&self) -> Option<NominalCoreConsumer<BearerToken>> {
-        self.stream_to_core
-            .as_ref()
-            .map(|(auth_provider, dataset, handle)| {
-                NominalCoreConsumer::new(
-                    NominalApiClients::from_uri_with_agent(
-                        self.opts.base_api_url.as_str(),
-                        self.opts.user_agent.as_ref(),
-                    ),
-                    handle.clone(),
-                    auth_provider.clone(),
-                    dataset.clone(),
-                )
-                .with_track_metrics(self.opts.track_metrics)
-                .with_additional_metric_channels(
-                    self.opts.additional_metric_channels.iter().cloned(),
-                )
-            })
+    fn core_consumer(&self) -> Result<Option<NominalCoreConsumer<BearerToken>>, StreamBuildError> {
+        let Some((auth_provider, dataset, handle)) = &self.stream_to_core else {
+            return Ok(None);
+        };
+        let url = self.opts.base_api_url.as_str();
+        let parsed = url
+            .parse::<url::Url>()
+            .map_err(|source| StreamBuildError::InvalidUrl {
+                url: url.to_string(),
+                source,
+            })?;
+        let clients = NominalApiClients::try_from_url_with_agent(parsed, self.opts.user_agent.as_ref())
+            .map_err(|e| StreamBuildError::Client(describe_request_error(&e)))?;
+        Ok(Some(
+            NominalCoreConsumer::new(
+                clients,
+                handle.clone(),
+                auth_provider.clone(),
+                dataset.clone(),
+            )
+            .with_track_metrics(self.opts.track_metrics)
+            .with_additional_metric_channels(self.opts.additional_metric_channels.iter().cloned()),
+        ))
     }
 
     fn dataset_rid(&self) -> Option<ResourceIdentifier> {
         self.stream_to_core.as_ref().map(|(_, rid, _)| rid.clone())
     }
 
-    fn file_consumer(&self) -> Option<AvroFileConsumer> {
-        self.stream_to_file.as_ref().map(|path| {
-            AvroFileConsumer::new_with_full_path(path, true, self.dataset_rid()).unwrap()
-        })
+    fn file_consumer(&self) -> Result<Option<AvroFileConsumer>, StreamBuildError> {
+        self.stream_to_file
+            .as_ref()
+            .map(|path| {
+                AvroFileConsumer::new_with_full_path(path, true, self.dataset_rid())
+                    .map_err(|source| StreamBuildError::file(path, source))
+            })
+            .transpose()
     }
 
-    fn fallback_consumer(&self) -> Option<AvroFileConsumer> {
-        self.file_fallback.as_ref().map(|path| {
-            AvroFileConsumer::new_with_full_path(path, true, self.dataset_rid()).unwrap()
-        })
+    fn fallback_consumer(&self) -> Result<Option<AvroFileConsumer>, StreamBuildError> {
+        self.file_fallback
+            .as_ref()
+            .map(|path| {
+                let path = with_start_time(path);
+                let consumer = AvroFileConsumer::new_lazy(&path, self.dataset_rid())
+                    .map_err(|source| StreamBuildError::file(&path, source))?;
+                info!("failed requests will be written to {}", path.display());
+                Ok(consumer)
+            })
+            .transpose()
     }
 
     fn into_stream<C: WriteRequestConsumer + 'static>(self, consumer: C) -> NominalDatasetStream {
@@ -339,7 +438,7 @@ impl NominalDatasetStream {
     }
 
     /// # Panics
-    /// Panics if `opts.max_points_per_record` is zero.
+    /// Panics if `opts.max_points_per_record` or `opts.request_dispatcher_tasks` is zero.
     pub fn new_with_consumer<C: WriteRequestConsumer + 'static>(
         consumer: C,
         opts: NominalStreamOpts,
@@ -347,6 +446,10 @@ impl NominalDatasetStream {
         assert!(
             opts.max_points_per_record > 0,
             "max_points_per_record must be greater than zero"
+        );
+        assert!(
+            opts.request_dispatcher_tasks > 0,
+            "request_dispatcher_tasks must be greater than zero"
         );
         let primary_buffer = Arc::new(SeriesBuffer::new(opts.max_points_per_record));
         let secondary_buffer = Arc::new(SeriesBuffer::new(opts.max_points_per_record));

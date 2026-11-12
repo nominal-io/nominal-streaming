@@ -3,7 +3,7 @@ name = "py-nominal-streaming"
 description = "Python bindings for the nominal-streaming Rust library"
 edition = "2021"
 license = "MIT"
-version = "0.10.6"
+version = "0.10.7"
 repository = "https://github.com/nominal-io/nominal-streaming"
 
 [lib]
@@ -12,7 +12,7 @@ name = "_nominal_streaming"
 crate-type = ["cdylib"]
 
 [dependencies]
-pyo3 = { version = "0.29", features = [
+pyo3 = { version = "0.30", features = [
   "abi3-py311",
   "extension-module",
   "time",

@@ -340,7 +340,10 @@ class PyNominalDatasetStream:
         """If sending to core fails, fall back to writing to `path`.
 
         Configure before `open()`, normally alongside `with_core_consumer`.
-        Failed requests are written as Avro records. Configuring all three of
+        Failed requests are written as Avro records. The file is created when
+        a request first fails. The stream's start time (UTC) is appended to
+        the file name, so each run writes to its own file: `fallback.avro`
+        becomes `fallback_20260101_120000.avro`. Configuring all three of
         core, file, and fallback destinations fails at `open()`.
 
         Args:

@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.7](https://github.com/nominal-io/nominal-streaming/compare/v0.10.6...v0.10.7) - 2026-11-10
+
+### Added
+
+- always append the start time to the fallback file name ([#442](https://github.com/nominal-io/nominal-streaming/pull/442))
+
+### Fixed
+
+- return errors from try_build instead of panicking ([#437](https://github.com/nominal-io/nominal-streaming/pull/437))
+- create file fallback lazily, keep existing fallback data, add try_build ([#431](https://github.com/nominal-io/nominal-streaming/pull/431))
+
 ## [0.10.6](https://github.com/nominal-io/nominal-streaming/compare/v0.10.5...v0.10.6) - 2026-11-05
 
 ### Added

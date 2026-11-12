@@ -63,3 +63,189 @@ fn empty_batches_do_not_block_waiting_producers() {
         .expect("on_notify waited on a buffer holding no points");
     assert_eq!(buffer.count(), 1);
 }
+
+fn core_builder(runtime: &tokio::runtime::Runtime) -> NominalDatasetStreamBuilder {
+    NominalDatasetStreamBuilder::new().stream_to_core(
+        BearerToken::new("unused").unwrap(),
+        ResourceIdentifier::new("ri.catalog.main.dataset.00000000-0000-0000-0000-000000000000")
+            .unwrap(),
+        runtime.handle().clone(),
+    )
+}
+
+#[test]
+fn file_fallback_is_not_created_without_a_failed_request() {
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let directory = tempfile::tempdir().unwrap();
+
+    let stream = core_builder(&runtime)
+        .with_file_fallback(directory.path().join("fallback.avro"))
+        .try_build()
+        .unwrap();
+    assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 0);
+
+    drop(stream);
+    assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 0);
+}
+
+#[test]
+fn existing_file_fallback_is_left_untouched() {
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("fallback.avro");
+    std::fs::write(&path, b"undelivered points").unwrap();
+
+    let stream = core_builder(&runtime)
+        .with_file_fallback(&path)
+        .try_build()
+        .unwrap();
+    drop(stream);
+
+    assert_eq!(std::fs::read(&path).unwrap(), b"undelivered points");
+    assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 1);
+}
+
+#[test]
+fn file_fallback_name_includes_the_start_time() {
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("fallback.avro");
+
+    let consumer = core_builder(&runtime)
+        .with_file_fallback(&path)
+        .fallback_consumer()
+        .unwrap()
+        .unwrap();
+
+    let used = consumer.path();
+    let name = used.file_name().unwrap().to_str().unwrap();
+    assert_eq!(used.parent(), path.parent());
+    assert!(
+        name.starts_with("fallback_") && name.ends_with(".avro"),
+        "{name}"
+    );
+    assert_ne!(used, path);
+}
+
+#[test]
+fn start_time_is_appended_to_names_without_an_extension() {
+    let name = with_start_time(std::path::Path::new("dir/fallback"));
+    let name = name.to_str().unwrap();
+    assert!(name.starts_with("dir/fallback_"), "{name}");
+    assert!(!name.contains('.'), "{name}");
+}
+
+#[test]
+fn unusable_file_fallback_leaves_stream_to_file_untouched() {
+    let directory = tempfile::tempdir().unwrap();
+    let file = directory.path().join("data.avro");
+    let parent = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(&file, b"previous data").unwrap();
+
+    let result = NominalDatasetStreamBuilder::new()
+        .stream_to_file(&file)
+        .with_file_fallback(parent.path().join("fallback.avro"))
+        .try_build();
+
+    assert!(matches!(result, Err(StreamBuildError::File { .. })));
+    assert_eq!(std::fs::read(&file).unwrap(), b"previous data");
+}
+
+#[test]
+fn try_build_returns_error_when_file_fallback_cannot_be_opened() {
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let parent = tempfile::NamedTempFile::new().unwrap();
+
+    let result = core_builder(&runtime)
+        .with_file_fallback(parent.path().join("fallback.avro"))
+        .try_build();
+
+    assert!(matches!(result, Err(StreamBuildError::File { .. })));
+}
+
+#[test]
+fn try_build_returns_error_when_stream_to_file_cannot_be_opened() {
+    let parent = tempfile::NamedTempFile::new().unwrap();
+
+    let result = NominalDatasetStreamBuilder::new()
+        .stream_to_file(parent.path().join("data.avro"))
+        .try_build();
+
+    assert!(matches!(result, Err(StreamBuildError::File { .. })));
+}
+
+#[test]
+fn try_build_returns_error_for_invalid_targets() {
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let file = directory.path().join("data.avro");
+
+    let no_target = NominalDatasetStreamBuilder::new().try_build();
+    assert!(matches!(no_target, Err(StreamBuildError::Invalid(_))));
+
+    let all_targets = core_builder(&runtime)
+        .stream_to_file(&file)
+        .with_file_fallback(directory.path().join("fallback.avro"))
+        .try_build();
+    assert!(matches!(all_targets, Err(StreamBuildError::Invalid(_))));
+    assert!(!file.exists());
+}
+
+#[test]
+#[should_panic(expected = "failed to open")]
+fn build_panics_when_file_fallback_cannot_be_opened() {
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let parent = tempfile::NamedTempFile::new().unwrap();
+
+    core_builder(&runtime)
+        .with_file_fallback(parent.path().join("fallback.avro"))
+        .build();
+}
+
+#[test]
+fn try_build_returns_error_for_invalid_base_api_url() {
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+
+    let result = core_builder(&runtime)
+        .with_options(NominalStreamOpts::default().with_base_api_url("not a url"))
+        .try_build();
+
+    let Err(StreamBuildError::InvalidUrl { url, .. }) = result else {
+        panic!("expected an invalid url error");
+    };
+    assert_eq!(url, "not a url");
+}
+
+#[rstest::rstest]
+#[case::zero_record_limit(NominalStreamOpts::default().with_max_points_per_record(0))]
+#[case::zero_dispatchers(NominalStreamOpts::default().with_request_dispatcher_tasks(0))]
+fn try_build_rejects_zero_options_before_creating_files(#[case] opts: NominalStreamOpts) {
+    let directory = tempfile::tempdir().unwrap();
+    let file = directory.path().join("data.avro");
+
+    let result = NominalDatasetStreamBuilder::new()
+        .stream_to_file(&file)
+        .with_options(opts)
+        .try_build();
+
+    assert!(matches!(result, Err(StreamBuildError::Invalid(_))));
+    assert!(!file.exists());
+}
+
+#[test]
+#[should_panic(expected = "request_dispatcher_tasks must be greater than zero")]
+fn new_with_consumer_rejects_zero_dispatchers() {
+    NominalDatasetStream::new_with_consumer(
+        DiscardingConsumer,
+        NominalStreamOpts::default().with_request_dispatcher_tasks(0),
+    );
+}
+
+#[derive(Debug)]
+struct DiscardingConsumer;
+
+impl WriteRequestConsumer for DiscardingConsumer {
+    fn consume(&self, _request: &WriteRequestNominal) -> crate::consumer::ConsumerResult<()> {
+        Ok(())
+    }
+}
