@@ -49,7 +49,7 @@ const USER_AGENT: &str = "nominal-streaming";
 ///
 /// Set it with [`NominalStreamOpts::with_user_agent`](crate::stream::NominalStreamOpts::with_user_agent),
 /// [`NominalLogStreamOpts::user_agent`](crate::log::NominalLogStreamOpts::user_agent) or
-/// [`NominalApiClients::try_from_url_with_agent`].
+/// [`NominalApiClients::try_from_url`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProductAgent(Agent);
 
@@ -162,19 +162,13 @@ impl Debug for NominalApiClients {
 
 impl NominalApiClients {
     pub fn from_uri(base_uri: &str) -> Self {
-        Self::try_from_url(base_uri.parse::<url::Url>().unwrap())
+        Self::try_from_url(base_uri.parse::<url::Url>().unwrap(), default_user_agent())
             .expect("Failed to create Nominal API clients")
     }
 
-    pub fn try_from_url(base_url: Url) -> Result<Self, Error> {
-        Self::try_from_url_with_agent(base_url, default_user_agent())
-    }
-
-    /// Like [`Self::try_from_url`], sending `user_agent` as the `User-Agent` header.
-    pub fn try_from_url_with_agent(base_url: Url, user_agent: UserAgent) -> Result<Self, Error> {
-        let streaming =
-            async_conjure_streaming_client_with_agent(base_url.clone(), user_agent.clone())?;
-        let services = async_conjure_client_with_agent("upload-ingest", base_url, user_agent)?;
+    pub fn try_from_url(base_url: Url, user_agent: UserAgent) -> Result<Self, Error> {
+        let streaming = async_conjure_streaming_client(base_url.clone(), user_agent.clone())?;
+        let services = async_conjure_client("upload-ingest", base_url, user_agent)?;
         Ok(Self::from_conjure_clients(
             streaming,
             services,
@@ -215,14 +209,7 @@ impl NominalApiClients {
 pub static PRODUCTION_CLIENTS: LazyLock<NominalApiClients> =
     LazyLock::new(|| NominalApiClients::from_uri(PRODUCTION_API_URL));
 
-pub fn async_conjure_streaming_client(uri: Url) -> Result<Client, Error> {
-    async_conjure_streaming_client_with_agent(uri, default_user_agent())
-}
-
-fn async_conjure_streaming_client_with_agent(
-    uri: Url,
-    user_agent: UserAgent,
-) -> Result<Client, Error> {
+pub fn async_conjure_streaming_client(uri: Url, user_agent: UserAgent) -> Result<Client, Error> {
     Client::builder()
         .service("core-streaming-rs")
         .user_agent(user_agent)
@@ -237,11 +224,7 @@ fn async_conjure_streaming_client_with_agent(
         .build()
 }
 
-pub fn async_conjure_client(service: &'static str, uri: Url) -> Result<Client, Error> {
-    async_conjure_client_with_agent(service, uri, default_user_agent())
-}
-
-fn async_conjure_client_with_agent(
+pub fn async_conjure_client(
     service: &'static str,
     uri: Url,
     user_agent: UserAgent,

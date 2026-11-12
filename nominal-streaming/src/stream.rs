@@ -86,7 +86,7 @@ pub struct NominalStreamOpts {
     ///
     /// Consumers passed to [`NominalDatasetStream::new_with_consumer`] keep the agent of the
     /// clients they were built with. Build those clients with
-    /// [`NominalApiClients::try_from_url_with_agent`].
+    /// [`NominalApiClients::try_from_url`].
     pub user_agent: UserAgent,
 }
 
@@ -356,9 +356,8 @@ impl NominalDatasetStreamBuilder {
                 url: url.to_string(),
                 source,
             })?;
-        let clients =
-            NominalApiClients::try_from_url_with_agent(parsed, self.opts.user_agent.clone())
-                .map_err(|e| StreamBuildError::Client(describe_request_error(&e)))?;
+        let clients = NominalApiClients::try_from_url(parsed, self.opts.user_agent.clone())
+            .map_err(|e| StreamBuildError::Client(describe_request_error(&e)))?;
         Ok(Some(
             NominalCoreConsumer::new(
                 clients,
