@@ -52,7 +52,7 @@ stream = NominalDatasetStream(auth_header="<api key>", opts=opts)  # DO NOT COMM
 :::
 ::::
 
-To find your REST API URL, click the **Settings** icon (a gear) at the bottom of Nominal's sidebar, then **API keys**, and click **COPY URL** beside **API URL**.
+Your REST API URL is the base URL from [API Keys Setup](api-keys-setup.md).
 
 ## Write to files
 

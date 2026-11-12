@@ -15,6 +15,7 @@ Quickstart <self>
 :caption: Guides
 
 guides/index
+guides/api-keys-setup
 guides/configure
 ```
 
@@ -53,7 +54,7 @@ It needs Python 3.11 or later.
 
 ## 2. Stream to a dataset
 
-You need an API key, and the RID of the dataset to stream to. Points that can't be sent go to `fallback.avro`.
+You need an API key, from [API Keys Setup](guides/api-keys-setup.md), and the RID of the dataset to stream to. Points that can't be sent go to `fallback.avro`.
 
 ::::{tab-set}
 :sync-group: lang
