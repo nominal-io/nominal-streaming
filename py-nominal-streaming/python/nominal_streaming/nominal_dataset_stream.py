@@ -121,7 +121,7 @@ class NominalDatasetStream:
             max_points_per_batch: Overrides the default number of points that may be sent in a single batch
             max_request_delay_secs: Overrides the default maximum buffering time for data between flushes.
                 NOTE: if the amount of data being streamed is greater than available bandwidth, data may be
-                      buffered longer than the configured duration.
+                buffered longer than the configured duration.
             max_buffered_requests: Overrides the default number of requests that may be buffered between encoding
                 threads and upload threads. Increasing this may prevent blocking threads in situations with spotty
                 internet, but increase teardown time (e.g. when pressing ctrl + c)

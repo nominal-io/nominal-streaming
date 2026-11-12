@@ -12,6 +12,11 @@ dist/
 # Precompiled binaries
 *.so
 
+# Docs venv, build output, and the Python reference sphinx-autoapi writes during the build
+/.venv-docs/
+/docs/_build
+/docs/ref/python
+
 # Nix
 .direnv
 
