@@ -218,6 +218,8 @@ pub mod prelude {
     pub use nominal_api::tonic::io::nominal::scout::api::proto::WriteRequest;
     pub use nominal_api::tonic::io::nominal::scout::api::proto::WriteRequestNominal;
 
+    pub use crate::client::ProductAgent;
+    pub use crate::client::ProductAgentError;
     pub use crate::consumer::NominalCoreConsumer;
     pub use crate::log::LogRecord;
     pub use crate::log::LogStreamError;

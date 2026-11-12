@@ -56,6 +56,7 @@ where
             base_api_url: PRODUCTION_API_URL.to_string(),
             track_metrics: false,
             additional_metric_channels: Vec::new(),
+            user_agent: Default::default(),
         },
     )
 }
@@ -662,6 +663,7 @@ fn simulated_network_all_requests_timeout_falls_back_under_backpressure() {
             base_api_url: PRODUCTION_API_URL.to_string(),
             track_metrics: false,
             additional_metric_channels: Vec::new(),
+            user_agent: Default::default(),
         },
     );
 

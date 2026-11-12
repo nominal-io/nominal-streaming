@@ -3,7 +3,9 @@
 use std::fmt;
 use std::time::Duration;
 
+use nominal_streaming::client::ProductAgent;
 use nominal_streaming::stream::NominalStreamOpts;
+use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
 use crate::nominal_dataset_stream::DICT_METRIC_CHANNELS;
@@ -24,7 +26,7 @@ impl fmt::Display for PyNominalStreamOpts {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "NominalStreamOpts(max_points_per_batch={}, max_request_delay_secs{}, max_buffered_requests={}, num_upload_workers={}, num_runtime_workers={}, base_api_url='{}', track_metrics={})",
+            "NominalStreamOpts(max_points_per_batch={}, max_request_delay_secs{}, max_buffered_requests={}, num_upload_workers={}, num_runtime_workers={}, base_api_url='{}', track_metrics={}, user_agent='{}')",
             self.inner.max_points_per_record,
             self.inner.max_request_delay.as_secs_f64(),
             self.inner.max_buffered_requests,
@@ -32,6 +34,7 @@ impl fmt::Display for PyNominalStreamOpts {
             self.num_runtime_workers,
             self.inner.base_api_url,
             self.inner.track_metrics,
+            self.inner.user_agent,
         )
     }
 }
@@ -148,6 +151,22 @@ impl PyNominalStreamOpts {
 
     fn with_api_base_url(mut slf: PyRefMut<'_, Self>, url: String) -> PyResult<PyRefMut<'_, Self>> {
         slf.inner.base_api_url = url;
+        Ok(slf)
+    }
+
+    #[getter]
+    fn user_agent(&self) -> String {
+        self.inner.user_agent.to_string()
+    }
+
+    fn with_user_agent<'py>(
+        mut slf: PyRefMut<'py, Self>,
+        name: &str,
+        version: &str,
+    ) -> PyResult<PyRefMut<'py, Self>> {
+        let agent =
+            ProductAgent::new(name, version).map_err(|e| PyValueError::new_err(e.to_string()))?;
+        slf.inner.user_agent = agent;
         Ok(slf)
     }
 
