@@ -18,16 +18,19 @@ class UserAgentTests(unittest.TestCase):
                 self.assertEqual(opts.user_agent, "nominal-python/1.2.0")
                 self.assertIn("nominal-python/1.2.0", repr(opts))
 
-    def test_rejected_values_are_cleaned(self):
+    def test_invalid_name_or_version_raises(self):
         for opts_type in OPTS_TYPES:
-            with self.subTest(opts_type=opts_type.__name__):
-                opts = opts_type().with_user_agent("nominal_python", "v1.2.0-beta.1")
-                self.assertEqual(opts.user_agent, "nominal-python/1.2.0")
-
-    def test_name_without_letters_is_ignored(self):
-        for opts_type in OPTS_TYPES:
-            with self.subTest(opts_type=opts_type.__name__):
-                self.assertIsNone(opts_type().with_user_agent("123", "1.2.0").user_agent)
+            for name, version in (
+                ("nominal_python", "1.2.0"),
+                ("123", "1.2.0"),
+                ("nominal-python", "v1.2.0"),
+                ("nominal-python", "1.2.0-beta.1"),
+            ):
+                with self.subTest(opts_type=opts_type.__name__, name=name, version=version):
+                    opts = opts_type()
+                    with self.assertRaises(ValueError):
+                        opts.with_user_agent(name, version)
+                    self.assertIsNone(opts.user_agent)
 
 
 if __name__ == "__main__":

@@ -1619,7 +1619,6 @@ dependencies = [
  "nominal-api",
  "parking_lot 0.13.0",
  "prost",
- "regex",
  "reqwest",
  "rstest",
  "serde_json",

@@ -355,8 +355,9 @@ impl NominalDatasetStreamBuilder {
                 url: url.to_string(),
                 source,
             })?;
-        let clients = NominalApiClients::try_from_url_with_agent(parsed, self.opts.user_agent.as_ref())
-            .map_err(|e| StreamBuildError::Client(describe_request_error(&e)))?;
+        let clients =
+            NominalApiClients::try_from_url_with_agent(parsed, self.opts.user_agent.as_ref())
+                .map_err(|e| StreamBuildError::Client(describe_request_error(&e)))?;
         Ok(Some(
             NominalCoreConsumer::new(
                 clients,

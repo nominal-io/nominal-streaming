@@ -6,8 +6,6 @@ use nominal_streaming::log::NominalLogStreamOpts;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
-use crate::nominal_stream_opts::sent_user_agent;
-
 fn duration(value: f64) -> PyResult<Duration> {
     Duration::try_from_secs_f64(value)
         .map_err(|_| PyValueError::new_err("duration must be finite and nonnegative"))
@@ -134,15 +132,17 @@ impl PyNominalLogStreamOpts {
     }
     #[getter]
     fn user_agent(&self) -> Option<String> {
-        sent_user_agent(self.inner.user_agent.as_ref())
+        self.inner.user_agent.as_ref().map(ToString::to_string)
     }
     fn with_user_agent<'py>(
         mut slf: PyRefMut<'py, Self>,
         name: &str,
         version: &str,
-    ) -> PyRefMut<'py, Self> {
-        slf.inner.user_agent = Some(ProductAgent::new(name, version));
-        slf
+    ) -> PyResult<PyRefMut<'py, Self>> {
+        let agent =
+            ProductAgent::new(name, version).map_err(|e| PyValueError::new_err(e.to_string()))?;
+        slf.inner.user_agent = Some(agent);
+        Ok(slf)
     }
 
     fn __repr__(&self) -> String {
@@ -168,8 +168,10 @@ impl std::fmt::Display for PyNominalLogStreamOpts {
             opts.num_upload_workers,
             opts.base_api_url,
             self.num_runtime_workers,
-            sent_user_agent(opts.user_agent.as_ref())
-                .map_or_else(|| "None".to_string(), |agent| format!("{agent:?}")),
+            opts.user_agent.as_ref().map_or_else(
+                || "None".to_string(),
+                |agent| format!("{:?}", agent.to_string())
+            ),
         )
     }
 }

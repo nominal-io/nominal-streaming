@@ -24,8 +24,6 @@ use nominal_api::clients::ingest::api::AsyncIngestServiceClient;
 use nominal_api::clients::upload::api::AsyncUploadServiceClient;
 use nominal_api::objects::api::rids::NominalDataSourceOrDatasetRid;
 use nominal_api::objects::api::rids::WorkspaceRid;
-use regex::Regex;
-use tracing::warn;
 use url::Url;
 
 use crate::types::AuthProvider;
@@ -42,14 +40,6 @@ pub const PRODUCTION_API_URL: &str = "https://api.gov.nominal.io/api";
 
 const USER_AGENT: &str = "nominal-streaming";
 
-/// Sent when nothing usable remains of a [`ProductAgent`] version.
-const FALLBACK_VERSION: &str = "0.0.0";
-
-/// The longest prefix of a version in the format the HTTP client accepts. The client replaces
-/// any other version with `0.0.0`.
-static ACCEPTED_VERSION_PREFIX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^[0-9]+(\.[0-9]+)*(-rc[0-9]+)?(-[0-9]+-g[a-f0-9]+)?").unwrap());
-
 /// A program name and version to put at the start of the `User-Agent` header of requests to
 /// Nominal.
 ///
@@ -60,109 +50,66 @@ static ACCEPTED_VERSION_PREFIX: LazyLock<Regex> =
 /// Set it with [`NominalStreamOpts::with_user_agent`](crate::stream::NominalStreamOpts::with_user_agent),
 /// [`NominalLogStreamOpts::user_agent`](crate::log::NominalLogStreamOpts::user_agent) or
 /// [`NominalApiClients::try_from_url_with_agent`].
-///
-/// The HTTP client accepts only some names and versions, so `new` changes others to the closest
-/// accepted value. Building a stream or client with a changed agent logs a warning.
-///
-/// - A name keeps ASCII letters, digits and hyphens. Each run of other characters becomes one
-///   hyphen, and a run at the end is dropped. Leading characters before the first letter are
-///   dropped. `nominal_matlab` becomes `nominal-matlab`. An agent whose name has no letters is
-///   ignored, so the header starts with `nominal-streaming/<crate version>` as if none were set.
-/// - A version drops a leading `v` and keeps its dot-separated numbers, followed by `-rcN` and a
-///   `git describe` suffix such as `-5-gabc123` if present. Anything after that is dropped:
-///   `v0.3.0` and `0.3.0-beta.1` become `0.3.0`, and `0.3.0-rc1-dirty` becomes `0.3.0-rc1`. A
-///   version that doesn't start with a number becomes `0.0.0`.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ProductAgent {
-    name: String,
-    version: String,
-    /// The `name/version` passed to `new`, if cleaning changed it.
-    requested: Option<String>,
+pub struct ProductAgent(Agent);
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum ProductAgentError {
+    #[error(
+        "invalid user agent name {0:?}: must start with an ASCII letter and contain only ASCII \
+         letters, digits and hyphens"
+    )]
+    InvalidName(String),
+    #[error(
+        "invalid user agent version {0:?}: must be dot-separated numbers, optionally followed by \
+         `-rcN` and a `git describe` suffix such as `-5-gabc123`"
+    )]
+    InvalidVersion(String),
 }
 
 impl ProductAgent {
-    pub fn new(name: &str, version: &str) -> Self {
-        let cleaned_name = clean_agent_name(name);
-        let cleaned_version = clean_agent_version(version);
-        let requested = (cleaned_name != name || cleaned_version != version)
-            .then(|| format!("{name}/{version}"));
-        Self {
-            name: cleaned_name,
-            version: cleaned_version,
-            requested,
+    /// Returns an error for a name or version the HTTP client does not accept.
+    ///
+    /// - A name starts with an ASCII letter and contains only ASCII letters, digits and hyphens,
+    ///   such as `nominal-matlab`.
+    /// - A version is dot-separated numbers, optionally followed by `-rcN` and a `git describe`
+    ///   suffix, such as `0.3.0`, `0.3.0-rc1` or `0.3.0-5-gabc123`.
+    pub fn new(name: &str, version: &str) -> Result<Self, ProductAgentError> {
+        let valid_name = name.starts_with(|c: char| c.is_ascii_alphabetic())
+            && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
+        if !valid_name {
+            return Err(ProductAgentError::InvalidName(name.to_string()));
         }
+        // The HTTP client panics on a name it rejects and replaces a version it rejects.
+        let agent = Agent::new(name, version);
+        if agent.version() != version {
+            return Err(ProductAgentError::InvalidVersion(version.to_string()));
+        }
+        Ok(Self(agent))
     }
 
     pub fn name(&self) -> &str {
-        &self.name
+        self.0.name()
     }
 
     pub fn version(&self) -> &str {
-        &self.version
-    }
-
-    /// Logged when clients are built rather than in `new`, which usually runs before
-    /// `enable_logging` sets up logging.
-    fn warn_if_changed(&self) {
-        let Some(requested) = &self.requested else {
-            return;
-        };
-        if self.name.is_empty() {
-            warn!(
-                requested = %requested,
-                "ignoring user agent because its name has no letters"
-            );
-        } else {
-            warn!(
-                requested = %requested,
-                sent = %self,
-                "changed user agent to a format the HTTP client accepts"
-            );
-        }
+        self.0.version()
     }
 }
 
 impl fmt::Display for ProductAgent {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}/{}", self.name, self.version)
+        fmt::Display::fmt(&self.0, f)
     }
-}
-
-fn clean_agent_name(name: &str) -> String {
-    let mut cleaned = String::with_capacity(name.len());
-    let mut in_rejected_run = false;
-    for c in name.chars() {
-        if !(c.is_ascii_alphanumeric() || c == '-') {
-            in_rejected_run = true;
-            continue;
-        }
-        // A run of rejected characters becomes one hyphen, unless a hyphen is already there.
-        if in_rejected_run && c != '-' && !cleaned.is_empty() && !cleaned.ends_with('-') {
-            cleaned.push('-');
-        }
-        in_rejected_run = false;
-        cleaned.push(c);
-    }
-    cleaned
-        .trim_start_matches(|c: char| !c.is_ascii_alphabetic())
-        .to_string()
-}
-
-fn clean_agent_version(version: &str) -> String {
-    let trimmed = version.trim();
-    let unprefixed = trimmed.strip_prefix(['v', 'V']).unwrap_or(trimmed);
-    ACCEPTED_VERSION_PREFIX
-        .find(unprefixed)
-        .map_or(FALLBACK_VERSION, |prefix| prefix.as_str())
-        .to_string()
 }
 
 fn user_agent(product: Option<&ProductAgent>) -> UserAgent {
     let streaming = Agent::new(USER_AGENT, env!("CARGO_PKG_VERSION"));
-    let Some(product) = product.filter(|product| !product.name.is_empty()) else {
+    let Some(product) = product else {
         return UserAgent::new(streaming);
     };
-    let mut user_agent = UserAgent::new(Agent::new(&product.name, &product.version));
+    let mut user_agent = UserAgent::new(product.0.clone());
     user_agent.push_agent(streaming);
     user_agent
 }
@@ -208,12 +155,7 @@ impl Debug for NominalApiClients {
 
 impl NominalApiClients {
     pub fn from_uri(base_uri: &str) -> Self {
-        Self::from_uri_with_agent(base_uri, None)
-    }
-
-    /// Like [`Self::from_uri`], with `agent` at the start of the `User-Agent` header.
-    pub(crate) fn from_uri_with_agent(base_uri: &str, agent: Option<&ProductAgent>) -> Self {
-        Self::try_from_url_with_agent(base_uri.parse::<url::Url>().unwrap(), agent)
+        Self::try_from_url(base_uri.parse::<url::Url>().unwrap())
             .expect("Failed to create Nominal API clients")
     }
 
@@ -226,9 +168,6 @@ impl NominalApiClients {
         base_url: Url,
         agent: Option<&ProductAgent>,
     ) -> Result<Self, Error> {
-        if let Some(agent) = agent {
-            agent.warn_if_changed();
-        }
         let streaming = async_conjure_streaming_client_with_agent(base_url.clone(), agent)?;
         let services = async_conjure_client_with_agent("upload-ingest", base_url, agent)?;
         Ok(Self::from_conjure_clients(
@@ -384,14 +323,6 @@ mod tests {
 
     const CRATE_AGENT: &str = concat!("nominal-streaming/", env!("CARGO_PKG_VERSION"));
 
-    /// The HTTP client panics on a name it rejects and replaces a version it rejects with `0.0.0`.
-    fn assert_http_client_accepts(agent: &ProductAgent) {
-        assert_eq!(
-            Agent::new(agent.name(), agent.version()).version(),
-            agent.version()
-        );
-    }
-
     #[test]
     fn user_agent_starts_with_crate_agent_when_unset() {
         assert_eq!(user_agent(None).to_string(), CRATE_AGENT);
@@ -399,7 +330,7 @@ mod tests {
 
     #[test]
     fn user_agent_puts_product_agent_before_crate_agent() {
-        let agent = ProductAgent::new("nominal-matlab", "0.3.0");
+        let agent = ProductAgent::new("nominal-matlab", "0.3.0").unwrap();
         assert_eq!(
             user_agent(Some(&agent)).to_string(),
             format!("nominal-matlab/0.3.0 {CRATE_AGENT}")
@@ -407,53 +338,50 @@ mod tests {
     }
 
     #[rstest::rstest]
-    #[case("123")]
+    #[case("nominal-matlab", "0.3.0")]
+    #[case("NominalLabVIEW", "1")]
+    #[case("my--tool3-", "0.0.0")]
+    #[case("a", "0.3.0-rc1")]
+    #[case("a", "0.3.0-5-gabc123")]
+    #[case("a", "0.3.0-rc1-5-gabc123")]
+    fn product_agent_accepts_valid_name_and_version(#[case] name: &str, #[case] version: &str) {
+        let agent = ProductAgent::new(name, version).unwrap();
+        assert_eq!(agent.to_string(), format!("{name}/{version}"));
+    }
+
+    #[rstest::rstest]
     #[case("")]
-    #[case("  ")]
-    fn user_agent_ignores_product_agent_without_letters(#[case] name: &str) {
-        let agent = ProductAgent::new(name, "1.0.0");
-        assert_eq!(user_agent(Some(&agent)).to_string(), CRATE_AGENT);
+    #[case("123")]
+    #[case("3d-tool")]
+    #[case("-tool")]
+    #[case("nominal_matlab")]
+    #[case("nominal.matlab")]
+    #[case("nominal matlab")]
+    #[case(" nominal-matlab")]
+    #[case("café-tool")]
+    #[case("nominal/matlab")]
+    fn product_agent_rejects_invalid_name(#[case] name: &str) {
+        assert_eq!(
+            ProductAgent::new(name, "1.0.0"),
+            Err(ProductAgentError::InvalidName(name.to_string()))
+        );
     }
 
     #[rstest::rstest]
-    #[case("nominal-matlab", "nominal-matlab")]
-    #[case("NominalLabVIEW", "NominalLabVIEW")]
-    #[case("nominal_matlab", "nominal-matlab")]
-    #[case("nominal.matlab", "nominal-matlab")]
-    #[case("nominal matlab", "nominal-matlab")]
-    #[case(" nominal-matlab ", "nominal-matlab")]
-    #[case("My Tool (beta)", "My-Tool-beta")]
-    #[case("café-tool", "caf-tool")]
-    #[case("nominal_-matlab", "nominal-matlab")]
-    #[case("my--tool", "my--tool")]
-    #[case("3d-tool", "d-tool")]
-    fn product_agent_cleans_name(#[case] requested: &str, #[case] sent: &str) {
-        let agent = ProductAgent::new(requested, "1.0.0");
-        assert_eq!(agent.name(), sent);
-        assert_http_client_accepts(&agent);
-    }
-
-    #[rstest::rstest]
-    #[case("0.3.0", "0.3.0")]
-    #[case("1", "1")]
-    #[case("0.3.0-rc1", "0.3.0-rc1")]
-    #[case("0.3.0-rc1-5-gabc123", "0.3.0-rc1-5-gabc123")]
-    #[case("0.3.0-rc1-dirty", "0.3.0-rc1")]
-    #[case("0.3.0-rc1+build.7", "0.3.0-rc1")]
-    #[case("0.3.0-rc1-5-gabc123-dirty", "0.3.0-rc1-5-gabc123")]
-    #[case("v0.3.0", "0.3.0")]
-    #[case("V0.3.0-rc1", "0.3.0-rc1")]
-    #[case(" 0.3.0 ", "0.3.0")]
-    #[case("0.3.0-beta.1", "0.3.0")]
-    #[case("0.3.0-dev", "0.3.0")]
-    #[case("0.3.0+build.7", "0.3.0")]
-    #[case("0.3.0-5-gABC123", "0.3.0")]
-    #[case("dev", "0.0.0")]
-    #[case("", "0.0.0")]
-    fn product_agent_cleans_version(#[case] requested: &str, #[case] sent: &str) {
-        let agent = ProductAgent::new("nominal-matlab", requested);
-        assert_eq!(agent.version(), sent);
-        assert_http_client_accepts(&agent);
+    #[case("")]
+    #[case("dev")]
+    #[case("v0.3.0")]
+    #[case(" 0.3.0")]
+    #[case("0.3.0-beta.1")]
+    #[case("0.3.0-dirty")]
+    #[case("0.3.0-rc1-dirty")]
+    #[case("0.3.0+build.7")]
+    #[case("0.3.0-5-gABC123")]
+    fn product_agent_rejects_invalid_version(#[case] version: &str) {
+        assert_eq!(
+            ProductAgent::new("nominal-matlab", version),
+            Err(ProductAgentError::InvalidVersion(version.to_string()))
+        );
     }
 
     #[test]

@@ -5,17 +5,10 @@ use std::time::Duration;
 
 use nominal_streaming::client::ProductAgent;
 use nominal_streaming::stream::NominalStreamOpts;
+use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
 use crate::nominal_dataset_stream::DICT_METRIC_CHANNELS;
-
-/// The `name/version` sent first in the `User-Agent` header. `None` if no agent is set, or if it
-/// is ignored because its name has no letters.
-pub(crate) fn sent_user_agent(agent: Option<&ProductAgent>) -> Option<String> {
-    agent
-        .filter(|agent| !agent.name().is_empty())
-        .map(ToString::to_string)
-}
 
 // `from_py_object` opts in to the derived `FromPyObject`, which pyo3 0.29 deprecates as an
 // implicit behaviour for `Clone` pyclasses. It is required here: `NominalDatasetStream` takes
@@ -41,7 +34,9 @@ impl fmt::Display for PyNominalStreamOpts {
             self.num_runtime_workers,
             self.inner.base_api_url,
             self.inner.track_metrics,
-            sent_user_agent(self.inner.user_agent.as_ref())
+            self.inner
+                .user_agent
+                .as_ref()
                 .map_or_else(|| "None".to_string(), |agent| format!("'{agent}'")),
         )
     }
@@ -164,16 +159,18 @@ impl PyNominalStreamOpts {
 
     #[getter]
     fn user_agent(&self) -> Option<String> {
-        sent_user_agent(self.inner.user_agent.as_ref())
+        self.inner.user_agent.as_ref().map(ToString::to_string)
     }
 
     fn with_user_agent<'py>(
         mut slf: PyRefMut<'py, Self>,
         name: &str,
         version: &str,
-    ) -> PyRefMut<'py, Self> {
-        slf.inner.user_agent = Some(ProductAgent::new(name, version));
-        slf
+    ) -> PyResult<PyRefMut<'py, Self>> {
+        let agent =
+            ProductAgent::new(name, version).map_err(|e| PyValueError::new_err(e.to_string()))?;
+        slf.inner.user_agent = Some(agent);
+        Ok(slf)
     }
 
     fn __repr__(&self) -> PyResult<String> {

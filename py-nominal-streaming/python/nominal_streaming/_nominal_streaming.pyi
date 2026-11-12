@@ -226,23 +226,27 @@ class PyNominalStreamOpts:
         """The ``name/version`` sent first in the ``User-Agent`` header.
 
         Returns:
-            The agent after cleanup, or ``None`` if none is set or its name has no letters.
+            The agent, or ``None`` if none is set.
         """
 
     def with_user_agent(self, name: str, version: str) -> Self:
         """Set the program name and version sent first in the ``User-Agent`` header.
 
         Nominal's usage reporting groups requests by this agent, and
-        ``nominal-streaming/<version>`` follows it. A name or version the HTTP client
-        rejects is changed to the closest accepted value. A name with no letters is
-        ignored.
+        ``nominal-streaming/<version>`` follows it.
 
         Args:
-            name: Program name, such as ``"nominal-python"``.
-            version: Program version, such as ``"1.2.0"``.
+            name: Program name, such as ``"nominal-python"``. Starts with an ASCII letter
+                and contains only ASCII letters, digits and hyphens.
+            version: Program version, such as ``"1.2.0"``. Dot-separated numbers,
+                optionally followed by ``-rcN`` and a ``git describe`` suffix such as
+                ``-5-gabc123``.
 
         Returns:
             The updated instance for fluent chaining.
+
+        Raises:
+            ValueError: If the name or version is not in the accepted format.
 
         Example:
             >>> opts = PyNominalStreamOpts().with_user_agent("nominal-python", "1.2.0")
