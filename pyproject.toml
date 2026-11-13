@@ -29,6 +29,8 @@ docs = [
   "sphinx-copybutton>=0.5.2; python_full_version >= '3.12'",
   "sphinx-autoapi>=3.6; python_full_version >= '3.12'",
   "nominal-sphinx-theme; python_full_version >= '3.12'",
+  # license scanning flags docutils 0.23, though its license is the same as 0.22's
+  "docutils<0.23; python_full_version >= '3.12'",
 ]
 
 [tool.ruff]
