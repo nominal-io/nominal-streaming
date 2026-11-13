@@ -37,6 +37,7 @@ examples/many-units
 :caption: Reference
 
 ref/index
+ref/rust/nominal_streaming/index
 ref/python/nominal_streaming/index
 ```
 

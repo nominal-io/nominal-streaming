@@ -2,7 +2,7 @@
 
 ## Rust
 
-The `nominal-streaming` crate's API reference is on [docs.rs](https://docs.rs/nominal-streaming).
+[nominal_streaming](rust/nominal_streaming/index.md) documents every public item in the `nominal-streaming` crate.
 
 ## Python
 

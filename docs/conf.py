@@ -18,9 +18,18 @@ extensions = [
     "nominal_sphinx_theme",
     # the docstrings put examples in Markdown code fences
     "nominal_sphinx_theme.docstring_fences",
+    "sphinx_rustdoc",
 ]
 myst_enable_extensions = ["attrs_block", "colon_fence"]
 exclude_patterns = ["_build"]
+
+# -- Rust API reference ----------------------------------------------------------------------------
+# sphinx-rustdoc builds the crate's reference under ref/rust/ from rustdoc's JSON output, which
+# `cargo rustdoc` writes. The JSON format changes between Rust releases; CI pins the one
+# sphinx-rustdoc reads.
+rustdoc_crates = {"nominal_streaming": {"package": "nominal-streaming"}}
+# docs.rs hasn't built nominal-api's recent releases, so its types render as text
+rustdoc_unlinked_crates = ["nominal_api", "nominal_api_conjure", "nominal_api_proto"]
 
 # -- Python reference ------------------------------------------------------------------------------
 # sphinx-autoapi reads the package's source and its .pyi stub without importing it, so the build
