@@ -183,4 +183,4 @@ An asset or a run in Nominal can then select one tag value.
 
 ## Watch points arrive
 
-In a workbook on the dataset's asset or run, **GO LIVE** follows new points as the stream sends them.
+In a workbook on the dataset's asset or run, click **GO LIVE** in the bottom bar to follow new points as the stream sends them. It isn't available once the workbook's runs have ended. See [Workbooks](https://dev.nominal.io/platform/workbooks/).
