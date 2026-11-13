@@ -55,6 +55,7 @@ html_theme_options = theme_options(
     nav_links=[
         {"title": "Quickstart", "url": "index"},
         {"title": "Guides", "url": "guides/index"},
+        {"title": "Examples", "url": "examples/index"},
         {"title": "Reference", "url": "ref/index"},
     ],
 )
