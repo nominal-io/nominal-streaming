@@ -39,7 +39,7 @@ jobs:
       - name: Install just
         uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b # v3.1.0
       - name: Build docs (Sphinx, warnings fail the build)
-        run: just build-docs
+        run: just build-docs-newest
       - name: "Built docs: upload and preview"
         if: always()
         uses: nominal-io/nominal-sphinx-theme/.github/actions/docs-preview@243a7cc937780d23876a320ca376c8fdb9f61b55 # main, 2026-11-12
