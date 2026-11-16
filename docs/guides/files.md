@@ -1,13 +1,15 @@
 # Stream files
 
 {.lead}
-A stream can write points to an Avro file: every point it streams, or only the points it couldn't send. Upload the file to Nominal later, or read it yourself.
+A stream can optionally write every point it streams to an Avro file. 
 
-The Rust examples use `token` and `dataset` as created in the [quickstart](../index.md#4-stream-values).
+This is different from a [fallback file](fallback.md), which only stores data that couldn't reach Nominal servers.
 
-## Keep a fallback file
+A stream can be configured to optionally transmit data to Nominal and _either_ write all data to disk _or_ store failed samples in a fallback file.
 
-A fallback file holds the points of requests that failed after retries. It's created when a request first fails, so a stream that sends everything leaves no file. Its name gets the stream's start time (UTC), so each run writes its own file: `fallback.avro` becomes `fallback_20260101_120000.avro`.
+## Write every point to a file
+
+This section covers the full redundancy case: stream to Nominal and also write all data to a file.
 
 ::::{tab-set}
 :sync-group: lang
@@ -16,9 +18,20 @@ A fallback file holds the points of requests that failed after retries. It's cre
 :sync: rust
 
 ```rust
+use nominal_streaming::prelude::*;
+use nominal_streaming::stream::NominalDatasetStreamBuilder;
+
+// Load the API key and base URL that API Keys Setup saved
+let config = nominal::Config::load()?;
+let profile = config.get_profile("default").ok_or("no profile named default")?;
+let token = BearerToken::new(profile.token())?;
+let dataset = ResourceIdentifier::new("<ri.catalog.instance.dataset.identifier>")?;
+
+// Send to Nominal, and write every point to all-data-redundant.avro
 let stream = NominalDatasetStreamBuilder::new()
     .stream_to_core(token, dataset, tokio::runtime::Handle::current())
-    .with_file_fallback("fallback.avro")
+    .with_options(NominalStreamOpts::default().with_base_api_url(profile.base_url()))
+    .stream_to_file("all-data-redundant.avro")
     .build();
 ```
 :::
@@ -29,20 +42,27 @@ let stream = NominalDatasetStreamBuilder::new()
 ```python
 from pathlib import Path
 
-from nominal_streaming import NominalDatasetStream
+from nominal.config import NominalConfig
+from nominal_streaming import NominalDatasetStream, PyNominalStreamOpts
 
+# Load the API key and base URL that API Keys Setup saved
+profile = NominalConfig.from_yaml().get_profile("default")
+
+# Send to Nominal, and write every point to all-data-redundant.avro
 stream = (
-    NominalDatasetStream(auth_header="<api key>")  # DO NOT COMMIT THIS
-    .with_core_consumer("<ri.catalog.instance.dataset.identifier>")
-    .with_file_fallback(Path("fallback.avro"))
+    NominalDatasetStream(auth_header=profile.token, opts=PyNominalStreamOpts(base_api_url=profile.base_url))
+    .with_core_consumer("<ri.catalog.instance.dataset.identifier>") #send to Nominal
+    .to_file(Path("all-data-redundant.avro"))
 )
 ```
 :::
 ::::
 
-## Write every point to a file
+Once the stream is configured, all of the normal [write](write.md) methods work on the stream.
 
-A stream can write every point to a file, along with sending it to Nominal or in place of it. With no network, record to a file and upload it later. The file is created when the stream starts, and replaces any file already at that path.
+## Disabling network transmission
+
+To record with no network, write only to a file. This requires no API key or dataset RID, but you must [upload the file](#upload-a-file-to-nominal) later.
 
 ::::{tab-set}
 :sync-group: lang
@@ -51,14 +71,10 @@ A stream can write every point to a file, along with sending it to Nominal or in
 :sync: rust
 
 ```rust
-// Send to Nominal, and write every point to run-1.avro
-let stream = NominalDatasetStreamBuilder::new()
-    .stream_to_core(token, dataset, tokio::runtime::Handle::current())
-    .stream_to_file("run-1.avro")
-    .build();
+use nominal_streaming::stream::NominalDatasetStreamBuilder;
 
-// Write only to the file: no API key or network needed
-let offline = NominalDatasetStreamBuilder::new().stream_to_file("run-2.avro").build();
+// Write only to the file, with no API key or network
+let offline = NominalDatasetStreamBuilder::new().stream_to_file("offline.avro").build();
 ```
 :::
 
@@ -71,43 +87,17 @@ from pathlib import Path
 
 from nominal_streaming import NominalDatasetStream
 
-# Write only to the file: no API key or network needed
-with NominalDatasetStream().to_file(Path("run-2.avro")) as stream:
-    stream.enqueue("engine.rpm", time.time_ns(), 3000.0)
+# Write only to the file, with no API key or network
+with NominalDatasetStream().to_file(Path("offline.avro")) as offline:
+    offline.enqueue("engine.rpm", time.time_ns(), 3000.0)
 ```
-
-To send to Nominal too, add `with_core_consumer` as in the quickstart.
 :::
 ::::
 
-A stream that sends to Nominal can have a file or a fallback file, not both.
-
-## What's in a file
-
-A stream file is an [Avro](https://avro.apache.org/docs/) object container file, compressed with Snappy. Each record holds one batch of points for one channel and set of tags:
-
-| Field | Type | Holds |
-| --- | --- | --- |
-| `channel` | string | The channel name |
-| `timestamps` | array of long | Each point's time, in nanoseconds since the Unix epoch |
-| `values` | array | Each point's value: a double, string or long, or a record holding an array of doubles (`DoubleArray`), an array of strings (`StringArray`), or a struct as JSON text (`JsonStruct`) |
-| `tags` | map of strings | The points' tags |
-
-Avro has no unsigned 64-bit integers, so `u64` values are written as signed longs. When the stream also sends to Nominal, the file's metadata names the dataset under the key `nominal.dataset_rid`.
-
-To read a file in Python, use an Avro library such as [fastavro](https://fastavro.readthedocs.io):
-
-```python
-from fastavro import reader
-
-with open("fallback_20260101_120000.avro", "rb") as f:
-    for record in reader(f):
-        print(record["channel"], record["tags"], len(record["timestamps"]))
-```
 
 ## Upload a file to Nominal
 
-Nominal ingests these files directly. Upload one with nomctl, which [API Keys Setup](api-keys-setup.md) installs, or with a Nominal client:
+Nominal ingests these files directly. Upload one with nomctl, installed when you [configure your API keys](../api-keys-setup.md) or with a Nominal client:
 
 ::::{tab-set}
 :sync-group: lang
@@ -118,7 +108,7 @@ Nominal ingests these files directly. Upload one with nomctl, which [API Keys Se
 nomctl --profile default ingest avro-stream --dataset <ri.catalog.instance.dataset.identifier> fallback_20260101_120000.avro
 ```
 
-To ingest into a new dataset instead, replace `--dataset <rid>` with `--name "<dataset name>"`.
+To ingest into a new dataset instead, replace `--dataset` and the RID with `--name "<dataset name>"`.
 :::
 
 :::{tab-item} Rust
@@ -149,6 +139,86 @@ from nominal.core import NominalClient
 client = NominalClient.from_profile("default")
 dataset = client.get_dataset("<ri.catalog.instance.dataset.identifier>")
 dataset.add_avro_stream("fallback_20260101_120000.avro").poll_until_ingestion_completed()
+```
+:::
+::::
+
+
+## What's in a file
+
+A stream file is an [Avro](https://avro.apache.org/docs/) object container file, compressed with Snappy. Each `record` in the file holds one batch of points for one channel and set of tags:
+
+| Field | Type | Holds |
+| --- | --- | --- |
+| `channel` | string | The channel name |
+| `timestamps` | array of long | Each point's time, in nanoseconds since the Unix epoch |
+| `values` | array | Each point's value, as typed by the streaming library |
+| `tags` | map of strings | The points' tags |
+
+:::{warning}
+Avro has no unsigned 64-bit integers, so `u64` values are stored by casting the value to `i64`.
+:::
+
+
+::::{tab-set}
+:sync-group: lang
+
+:::{tab-item} Rust
+:sync: rust
+
+This example uses [apache-avro](https://docs.rs/apache-avro), added with `cargo add apache-avro --features snappy`.
+
+To simplify handling of records, this example also uses [serde](https://docs.rs/serde), added with `cargo add serde --features derive`:
+
+```rust
+use std::collections::HashMap;
+
+use apache_avro::Reader;
+
+// A point's value: a number or string, or a record holding an array or a struct.
+// Long comes before Double so that longs aren't read as floats.
+#[derive(Debug, serde::Deserialize)]
+#[serde(untagged)]
+enum PointValue {
+    Long(i64),
+    Double(f64),
+    String(String),
+    DoubleArray { items: Vec<f64> },
+    StringArray { items: Vec<String> },
+    JsonStruct { json: String },
+}
+
+#[derive(serde::Deserialize)]
+struct Batch {
+    channel: String,
+    tags: HashMap<String, String>,
+    timestamps: Vec<i64>,
+    values: Vec<PointValue>,
+}
+
+let file = std::fs::File::open("fallback_20260101_120000.avro")?;
+for record in Reader::new(file)? {
+    let batch: Batch = apache_avro::from_value(&record?)?;
+    for (timestamp, value) in batch.timestamps.iter().zip(&batch.values) {
+        println!("{} {:?} {timestamp} {value:?}", batch.channel, batch.tags);
+    }
+}
+```
+:::
+
+:::{tab-item} Python
+:sync: python
+
+This example uses [fastavro](https://fastavro.readthedocs.io), installed with `pip install "fastavro[snappy]"`:
+
+```python
+from fastavro import reader
+
+with open("fallback_20260101_120000.avro", "rb") as f:
+    for record in reader(f):
+        # Arrays come back as {"items": [...]}, and structs as {"json": "..."}
+        for timestamp, value in zip(record["timestamps"], record["values"]):
+            print(record["channel"], record["tags"], timestamp, value)
 ```
 :::
 ::::

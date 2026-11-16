@@ -1,6 +1,6 @@
 # Examples
 
-Complete programs to copy and adapt. Each needs an API key, your base URL and a dataset RID, from the [quickstart](../index.md).
+Complete programs to copy and adapt. Each reads your API key and base URL from the profile that [API Keys Setup](../api-keys-setup.md) saves, and needs a dataset RID, such as the one the [quickstart](../index.md) prints.
 
 - [Stream a sensor loop](sensor-loop.md): read two sensors at 10 Hz, with a fallback file and logging. Rust and Python.
 - [Stream from several threads](threads.md): one stream shared by a thread per motor. Rust.

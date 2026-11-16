@@ -1,23 +1,11 @@
-# Configure a stream
+# Stream configuration
 
 {.lead}
-Stream options set where points go, how they're batched, and when writes wait for the network. This guide also covers how a stream reports errors, and how to close it.
-
-The Rust examples use `token` and `dataset` as created in the [quickstart](../index.md#4-stream-values).
+Stream options set where points go, how they're batched, and when writes wait for the network. A stream logs the requests that fail, and sends what it has buffered when you close it.
 
 ## Stream options
 
-| Rust (`NominalStreamOpts`) | Python (`PyNominalStreamOpts`) | Default | Sets |
-| --- | --- | --- | --- |
-| `with_base_api_url` | `base_api_url` | `https://api.gov.nominal.io/api` | Your Nominal REST API URL: the base URL from [API Keys Setup](api-keys-setup.md) |
-| `with_max_points_per_record` | `max_points_per_batch` | 250,000 | The most points in one request |
-| `with_max_request_delay` | `max_request_delay_secs` | 100 ms | How long points wait for a fuller request before it's sent anyway |
-| `with_max_buffered_requests` | `max_buffered_requests` | 4 | How many requests can wait to be sent before writes wait too |
-| `with_request_dispatcher_tasks` | `num_upload_workers` | 8 | How many requests are sent at once |
-| | `num_runtime_workers` | 8 | Threads the stream runs on; at least `num_upload_workers` |
-| `with_track_metrics` | `track_metrics` | off | [Metric channels](#metrics) about the stream's latency |
-
-Smaller requests and a shorter delay get points to Nominal sooner. Larger requests send fewer of them. When the network can't keep up, the buffered requests fill, and writes wait until one is sent, so your program slows down rather than running out of memory.
+Options go in a {rust:struct}`NominalStreamOpts` in Rust or a {py:class}`~nominal_streaming.PyNominalStreamOpts` in Python, which you pass to the stream when you create it:
 
 ::::{tab-set}
 :sync-group: lang
@@ -28,10 +16,17 @@ Smaller requests and a shorter delay get points to Nominal sooner. Larger reques
 ```rust
 use std::time::Duration;
 
-use nominal_streaming::stream::{NominalDatasetStreamBuilder, NominalStreamOpts};
+use nominal_streaming::prelude::*;
+use nominal_streaming::stream::NominalDatasetStreamBuilder;
+
+// Load the API key and base URL that API Keys Setup saved
+let config = nominal::Config::load()?;
+let profile = config.get_profile("default").ok_or("no profile named default")?;
+let token = BearerToken::new(profile.token())?;
+let dataset = ResourceIdentifier::new("<ri.catalog.instance.dataset.identifier>")?;
 
 let opts = NominalStreamOpts::default()
-    .with_base_api_url("<base url>")
+    .with_base_api_url(profile.base_url())
     .with_max_points_per_record(100_000)
     .with_max_request_delay(Duration::from_millis(250));
 
@@ -47,19 +42,48 @@ let stream = NominalDatasetStreamBuilder::new()
 :sync: python
 
 ```python
+from nominal.config import NominalConfig
 from nominal_streaming import NominalDatasetStream, PyNominalStreamOpts
 
+# Load the API key and base URL that API Keys Setup saved
+profile = NominalConfig.from_yaml().get_profile("default")
+
 opts = PyNominalStreamOpts(
-    base_api_url="<base url>",
+    base_api_url=profile.base_url,
     max_points_per_batch=100_000,
     max_request_delay_secs=0.25,
 )
-stream = NominalDatasetStream(auth_header="<api key>", opts=opts)  # DO NOT COMMIT THIS
-```
+stream = NominalDatasetStream(auth_header=profile.token, opts=opts)
 
-`NominalDatasetStream.create` takes the API key, the base URL and the same options as arguments, in place of a `PyNominalStreamOpts`.
+# ALTERNATE:
+# Pass the options straight to create, with no PyNominalStreamOpts
+stream = NominalDatasetStream.create(
+    profile.token,
+    profile.base_url,
+    max_points_per_batch=100_000,
+    max_request_delay_secs=0.25,
+)
+```
 :::
 ::::
+
+### Available Options
+
+| Rust (`NominalStreamOpts`) | Python (`PyNominalStreamOpts`) | Default | Sets |
+| --- | --- | --- | --- |
+| {rust:method}`with_base_api_url <NominalStreamOpts::with_base_api_url>` | {py:attr}`~nominal_streaming.PyNominalStreamOpts.base_api_url` | `https://api.gov.nominal.io/api` | The base URL from [API Keys Setup](../api-keys-setup.md) |
+| {rust:method}`with_max_points_per_record <NominalStreamOpts::with_max_points_per_record>` | {py:attr}`~nominal_streaming.PyNominalStreamOpts.max_points_per_batch` | 250,000 | The most points in one request |
+| {rust:method}`with_max_request_delay <NominalStreamOpts::with_max_request_delay>` | {py:attr}`~nominal_streaming.PyNominalStreamOpts.max_request_delay_secs` | 100 ms | How long points wait for a fuller request before it's sent anyway |
+| {rust:method}`with_max_buffered_requests <NominalStreamOpts::with_max_buffered_requests>` | {py:attr}`~nominal_streaming.PyNominalStreamOpts.max_buffered_requests` | 4 | How many requests can wait to be sent before writes wait too |
+| {rust:method}`with_request_dispatcher_tasks <NominalStreamOpts::with_request_dispatcher_tasks>` | {py:attr}`~nominal_streaming.PyNominalStreamOpts.num_upload_workers` | 8 | How many requests are sent at once |
+| | {py:attr}`~nominal_streaming.PyNominalStreamOpts.num_runtime_workers` | 8 | Threads the stream runs on; at least `num_upload_workers` |
+| {rust:method}`with_track_metrics <NominalStreamOpts::with_track_metrics>` | {py:attr}`~nominal_streaming.PyNominalStreamOpts.track_metrics` | off | [Metric channels](#metrics) about the stream's latency |
+
+### Batching and backpressure
+
+The request size (`with_max_points_per_record`, or `max_points_per_batch` in Python) and the delay (`with_max_request_delay`, or `max_request_delay_secs`) set how points are [batched into requests](write.md#batching-and-backpressure).
+
+The option `with_max_buffered_requests` (`max_buffered_requests` in Python) sets how many requests can wait to be sent before backpressure makes your writes wait too.
 
 ## Metrics
 
@@ -73,11 +97,13 @@ With metrics on, the stream adds these channels to the dataset, in the requests 
 | `__nominal.metric.largest_latency_after_request` | Time from the request's oldest point to when it finished |
 | `__nominal.metric.smallest_latency_after_request` | Time from the request's newest point to when it finished |
 
-In Python, `enqueue_from_dict` also writes `enque_dict_start_staleness` and `enque_dict_end_staleness`: the time from the points' timestamp to when the call started and finished.
+## Reporting and handling errors
 
-## Handle errors
+A stream retries failed requests. A request that still fails goes to the [fallback file](fallback.md), if configured.
 
-A stream retries failed requests. A request that still fails goes to the fallback file, if there is one, and is otherwise dropped. Your writes don't return the error, so turn on logging to see it:
+:::{warning}
+Your writes don't return streaming errors. Turn on logging to see it.
+:::
 
 ::::{tab-set}
 :sync-group: lang
@@ -85,60 +111,35 @@ A stream retries failed requests. A request that still fails goes to the fallbac
 :::{tab-item} Rust
 :sync: rust
 
-`enable_logging` prints the stream's log messages, from debug level up, unless the `RUST_LOG` environment variable sets another filter. `enable_logging_with_directive` takes the filter, such as `"warn"`.
-
 ```rust
 let stream = NominalDatasetStreamBuilder::new()
     .stream_to_core(token, dataset, tokio::runtime::Handle::current())
     .with_file_fallback("fallback.avro")
-    .enable_logging()
-    .build();
+    .enable_logging_with_directive("warn") // or enable_logging() for debug and up
+    .try_build()?; // build() panics instead if the stream can't start
 ```
 
-To act on failures in your program, add a listener. It hears about each request after the stream has tried the fallback file, so with a fallback file, a request saved there counts as a success:
-
-```rust
-use std::error::Error;
-use std::sync::Arc;
-
-use nominal_streaming::listener::NominalStreamListener;
-
-#[derive(Debug)]
-struct ReportFailures;
-
-impl NominalStreamListener for ReportFailures {
-    fn on_error(&self, error: &dyn Error, _request: &WriteRequestNominal) {
-        eprintln!("points were lost: {error}");
-    }
-}
-
-let stream = NominalDatasetStreamBuilder::new()
-    .stream_to_core(token, dataset, tokio::runtime::Handle::current())
-    .add_listener(Arc::new(ReportFailures))
-    .build();
-```
-
-`build` panics if the stream can't start, such as when it has no target or can't create its file. `try_build` returns those as a `StreamBuildError` instead.
+To handle failures in your own code, add a [`NominalStreamListener`](../ref/rust/nominal_streaming/listener/trait.NominalStreamListener.md) with {rust:method}`add_listener <NominalDatasetStreamBuilder::add_listener>`.
 :::
 
 :::{tab-item} Python
 :sync: python
 
-`enable_logging` prints the stream's messages at the level you give it: `"debug"` by default, or `"info"`, `"warn"` or `"error"`.
-
 ```python
 stream = (
-    NominalDatasetStream(auth_header="<api key>")  # DO NOT COMMIT THIS
-    .enable_logging("warn")
+    NominalDatasetStream(auth_header=profile.token, opts=PyNominalStreamOpts(base_api_url=profile.base_url))
+    .enable_logging("warn")  # or "debug" (the default), "info" or "error"
     .with_core_consumer("<ri.catalog.instance.dataset.identifier>")
 )
 ```
 :::
 ::::
 
+Log messages print to standard output. A warning that a request failed means its points went to the fallback file, so [upload it](fallback.md#upload-the-file) when the network is back. An error that a request failed means its points were lost.
+
 ## Close the stream
 
-Closing a stream sends what it has buffered, and waits until every point has been sent or saved to the fallback file.
+Closing a stream sends what it has buffered.
 
 ::::{tab-set}
 :sync-group: lang
@@ -157,12 +158,7 @@ drop(stream);
 :::{tab-item} Python
 :sync: python
 
-Leaving the `with` block closes the stream. Without `with`, call `open()` before writing and `close()` when done.
+Leaving the `with` block closes the stream. Without `with`, call {py:meth}`~nominal_streaming.NominalDatasetStream.open` before writing and {py:meth}`~nominal_streaming.NominalDatasetStream.close` when done.
 
-When you press Ctrl+C in a stream opened from the main thread, the stream stops taking writes, sends what it has, and raises `KeyboardInterrupt`.
 :::
 ::::
-
-## Write to a file
-
-A stream can also write to a file, as well as or instead of Nominal. See [Stream files](files.md).

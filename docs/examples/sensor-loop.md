@@ -1,9 +1,9 @@
 # Stream a sensor loop
 
 {.lead}
-Read two sensors every 100 ms for a minute, and stream both readings to a dataset. Points that can't be sent go to a fallback file, and errors are logged.
+Read two sensors every 100 ms for a minute, and stream both readings to a dataset. Points that can't be sent go to a [fallback file](../guides/fallback.md), and errors are logged.
 
-Replace `read_sensor` with your hardware reads, and the placeholders with your API key, base URL and dataset RID, from [API Keys Setup](../guides/api-keys-setup.md).
+Replace `read_sensor` with your hardware reads, and the placeholder with your dataset RID. The program reads your API key and base URL from the profile that [API Keys Setup](../api-keys-setup.md) saves.
 
 ::::{tab-set}
 :sync-group: lang
@@ -12,15 +12,15 @@ Replace `read_sensor` with your hardware reads, and the placeholders with your A
 :sync: rust
 
 ```shell
-cargo add nominal-streaming chrono
+cargo add nominal-streaming nominal
 cargo add tokio --features full
 ```
 
 ```rust
-use std::time::Duration;
+use std::time::{Duration, UNIX_EPOCH};
 
 use nominal_streaming::prelude::*;
-use nominal_streaming::stream::{NominalDatasetStreamBuilder, NominalStreamOpts};
+use nominal_streaming::stream::NominalDatasetStreamBuilder;
 
 /// Stands in for your hardware: temperature in °C and pressure in kPa
 fn read_sensor(i: u32) -> (f64, f64) {
@@ -30,14 +30,18 @@ fn read_sensor(i: u32) -> (f64, f64) {
 
 #[tokio::main]
 async fn main() {
-    let token = BearerToken::new("<api key>").expect("invalid API key"); // DO NOT COMMIT THIS
+    // Load the API key and base URL that API Keys Setup saved
+    let config = nominal::Config::load().expect("failed to read the Nominal config file");
+    let profile = config.get_profile("default").expect("no profile named default");
+
+    let token = BearerToken::new(profile.token()).expect("invalid API key");
     let dataset = ResourceIdentifier::new("<ri.catalog.instance.dataset.identifier>").expect("invalid dataset RID");
 
     let stream = NominalDatasetStreamBuilder::new()
         .stream_to_core(token, dataset, tokio::runtime::Handle::current())
-        .with_options(NominalStreamOpts::default().with_base_api_url("<base url>"))
+        .with_options(NominalStreamOpts::default().with_base_api_url(profile.base_url()))
         .with_file_fallback("fallback.avro")
-        .enable_logging()
+        .enable_logging_with_directive("warn")
         .build();
 
     let mut temperature = stream.double_writer(ChannelDescriptor::new("temperature"));
@@ -46,7 +50,7 @@ async fn main() {
     let mut tick = tokio::time::interval(Duration::from_millis(100));
     for i in 0..600 {
         tick.tick().await;
-        let now = chrono::Utc::now();
+        let now = UNIX_EPOCH.elapsed().unwrap();
         let (t, p) = read_sensor(i);
         temperature.push(now, t);
         pressure.push(now, p);
@@ -64,7 +68,7 @@ async fn main() {
 :sync: python
 
 ```shell
-pip install nominal-streaming
+pip install nominal-streaming nominal
 ```
 
 ```python
@@ -72,6 +76,7 @@ import math
 import pathlib
 import time
 
+from nominal.config import NominalConfig
 from nominal_streaming import NominalDatasetStream, PyNominalStreamOpts
 
 
@@ -81,10 +86,13 @@ def read_sensor(i: int) -> tuple[float, float]:
     return 24.0 + math.sin(t / 10), 101.3 + 0.2 * math.cos(t / 3)
 
 
+# Load the API key and base URL that API Keys Setup saved
+profile = NominalConfig.from_yaml().get_profile("default")
+
 stream = (
     NominalDatasetStream(
-        auth_header="<api key>",  # DO NOT COMMIT THIS
-        opts=PyNominalStreamOpts(base_api_url="<base url>"),
+        auth_header=profile.token,
+        opts=PyNominalStreamOpts(base_api_url=profile.base_url),
     )
     .enable_logging("warn")
     .with_core_consumer("<ri.catalog.instance.dataset.identifier>")
@@ -103,4 +111,4 @@ with stream:
 :::
 ::::
 
-If the network drops, the stream keeps taking readings: requests it can't send go to `fallback.avro`, with the stream's start time added to the name. [Stream files](../guides/files.md) covers uploading that file later.
+If the network drops, the stream keeps taking readings: requests it can't send go to `fallback.avro`, with the stream's start time added to the name. [Fallback file](../guides/fallback.md#upload-the-file) covers uploading that file later.
