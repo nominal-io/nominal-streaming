@@ -3,6 +3,11 @@ default-groups = ["dev"]
 
 [tool.uv.sources]
 nominal-streaming = { workspace = true }
+# github.com/nominal-io/nominal-sphinx-theme; uv.lock pins the commit. To update it:
+# `uv lock --upgrade-package nominal-sphinx-theme`
+nominal-sphinx-theme = { git = "https://github.com/nominal-io/nominal-sphinx-theme" }
+# github.com/nominal-io/sphinx-rustdoc, pinned the same way
+sphinx-rustdoc = { git = "https://github.com/nominal-io/sphinx-rustdoc" }
 
 [tool.uv.workspace]
 members = ["py-nominal-streaming/"]
@@ -16,6 +21,20 @@ dev = [
   "ruff>=0.14.0",
   "maturin>=1.6,<2.0",
   "nominal>=1.70.0",
+]
+# The docs site (docs/). `just build-docs` installs only this group, in its own venv on Python 3.12+
+# (the theme's minimum), so it builds no Python extension and leaves the dev venv alone.
+docs = [
+  "sphinx>=9.1; python_full_version >= '3.12'",
+  "myst-parser>=5.1; python_full_version >= '3.12'",
+  "sphinx-design>=0.7; python_full_version >= '3.12'",
+  "sphinx-copybutton>=0.5.2; python_full_version >= '3.12'",
+  "sphinx-autoapi>=3.6; python_full_version >= '3.12'",
+  "nominal-sphinx-theme; python_full_version >= '3.12'",
+  # the Rust API reference, from rustdoc's JSON output
+  "sphinx-rustdoc; python_full_version >= '3.12'",
+  # license scanning flags docutils 0.23, though its license is the same as 0.22's
+  "docutils<0.23; python_full_version >= '3.12'",
 ]
 
 [tool.ruff]

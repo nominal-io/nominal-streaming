@@ -7,6 +7,9 @@
 | [deps.yml](deps.yml) | Approve Dependabot PRs | PR events, filtered to Dependabot in this repository |
 | [release-plz.yml](release-plz.yml) | Publish Rust crates and maintain release PRs | Pushes to main |
 | [wheels.yml](wheels.yml) | Build and publish Python wheels | Version tags; manual dispatch builds without publishing |
+| [docs.yml](docs.yml) | Build the docs, link a preview, and run the theme's `docs-gate` | PR opened, reopened, or synchronized |
+| [deploy-docs.yml](deploy-docs.yml) | Build the docs and deploy them to GitHub Pages, which dev.nominal.io pulls | Pushes to main; manual dispatch |
+| [bump-theme.yml](bump-theme.yml) | Open a PR moving the nominal-sphinx-theme pin in `uv.lock` to its newest commit | Daily; manual dispatch |
 
 PR metadata validation is separate from code validation so title and description
 edits do not rerun builds or wheel tests. Code validation jobs run independently.
