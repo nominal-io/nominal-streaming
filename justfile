@@ -45,8 +45,9 @@ check-toml:
 fix-toml:
     taplo format
 
-# The theme and sphinx-rustdoc at their newest commits on GitHub, in place of the ones uv.lock pins
-newest := '--with "nominal-sphinx-theme @ git+https://github.com/nominal-io/nominal-sphinx-theme" --with "sphinx-rustdoc @ git+https://github.com/nominal-io/sphinx-rustdoc" --refresh-package nominal-sphinx-theme --refresh-package sphinx-rustdoc'
+# The theme and sphinx-rustdoc at their newest commits on GitHub, in place of the ones uv.lock pins.
+# @main is needed: without a branch, uv keeps the commits uv.lock pins.
+newest := '--with "nominal-sphinx-theme @ git+https://github.com/nominal-io/nominal-sphinx-theme@main" --with "sphinx-rustdoc @ git+https://github.com/nominal-io/sphinx-rustdoc@main" --refresh-package nominal-sphinx-theme --refresh-package sphinx-rustdoc'
 docs := '--only-group docs --python ">=3.12"'
 sphinx := 'python -m sphinx -E -W --keep-going -b dirhtml docs docs/_build/dirhtml'
 fallback := "Building with the newest theme and sphinx-rustdoc failed; building with the ones uv.lock pins"
