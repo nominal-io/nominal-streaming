@@ -130,6 +130,7 @@ fn user_agent(product: &ProductAgent) -> UserAgent {
     if *product != streaming {
         user_agent.push_agent(streaming.into());
     }
+    user_agent.push_agent(crate::ai_agent::ai_agent());
     user_agent
 }
 
@@ -324,12 +325,16 @@ mod tests {
 
     const CRATE_AGENT: &str = concat!("nominal-streaming/", env!("CARGO_PKG_VERSION"));
 
+    fn ai_agent_token() -> String {
+        format!("ai-agent/{}", crate::ai_agent::ai_agent_version())
+    }
+
     #[test]
     fn user_agent_is_crate_agent_by_default() {
         assert_eq!(ProductAgent::default().to_string(), CRATE_AGENT);
         assert_eq!(
             user_agent(&ProductAgent::default()).to_string(),
-            CRATE_AGENT
+            format!("{CRATE_AGENT} {}", ai_agent_token())
         );
     }
 
@@ -338,8 +343,20 @@ mod tests {
         let agent = ProductAgent::new("nominal-matlab", "0.3.0").unwrap();
         assert_eq!(
             user_agent(&agent).to_string(),
-            format!("nominal-matlab/0.3.0 {CRATE_AGENT}")
+            format!("nominal-matlab/0.3.0 {CRATE_AGENT} {}", ai_agent_token())
         );
+    }
+
+    #[test]
+    fn user_agent_ends_with_ai_agent_token_for_any_product() {
+        for product in [
+            ProductAgent::default(),
+            ProductAgent::new("nominal-python", "1.190.0").unwrap(),
+        ] {
+            let header = user_agent(&product).to_string();
+            let last = header.split_whitespace().last().unwrap();
+            assert!(last == "ai-agent/0" || last == "ai-agent/1", "{header}");
+        }
     }
 
     #[test]

@@ -178,6 +178,7 @@ let stream = NominalDatasetStreamBuilder::new()
 */
 #![recursion_limit = "256"]
 
+pub mod ai_agent;
 pub mod client;
 pub mod consumer;
 pub mod listener;
