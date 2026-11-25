@@ -1,5 +1,6 @@
 use std::fmt;
 use std::fmt::Debug;
+use std::future::Future;
 use std::sync::Arc;
 use std::sync::LazyLock;
 
@@ -8,6 +9,8 @@ use conjure_http::client::AsyncClient;
 use conjure_http::client::AsyncRequestBody;
 use conjure_http::client::AsyncService;
 use conjure_http::client::ConjureRuntime;
+use conjure_http::private::header::HeaderName;
+use conjure_http::private::header::HeaderValue;
 use conjure_http::private::header::CONTENT_ENCODING;
 use conjure_http::private::header::CONTENT_TYPE;
 use conjure_http::private::Request;
@@ -26,6 +29,8 @@ use nominal_api::objects::api::rids::NominalDataSourceOrDatasetRid;
 use nominal_api::objects::api::rids::WorkspaceRid;
 use url::Url;
 
+use crate::ai_agent::ai_agent_header_value;
+use crate::ai_agent::AI_AGENT_HEADER;
 use crate::types::AuthProvider;
 
 pub mod conjure {
@@ -130,8 +135,42 @@ fn user_agent(product: &ProductAgent) -> UserAgent {
     if *product != streaming {
         user_agent.push_agent(streaming.into());
     }
-    user_agent.push_agent(crate::ai_agent::ai_agent());
     user_agent
+}
+
+/// A Conjure client that adds the [`AI_AGENT_HEADER`] header to every request.
+#[derive(Clone)]
+pub struct ConjureClient {
+    inner: Client,
+    ai_agent: HeaderValue,
+}
+
+impl ConjureClient {
+    pub fn new(inner: Client) -> Self {
+        Self {
+            inner,
+            ai_agent: ai_agent_header_value(),
+        }
+    }
+}
+
+impl AsyncClient for ConjureClient {
+    type BodyWriter = BodyWriter;
+    type ResponseBody = ResponseBody;
+
+    fn send(
+        &self,
+        mut request: Request<AsyncRequestBody<'_, Self::BodyWriter>>,
+    ) -> impl Future<Output = Result<Response<Self::ResponseBody>, Error>> + Send {
+        insert_ai_agent(&mut request, &self.ai_agent);
+        self.inner.send(request)
+    }
+}
+
+fn insert_ai_agent<B>(request: &mut Request<B>, ai_agent: &HeaderValue) {
+    request
+        .headers_mut()
+        .insert(HeaderName::from_static(AI_AGENT_HEADER), ai_agent.clone());
 }
 
 impl AuthProvider for BearerToken {
@@ -158,17 +197,19 @@ impl AuthProvider for TokenAndWorkspaceRid {
 
 #[derive(Clone)]
 pub struct NominalApiClients {
+    /// Writes through [`Self::send`] add the [`AI_AGENT_HEADER`] header; direct calls don't.
     pub streaming: Client,
-    pub upload: AsyncUploadServiceClient<Client>,
-    pub ingest: AsyncIngestServiceClient<Client>,
+    pub upload: AsyncUploadServiceClient<ConjureClient>,
+    pub ingest: AsyncIngestServiceClient<ConjureClient>,
+    ai_agent: HeaderValue,
 }
 
 impl Debug for NominalApiClients {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("NominalApiClients")
             .field("streaming", &"Client")
-            .field("upload", &"UploadServiceAsyncClient<Client>")
-            .field("ingest", &"IngestServiceAsyncClient<Client>")
+            .field("upload", &"UploadServiceAsyncClient<ConjureClient>")
+            .field("ingest", &"IngestServiceAsyncClient<ConjureClient>")
             .finish()
     }
 }
@@ -198,14 +239,17 @@ impl NominalApiClients {
         services: Client,
         runtime: &Arc<ConjureRuntime>,
     ) -> Self {
+        let services = ConjureClient::new(services);
         Self {
             streaming,
             upload: AsyncUploadServiceClient::new(services.clone(), runtime),
             ingest: AsyncIngestServiceClient::new(services, runtime),
+            ai_agent: ai_agent_header_value(),
         }
     }
 
-    pub async fn send(&self, req: WriteRequest<'_>) -> Result<Response<ResponseBody>, Error> {
+    pub async fn send(&self, mut req: WriteRequest<'_>) -> Result<Response<ResponseBody>, Error> {
+        insert_ai_agent(&mut req, &self.ai_agent);
         self.streaming.send(req).await
     }
 
@@ -325,16 +369,12 @@ mod tests {
 
     const CRATE_AGENT: &str = concat!("nominal-streaming/", env!("CARGO_PKG_VERSION"));
 
-    fn ai_agent_token() -> String {
-        format!("ai-agent/{}", crate::ai_agent::ai_agent_version())
-    }
-
     #[test]
     fn user_agent_is_crate_agent_by_default() {
         assert_eq!(ProductAgent::default().to_string(), CRATE_AGENT);
         assert_eq!(
             user_agent(&ProductAgent::default()).to_string(),
-            format!("{CRATE_AGENT} {}", ai_agent_token())
+            CRATE_AGENT
         );
     }
 
@@ -343,20 +383,19 @@ mod tests {
         let agent = ProductAgent::new("nominal-matlab", "0.3.0").unwrap();
         assert_eq!(
             user_agent(&agent).to_string(),
-            format!("nominal-matlab/0.3.0 {CRATE_AGENT} {}", ai_agent_token())
+            format!("nominal-matlab/0.3.0 {CRATE_AGENT}")
         );
     }
 
     #[test]
-    fn user_agent_ends_with_ai_agent_token_for_any_product() {
-        for product in [
-            ProductAgent::default(),
-            ProductAgent::new("nominal-python", "1.190.0").unwrap(),
-        ] {
-            let header = user_agent(&product).to_string();
-            let last = header.split_whitespace().last().unwrap();
-            assert!(last == "ai-agent/0" || last == "ai-agent/1", "{header}");
-        }
+    fn insert_ai_agent_sets_the_header_once() {
+        let mut request = Request::new(());
+        request
+            .headers_mut()
+            .insert(AI_AGENT_HEADER, HeaderValue::from_static("stale"));
+        insert_ai_agent(&mut request, &HeaderValue::from_static("codex"));
+        let values: Vec<_> = request.headers().get_all(AI_AGENT_HEADER).iter().collect();
+        assert_eq!(values, [HeaderValue::from_static("codex")]);
     }
 
     #[test]
