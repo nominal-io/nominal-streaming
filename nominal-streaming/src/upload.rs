@@ -12,7 +12,6 @@ use conjure_object::BearerToken;
 use conjure_object::ResourceIdentifier;
 use conjure_object::SafeLong;
 use conjure_runtime_rustls_platform_verifier::BodyWriter;
-use conjure_runtime_rustls_platform_verifier::Client;
 use futures::StreamExt;
 use nominal_api::clients::ingest::api::AsyncIngestService;
 use nominal_api::clients::ingest::api::AsyncIngestServiceClient;
@@ -36,6 +35,7 @@ use tracing::debug;
 use tracing::error;
 use tracing::info;
 
+use crate::client::ConjureClient;
 use crate::client::NominalApiClients;
 use crate::types::AuthProvider;
 
@@ -250,8 +250,8 @@ impl AsyncWriteBody<BodyWriter> for FileWriteBody {
 
 #[derive(Clone)]
 pub struct FileObjectStoreUploader {
-    upload_client: AsyncUploadServiceClient<Client>,
-    ingest_client: AsyncIngestServiceClient<Client>,
+    upload_client: AsyncUploadServiceClient<ConjureClient>,
+    ingest_client: AsyncIngestServiceClient<ConjureClient>,
     http_client: reqwest::Client,
     handle: tokio::runtime::Handle,
     opts: UploaderOpts,
@@ -259,8 +259,8 @@ pub struct FileObjectStoreUploader {
 
 impl FileObjectStoreUploader {
     pub fn new(
-        upload_client: AsyncUploadServiceClient<Client>,
-        ingest_client: AsyncIngestServiceClient<Client>,
+        upload_client: AsyncUploadServiceClient<ConjureClient>,
+        ingest_client: AsyncIngestServiceClient<ConjureClient>,
         http_client: reqwest::Client,
         handle: tokio::runtime::Handle,
         opts: UploaderOpts,
@@ -297,7 +297,7 @@ impl FileObjectStoreUploader {
 
     #[expect(clippy::too_many_arguments)]
     async fn upload_part(
-        client: AsyncUploadServiceClient<Client>,
+        client: AsyncUploadServiceClient<ConjureClient>,
         http_client: reqwest::Client,
         token: BearerToken,
         upload_id: String,
@@ -334,7 +334,7 @@ impl FileObjectStoreUploader {
     }
 
     async fn try_upload_part(
-        client: AsyncUploadServiceClient<Client>,
+        client: AsyncUploadServiceClient<ConjureClient>,
         http_client: reqwest::Client,
         token: &BearerToken,
         upload_id: &str,
