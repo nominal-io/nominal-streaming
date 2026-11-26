@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0](https://github.com/nominal-io/nominal-streaming/compare/v0.11.2...v0.12.0) - 2026-11-26
+
+### Added
+
+- [**breaking**] report the AI coding agent in an X-Nominal-AI-Agent header ([#463](https://github.com/nominal-io/nominal-streaming/pull/463))
+
 ## [0.11.2](https://github.com/nominal-io/nominal-streaming/compare/v0.11.1...v0.11.2) - 2026-11-23
 
 ### Other
